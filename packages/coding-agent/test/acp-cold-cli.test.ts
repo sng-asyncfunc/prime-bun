@@ -160,7 +160,7 @@ async function driveAcpTurn(baseUrl: string): Promise<AcpResult> {
 		]);
 	} finally {
 		// SIGKILL alone would strand whatever the CLI started for this socket (a
-		// daemon supervisor, a Python kernel). Close stdin so the agent sees EOF and
+		// daemon supervisor, or a Bun notebook). Close stdin so the agent sees EOF and
 		// unwinds its own children, then escalate only if it does not exit.
 		child.stdin.end();
 		// An already-dead child never emits "exit" again, so waiting on the event

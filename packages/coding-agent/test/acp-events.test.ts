@@ -39,33 +39,33 @@ describe("ACP session event mapping", () => {
 		).toEqual([]);
 	});
 
-	it("treats IPython as an execute tool call carrying its cell source", () => {
-		expect(acpToolKind("ipython")).toBe("execute");
+	it("treats JavaScript as an execute tool call carrying its cell source", () => {
+		expect(acpToolKind("javascript")).toBe("execute");
 		const updates = acpUpdatesForSessionEvent({
 			type: "tool_execution_start",
 			toolCallId: "call-1",
-			toolName: "ipython",
-			args: { code: "print(1)" },
+			toolName: "javascript",
+			args: { code: "console.log(1)" },
 		} as AgentConnectionSessionEvent);
 		expect(updates).toEqual([
 			{
 				sessionUpdate: "tool_call",
 				toolCallId: "call-1",
-				title: "IPython cell",
+				title: "Bun cell",
 				kind: "execute",
 				status: "in_progress",
-				rawInput: { code: "print(1)" },
+				rawInput: { code: "console.log(1)" },
 			},
 		]);
 	});
 
-	it("carries rich IPython output from the fields the tool actually reports", () => {
-		// The ipython tool reports media/diffs under `details`, so the mapping must
+	it("carries rich JavaScript output from the fields the tool actually reports", () => {
+		// The JavaScript tool reports media/diffs under `details`, so the mapping must
 		// read those exact fields rather than an invented MIME bundle.
 		const updates = acpUpdatesForSessionEvent({
 			type: "tool_execution_end",
 			toolCallId: "call-1",
-			toolName: "ipython",
+			toolName: "javascript",
 			result: {
 				output: "done",
 				details: {
@@ -84,7 +84,7 @@ describe("ACP session event mapping", () => {
 		});
 		expect(updates[0]?._meta).toEqual({
 			[PRIME_AGENT_META_NAMESPACE]: {
-				ipython: {
+				javascript: {
 					attachments: [{ mimeType: "image/png", path: "/tmp/plot.png", bytes: 5 }],
 					diffCount: 1,
 				},
@@ -92,11 +92,11 @@ describe("ACP session event mapping", () => {
 		});
 	});
 
-	it("omits IPython rich metadata when the cell produced none", () => {
+	it("omits JavaScript rich metadata when the cell produced none", () => {
 		const updates = acpUpdatesForSessionEvent({
 			type: "tool_execution_end",
 			toolCallId: "call-3",
-			toolName: "ipython",
+			toolName: "javascript",
 			result: { output: "plain", details: { stdout: "plain" } },
 			isError: false,
 		} as AgentConnectionSessionEvent);
@@ -107,7 +107,7 @@ describe("ACP session event mapping", () => {
 		const updates = acpUpdatesForSessionEvent({
 			type: "tool_execution_end",
 			toolCallId: "call-2",
-			toolName: "ipython",
+			toolName: "javascript",
 			result: "boom",
 			isError: true,
 		} as AgentConnectionSessionEvent);
@@ -217,7 +217,7 @@ describe("ACP session event mapping", () => {
 
 	it("surfaces agent-to-agent messages sent from the kernel", () => {
 		const updates = acpUpdatesForSessionEvent({
-			type: "ipython_sent_agent_message",
+			type: "javascript_sent_agent_message",
 			toolCallId: "cell-9",
 			message: {
 				id: "agentmsg_1",

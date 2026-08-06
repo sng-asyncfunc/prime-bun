@@ -389,7 +389,7 @@ describe("runtime session option resolution", () => {
 		const resolved = resolveRuntimeSessionOptions(
 			{
 				model: preparedModel,
-				tools: ["ipython"],
+				tools: ["javascript"],
 				customTools: [],
 			},
 			{
@@ -402,7 +402,7 @@ describe("runtime session option resolution", () => {
 
 		expect(resolved).toMatchObject({
 			model: runtimeModel,
-			tools: ["ipython"],
+			tools: ["javascript"],
 			customTools: [],
 			rlmHeartbeatController,
 			rlmDepth: 1,

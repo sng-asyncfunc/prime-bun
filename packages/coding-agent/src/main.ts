@@ -1267,7 +1267,7 @@ export async function main(args: string[], options?: MainOptions) {
 			...resolvedSessionOptions,
 			// Main agents boot their kernel in the background at session creation;
 			// subagent sessions (rlmDepth > 0) keep the lazy first-call start.
-			prewarmIpythonKernel: true,
+			prewarmBunKernel: true,
 			// Read serializedRefine from the merged runtime config (passed
 			// from the JSON/print client through AgentSessionRuntimeConfig)
 			// so it survives the daemon worker's appMode="daemon" context.

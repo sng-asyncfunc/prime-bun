@@ -109,7 +109,7 @@ function createConnectionState(overrides: Partial<AgentConnectionState> = {}): A
 		compactionCount: 0,
 		goal: emptyGoalState(),
 		scopedModels: [],
-		activeToolNames: ["ipython"],
+		activeToolNames: ["javascript"],
 		contextUsage: undefined,
 		...overrides,
 	};
@@ -203,8 +203,8 @@ describe("InteractiveMode.showStatus", () => {
 
 type RenderSessionContextHarness = {
 	pendingTools: Map<string, ToolExecutionComponent>;
-	ipythonToolComponents: Map<string, unknown>;
-	lateIpythonSentAgentMessages: Map<string, unknown[]>;
+	javaScriptToolComponents: Map<string, unknown>;
+	lateJavaScriptSentAgentMessages: Map<string, unknown[]>;
 	toolOutputExpanded: boolean;
 	chatContainer: Container;
 	editor: { addToHistory?: (text: string) => void };
@@ -251,8 +251,8 @@ function createRenderSessionContextHarness(overrides: Partial<RenderSessionConte
 	const addToHistory = vi.fn();
 	const harness: RenderSessionContextHarness = {
 		pendingTools: new Map<string, ToolExecutionComponent>(),
-		ipythonToolComponents: new Map<string, unknown>(),
-		lateIpythonSentAgentMessages: new Map<string, unknown[]>(),
+		javaScriptToolComponents: new Map<string, unknown>(),
+		lateJavaScriptSentAgentMessages: new Map<string, unknown[]>(),
 		toolOutputExpanded: false,
 		chatContainer,
 		editor: { addToHistory },
@@ -318,12 +318,12 @@ describe("InteractiveMode.renderSessionContext", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
 			const chatContainer = new Container();
-			const ipythonToolComponents = new Map([["stale-tool", {}]]);
-			const lateIpythonSentAgentMessages = new Map([["stale-tool", []]]);
+			const javaScriptToolComponents = new Map([["stale-tool", {}]]);
+			const lateJavaScriptSentAgentMessages = new Map([["stale-tool", []]]);
 			const fakeThis: any = {
 				pendingTools: new Map(),
-				ipythonToolComponents,
-				lateIpythonSentAgentMessages,
+				javaScriptToolComponents,
+				lateJavaScriptSentAgentMessages,
 				toolOutputExpanded: false,
 				chatContainer,
 				footer: { invalidate: vi.fn() },
@@ -362,8 +362,8 @@ describe("InteractiveMode.renderSessionContext", () => {
 
 			const rendered = renderAll(chatContainer);
 			expect(rendered).not.toContain("\x1b_G");
-			expect(ipythonToolComponents.size).toBe(0);
-			expect(lateIpythonSentAgentMessages.size).toBe(0);
+			expect(javaScriptToolComponents.size).toBe(0);
+			expect(lateJavaScriptSentAgentMessages.size).toBe(0);
 		} finally {
 			resetCapabilitiesCache();
 		}
@@ -376,8 +376,8 @@ describe("InteractiveMode.renderSessionContext", () => {
 			const pendingTools = new Map<string, ToolExecutionComponent>();
 			const fakeThis: any = {
 				pendingTools,
-				ipythonToolComponents: new Map(),
-				lateIpythonSentAgentMessages: new Map(),
+				javaScriptToolComponents: new Map(),
+				lateJavaScriptSentAgentMessages: new Map(),
 				toolOutputExpanded: false,
 				chatContainer,
 				footer: { invalidate: vi.fn() },
@@ -1142,8 +1142,8 @@ describe("InteractiveMode pending bash components", () => {
 			agentRunFileChanges: new Map(),
 			recapContainer: new Container(),
 			renderRecap: vi.fn(),
-			ipythonToolComponents: new Map(),
-			lateIpythonSentAgentMessages: new Map(),
+			javaScriptToolComponents: new Map(),
+			lateJavaScriptSentAgentMessages: new Map(),
 			resetPendingToolState: vi.fn(),
 			resetSubagentSummary: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
@@ -1723,8 +1723,8 @@ describe("InteractiveMode tool event rendering", () => {
 			pendingTools: new Map<string, ToolExecutionComponent>(),
 			pendingToolCreations: new Set<string>(),
 			startedToolCalls: new Set<string>(),
-			ipythonToolComponents: new Map(),
-			lateIpythonSentAgentMessages: new Map(),
+			javaScriptToolComponents: new Map(),
+			lateJavaScriptSentAgentMessages: new Map(),
 			loadToolDefinition: vi.fn(() => definitionPromise),
 			uiServices: {
 				settingsManager: {
@@ -1741,8 +1741,8 @@ describe("InteractiveMode tool event rendering", () => {
 				{
 					type: "toolCall",
 					id: "tool-1",
-					name: "ipython",
-					arguments: { code: "print(1)" },
+					name: "javascript",
+					arguments: { code: "console.log(1)" },
 				},
 			],
 			api: "anthropic-messages",

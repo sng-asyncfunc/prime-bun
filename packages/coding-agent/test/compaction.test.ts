@@ -180,8 +180,8 @@ describe("buildSummarizationPrompt", () => {
 		const prompt = buildSummarizationPrompt();
 		expect(prompt).not.toContain("<user-instructions>");
 		expect(prompt).toContain("## Goal");
-		// The kernel keeps running across compaction — the note must not claim a wipe.
-		expect(prompt).toContain("IPython kernel keeps running");
+		// The worker keeps running across compaction — the note must not claim a wipe.
+		expect(prompt).toContain("Bun worker keeps running");
 		expect(prompt).not.toMatch(/wiped|restarted/);
 	});
 
@@ -190,7 +190,7 @@ describe("buildSummarizationPrompt", () => {
 		expect(prompt).toContain("<user-instructions>");
 		expect(prompt).toContain("focus on the auth refactor, remember the migration command");
 		expect(prompt).toContain("</user-instructions>");
-		expect(prompt.indexOf("</user-instructions>")).toBeLessThan(prompt.indexOf("IPython kernel"));
+		expect(prompt.indexOf("</user-instructions>")).toBeLessThan(prompt.indexOf("Bun worker"));
 	});
 
 	it("uses the update template when a previous summary exists", () => {

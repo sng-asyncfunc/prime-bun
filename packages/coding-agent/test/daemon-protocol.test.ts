@@ -44,22 +44,22 @@ describe("daemon protocol helpers", () => {
 	});
 
 	it("requires compatibility metadata for the heartbeat protocol surface", () => {
-		expect(DAEMON_PROTOCOL_VERSION).toBe(7);
+		expect(DAEMON_PROTOCOL_VERSION).toBe(8);
 		expect(DAEMON_SCHEMA_ID).toContain(`protocol-${DAEMON_PROTOCOL_VERSION}`);
 		expect(DAEMON_COMMAND_COMPATIBILITY.heartbeats_list).toEqual({
-			minProtocol: 7,
+			minProtocol: 8,
 			capability: "heartbeat_catalog",
 		});
 		expect(DAEMON_COMMAND_COMPATIBILITY.heartbeat_manage).toEqual({
-			minProtocol: 7,
+			minProtocol: 8,
 			capability: "heartbeat_management",
 		});
 		expect(DAEMON_COMMAND_COMPATIBILITY.complete_owned_session).toEqual({
-			minProtocol: 7,
+			minProtocol: 8,
 			capability: "client_owned_sessions",
 		});
 		expect(DAEMON_OUTBOUND_COMPATIBILITY.heartbeats_changed).toEqual({
-			minProtocol: 7,
+			minProtocol: 8,
 			capability: "heartbeat_catalog",
 		});
 		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toEqual(
@@ -69,7 +69,7 @@ describe("daemon protocol helpers", () => {
 
 	it("capability-gates explicit subagent deletion instead of schema-gating it", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.delete_rlm_subagent).toEqual({
-			minProtocol: 7,
+			minProtocol: 8,
 			capability: "delete_rlm_subagent",
 		});
 		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toContain("delete_rlm_subagent");
@@ -77,20 +77,20 @@ describe("daemon protocol helpers", () => {
 
 	it("capability-gates the optional model catalog surface", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.get_model_catalog).toEqual({
-			minProtocol: 7,
+			minProtocol: 8,
 			capability: "model_catalog",
 		});
 		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toContain("model_catalog");
 	});
 
 	it("schema-gates the RLM max depth commands at their introducing revision", () => {
-		expect(DAEMON_COMMAND_COMPATIBILITY.get_rlm_max_depth_status).toEqual({ minProtocol: 7, minSchemaRevision: 11 });
-		expect(DAEMON_COMMAND_COMPATIBILITY.set_rlm_max_depth).toEqual({ minProtocol: 7, minSchemaRevision: 11 });
+		expect(DAEMON_COMMAND_COMPATIBILITY.get_rlm_max_depth_status).toEqual({ minProtocol: 8, minSchemaRevision: 11 });
+		expect(DAEMON_COMMAND_COMPATIBILITY.set_rlm_max_depth).toEqual({ minProtocol: 8, minSchemaRevision: 11 });
 	});
 
 	it("version- and capability-gates prompt admission cancellation", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.cancel_prompt_admission).toEqual({
-			minProtocol: 7,
+			minProtocol: 8,
 			minSchemaRevision: 8,
 			capability: "prompt_admission_cancellation",
 		});
@@ -106,7 +106,7 @@ describe("daemon protocol helpers", () => {
 
 		// Refine events remain on the original session-event channel across later schema revisions.
 		expect(DAEMON_SCHEMA_REVISION).toBeGreaterThanOrEqual(6);
-		expect(DAEMON_OUTBOUND_COMPATIBILITY.session_event).toEqual({ minProtocol: 7 });
+		expect(DAEMON_OUTBOUND_COMPATIBILITY.session_event).toEqual({ minProtocol: 8 });
 		expect(event).toMatchObject({ event: { type: "refine_failed", error: "disk full" } });
 	});
 
@@ -133,9 +133,9 @@ describe("daemon protocol helpers", () => {
 			event: { type: "bash_end", exitCode: 0, cancelled: false, truncated: false },
 		};
 
-		expect(DAEMON_COMMAND_COMPATIBILITY.start_side_question).toEqual({ minProtocol: 7 });
-		expect(DAEMON_COMMAND_COMPATIBILITY.execute_bash).toEqual({ minProtocol: 7 });
-		expect(DAEMON_OUTBOUND_COMPATIBILITY.session_event).toEqual({ minProtocol: 7 });
+		expect(DAEMON_COMMAND_COMPATIBILITY.start_side_question).toEqual({ minProtocol: 8 });
+		expect(DAEMON_COMMAND_COMPATIBILITY.execute_bash).toEqual({ minProtocol: 8 });
+		expect(DAEMON_OUTBOUND_COMPATIBILITY.session_event).toEqual({ minProtocol: 8 });
 		expect(oldClientSideQuestion).not.toHaveProperty("previousTurns");
 		expect(oldClientBash).not.toHaveProperty("transient");
 		expect(oldClientBash).not.toHaveProperty("runId");
@@ -179,11 +179,11 @@ describe("daemon protocol helpers", () => {
 		expect(eventMeta.cursor).toEqual({ generation: "active-1", sequence: 3 });
 	});
 
-	it("rejects command envelopes from pre-session-action protocols", () => {
+	it("rejects old-client command envelopes after the incompatible notebook migration", () => {
 		const command = { id: "cmd-1", type: "attach", activeSessionId: "active-1" } as const;
 
-		expect(isDaemonCommandEnvelope(createDaemonCommandEnvelope(command, "cmd-1", "client-1", 7))).toBe(true);
-		expect(isDaemonCommandEnvelope(createDaemonCommandEnvelope(command, "cmd-1", "client-1", 6))).toBe(false);
+		expect(isDaemonCommandEnvelope(createDaemonCommandEnvelope(command, "cmd-1", "client-1", 8))).toBe(true);
+		expect(isDaemonCommandEnvelope(createDaemonCommandEnvelope(command, "cmd-1", "client-1", 7))).toBe(false);
 	});
 
 	it("keeps attachment routing out of the durable mutation journal", () => {

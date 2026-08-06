@@ -1,0 +1,9 @@
+{
+	"name": "@prime-agent/skill-websearch",
+	"private": true,
+	"type": "module",
+	"primeAgent": {
+		"entry": "src/index.ts",
+		"global": "websearch"
+	}
+}

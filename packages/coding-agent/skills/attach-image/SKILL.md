@@ -21,22 +21,21 @@ For *programmatic* work on an image — measuring pixels, cropping, resizing,
 computing a hash, comparing files byte-by-byte — open it in the kernel with a
 library instead:
 
-```python
-from PIL import Image
-img = Image.open("diagram.png")
-print(img.size)
+```javascript
+const image = await Bun.file("diagram.png").arrayBuffer();
+console.log(image.byteLength);
 ```
 
 That path does not put the image in the model's context; it only lets you
-compute over it. Use `attach_image` when you need to *see* the image.
+compute over it. Use `attachImage` when you need to *see* the image.
 
 ## Usage
 
-Call the prepared `attach_image` import directly in the IPython kernel:
+Call the prepared `attachImage` global directly in the Bun REPL:
 
-```python
-print(await attach_image("diagram.png"))
-print(await attach_image("a.png", "b.jpg"))
+```javascript
+console.log(await attachImage("diagram.png"));
+console.log(await attachImage("a.png", "b.jpg"));
 ```
 
 The skill automatically resizes and compresses large images before loading them

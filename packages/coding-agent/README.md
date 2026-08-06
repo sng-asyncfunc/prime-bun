@@ -66,9 +66,9 @@ prime-agent
 /login  # Then select provider
 ```
 
-Then just talk to Prime Agent. By default, Prime Agent gives the model one tool: `ipython`. The model uses the persistent kernel to read files, run commands, edit code, and inspect data. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Prime Agent packages](#prime-agent-packages).
+Then just talk to Prime Agent. By default, Prime Agent gives the model one tool: `javascript`. The model uses the persistent Bun notebook to read files, run commands, edit code, inspect data, and retain JavaScript state. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Prime Agent packages](#prime-agent-packages).
 
-The Python kernel runtime is set up automatically on first invocation. Set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`.
+The runtime is prepared automatically on first invocation and requires Bun 1.3.14 or newer. Set `PRIME_AGENT_KERNEL_BUN` to use a specific supported Bun executable.
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
@@ -291,7 +291,7 @@ Place in `~/.prime/agent/prompts/`, `.prime/agent/prompts/`, or a [Prime Agent p
 
 ### Skills
 
-On-demand capability packages following the [Agent Skills standard](https://agentskills.io). At startup, Prime Agent gives the model each visible skill's name, type, description, and location. The full `SKILL.md` stays out of context until the model inspects it with `ipython` or you explicitly invoke `/skill:name`.
+On-demand capability packages following the [Agent Skills standard](https://agentskills.io). At startup, Prime Agent gives the model each visible skill's name, type, description, and location. The full `SKILL.md` stays out of context until the model inspects it with `javascript` or you explicitly invoke `/skill:name`.
 
 ```markdown
 <!-- ~/.prime/agent/skills/my-skill/SKILL.md -->
@@ -307,7 +307,7 @@ description: Use this skill when the user asks about X.
 2. Then that
 ```
 
-Skills can also be Python-backed. A Python skill is a normal skill directory with `SKILL.md` plus a Python package at `src/<import_name>/`. Prime Agent installs it into the persistent IPython kernel and exposes it by import name, so the model can call it directly, inspect it with `help()`, or use any console scripts the skill declares.
+Skills can also be JavaScript-backed. A JavaScript skill is a normal skill directory with `SKILL.md`, a `package.json` declaring `primeAgent.entry` and `primeAgent.global`, and a JavaScript or TypeScript entry module. Prime Agent loads it into the persistent Bun notebook and exposes the prepared value as a global.
 
 Place in `~/.prime/agent/skills/`, `~/.agents/skills/`, `.prime/agent/skills/`, or `.agents/skills/` (from `cwd` up through parent directories) or a [Prime Agent package](#prime-agent-packages) to share with others. See [docs/skills.md](docs/skills.md).
 
@@ -315,12 +315,11 @@ Prime Agent ships with a built-in `websearch` skill (Google search via the [Serp
 
 ### MCP Integrations
 
-Connect external services (Linear, Notion, …) over the [Model Context Protocol](https://modelcontextprotocol.io). Consistent with the single-tool design, MCP is **not** exposed as new agent tools — each integration is a Python skill package the model imports and calls from the kernel:
+Connect external services (Linear, Notion, …) over the [Model Context Protocol](https://modelcontextprotocol.io). Consistent with the single-tool design, MCP is **not** exposed as new agent tools—each integration is a JavaScript skill global the model calls from the Bun notebook:
 
-```python
-import linear
-issues = await linear.list_issues(team="Engineering")   # tools auto-discovered from the server
-help(linear.list_issues)                                 # description + argument schema
+```javascript
+const tools = await linear.listTools();
+const issues = await linear.list_issues({ team: "Engineering" });
 ```
 
 Built-in integrations for Linear and Notion ship disabled. **Logging in enables them**: open `/login`, switch to **MCP Connections**, pick the integration, and complete OAuth in the browser. The integration's skill then becomes visible and is auto-imported into the kernel. `/mcp` opens the same tab, while its subcommands support direct management:
@@ -331,9 +330,9 @@ Built-in integrations for Linear and Notion ship disabled. **Logging in enables 
 /mcp logout <name>   disconnect
 ```
 
-Credentials are stored once in `~/.prime/agent/auth.json` (under `mcp:<name>`); the kernel reads them directly and the host refreshes expired tokens. Enablement is derived from whether valid credentials exist, so there is no separate on/off switch.
+Credentials are stored once in `~/.prime/agent/auth.json` (under `mcp:<name>`); the JavaScript skill reads them directly and the host refreshes expired tokens. Enablement is derived from whether valid credentials exist, so there is no separate on/off switch.
 
-**Add your own server.** Declare it under `mcpServers` in settings, then ship a tiny Python skill package that subclasses `McpIntegration`:
+**Add your own server.** Declare it under `mcpServers` in settings, then ship a JavaScript skill package that uses the official MCP SDK:
 
 ```jsonc
 // ~/.prime/agent/settings.json
@@ -344,23 +343,18 @@ Credentials are stored once in `~/.prime/agent/auth.json` (under `mcp:<name>`); 
 }
 ```
 
-```python
-# ~/.prime/agent/skills/acme/src/acme/__init__.py
-from rlm import McpIntegration
-
-class Acme(McpIntegration):
-    server = "acme"
-    url = "https://mcp.acme.com/mcp"
-
-acme = Acme()
-
-def __getattr__(name):     # so `import acme; await acme.<tool>(...)` works
-    return getattr(acme, name)
+```jsonc
+// ~/.prime/agent/skills/acme/package.json
+{
+  "type": "module",
+  "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0" },
+  "primeAgent": { "entry": "src/index.ts", "global": "acme" }
+}
 ```
 
-The base class connects with the official `mcp` SDK, injects the bearer token from `auth.json`, and binds the server's tools as async methods. Use `await acme.call_tool("name", {...})` for tools whose names aren't valid Python identifiers, or a static `bearerTokenEnvVar` instead of OAuth.
+The entry module exports `createSkill(context)`, connects with `@modelcontextprotocol/sdk`, and returns the callable or object exposed as `acme`. See the full guide for authentication, tool discovery, and result handling.
 
-See [docs/mcp-integrations.md](docs/mcp-integrations.md) for the full authoring guide (package layout, auth options, the `McpIntegration` API, and caveats).
+See [docs/mcp-integrations.md](docs/mcp-integrations.md) for the full authoring guide.
 
 ### Extensions
 
@@ -578,7 +572,7 @@ Use `prime-agent session export <file> [output]` to export a saved session to HT
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools by default |
 
-Available built-in tools: `ipython`
+Available built-in tools: `javascript`
 
 ### Resource Options
 
@@ -657,8 +651,8 @@ prime-agent --model sonnet:high "Solve this complex problem"
 # Limit model cycling
 prime-agent --models "claude-*,gpt-4o"
 
-# Restrict to the built-in IPython tool
-prime-agent --tools ipython -p "Review the code"
+# Restrict to the built-in JavaScript tool
+prime-agent --tools javascript -p "Review the code"
 
 # High thinking level
 prime-agent --thinking high "Solve this complex problem"
@@ -679,7 +673,9 @@ prime-agent --thinking high "Solve this complex problem"
 | `PRIME_API_KEY` | Prime Inference API key; also used for trace sharing if it has `agent_traces` scope |
 | `PRIME_AGENT_TRACES_API_KEY` | Prime API key used only for opt-in trace sharing |
 | `PRIME_AGENT_TRACES_BASE_URL` | Override the Prime Agent trace upload API base URL |
-| `PRIME_AGENT_KERNEL_PYTHON` | Use an existing Python environment with `ipykernel` instead of auto-bootstrapping `~/.prime/agent/kernel-venv` |
+| `PRIME_AGENT_KERNEL_BUN` | Use a specific Bun executable; it must be Bun 1.3.14 or newer |
+| `PRIME_AGENT_KERNEL_BUN_DIR` | Override the prepared Bun runtime directory (default: `~/.prime/agent/kernel-bun`) |
+| `PRIME_AGENT_INSTALL_BUN` | Set to `1` to allow automatic Bun installation or `0` to require a preinstalled runtime |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |
 
 The remaining `PI_*` variables in this table are compatibility names still read by the current runtime. They do not change the application name, command, or default `~/.prime/agent` configuration path.

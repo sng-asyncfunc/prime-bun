@@ -6,7 +6,6 @@ import { canonicalSessionPath } from "./session-lease.js";
 
 export const AGENT_MESSAGE_CUSTOM_TYPE = "agent_message";
 export const AGENT_MESSAGE_SKILL_NAME = "agent-message";
-export const AGENT_MESSAGE_IMPORT_NAME = "agent_message";
 export const AGENT_MESSAGE_SOURCE = "agent_message";
 export const AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL = "Agent message received";
 export const DEFAULT_AGENT_MESSAGE_MAX_CHARS = 16_384;

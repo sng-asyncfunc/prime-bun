@@ -65,7 +65,7 @@ await loader.reload();
 const { session } = await createAgentSession({ resourceLoader: loader, authStorage, modelRegistry });
 
 // Tool selection
-const { session } = await createAgentSession({ tools: ["ipython"], authStorage, modelRegistry });
+const { session } = await createAgentSession({ tools: ["javascript"], authStorage, modelRegistry });
 
 // In-memory
 const { session } = await createAgentSession({
@@ -93,7 +93,7 @@ const { session } = await createAgentSession({
   authStorage: customAuth,
   modelRegistry: customRegistry,
   resourceLoader,
-  tools: ["ipython"],
+  tools: ["javascript"],
   customTools: [{ tool: myTool }],
   sessionManager: SessionManager.inMemory(),
   settingsManager: SettingsManager.inMemory(),
@@ -118,7 +118,7 @@ await session.prompt("Hello");
 | `agentDir` | `~/.prime/agent` | Config directory |
 | `model` | From settings/first available | Model to use |
 | `thinkingLevel` | From settings/"off" | off, low, medium, high |
-| `tools` | `["ipython"]` | Built-in tools |
+| `tools` | `["javascript"]` | Built-in tools |
 | `customTools` | `[]` | Additional tool definitions |
 | `resourceLoader` | DefaultResourceLoader | Resource loader for extensions, skills, prompts, themes |
 | `sessionManager` | `SessionManager.create(cwd)` | Persistence |

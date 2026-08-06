@@ -118,7 +118,7 @@ Example of a well-formed `[Unreleased]` section:
 - Added `/effort` to set the reasoning level, with autocomplete for the levels the current model supports.
 - Changed `prime-agent` to open a new chat by default instead of resuming the previous session.
 - Fixed onboarding showing no models after entering a provider key.
-- Removed the interactive `!` / `!!` bash shortcuts; use IPython instead.
+- Replaced the Python notebook with the persistent Bun JavaScript notebook.
 ```
 
 ### Rules

@@ -1,6 +1,6 @@
 ---
 name: refine
-description: Trigger continual harness refinement from IPython. Use when you notice a repeated failure, reusable tactic, delegation role, or behavior policy that should be persisted as a harness entry. Returns immediately; refinement runs when the current turn ends.
+description: Trigger continual harness refinement from the Bun REPL. Use when you notice a repeated failure, reusable tactic, delegation role, or behavior policy that should be persisted as a harness entry. Returns immediately; refinement runs when the current turn ends.
 ---
 
 # Refine
@@ -9,13 +9,13 @@ Refinement analyzes the conversation trajectory and applies small, evidence-back
 updates to the continual harness (prompts, memories, skills, subagent specs).
 The implementation lives in the host (the same one behind the user's `/refine`
 command); this skill is the kernel-side interface to it. Call it directly from
-IPython:
+Bun:
 
-```python
-await refine.status()
-await refine.run()
-await refine.run("create a memory about always checking git status before committing")
-await refine.run("promote the error-handling pattern to a global skill", global_=True)
+```javascript
+await refine.status();
+await refine.run();
+await refine.run("create a memory about always checking git status before committing");
+await refine.run("promote the error-handling pattern to a global skill", { global: true });
 ```
 
 ## API
@@ -23,10 +23,10 @@ await refine.run("promote the error-handling pattern to a global skill", global_
 - `await refine.status()` — current refine state as a dict: `pending` (whether a
   requested refine is already queued for this turn) and `in_flight` (whether a
   refine is currently planning or applying).
-- `await refine.run(instructions=None, global_=False)` — schedule refinement.
-  Returns `{"scheduled": True}` immediately, or `{"scheduled": False, "reason": ...}`
+- `await refine.run(instructions?, { global }?)` — schedule refinement.
+  Returns `{"scheduled": true}` immediately, or `{"scheduled": false, "reason": ...}`
   when refinement cannot start. Optional `instructions` focus the refinement on a
-  specific observation. Set `global_=True` to target the global harness store
+  specific observation. Set `global: true` to target the global harness store
   (cross-session); omit for local (session-scoped) refinement.
 
 ## Rules

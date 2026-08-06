@@ -21,7 +21,7 @@ import { type AcpStopReason, acpStopReason } from "./acp-stop-reason.js";
  *
  * prime-agent acts as an ACP agent over NDJSON on stdio, driving an
  * `AgentConnection` in-process. It deliberately does not shell out to RPC mode
- * and translate: prime-agent's differentiators (IPython-only tools, subagents,
+ * and translate: prime-agent's differentiators (Bun-backed tools, subagents,
  * autonomous gates) are visible as first-class events here, and a translating
  * adapter is exactly what flattens them away.
  *

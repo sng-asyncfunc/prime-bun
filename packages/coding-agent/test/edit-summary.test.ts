@@ -52,7 +52,7 @@ describe("edit summaries", () => {
 		).toEqual([{ path: "a.ts", added: 1, removed: 1 }]);
 		expect(
 			getToolFileChanges(
-				"ipython",
+				"javascript",
 				{},
 				{ details: { diffs: [{ path: "b.ts", oldStr: "old", newStr: "new" }] }, isError: true },
 				"/tmp",
@@ -68,10 +68,10 @@ describe("edit summaries", () => {
 		expect(stripAnsi(line)).toBe("2 files changed | +5 -5");
 	});
 
-	test("coalesces direct and IPython edits by file", () => {
+	test("coalesces direct and JavaScript edits by file", () => {
 		const message = assistant([
 			{ type: "toolCall", id: "one", name: "edit", arguments: { path: "a.ts" } },
-			{ type: "toolCall", id: "two", name: "ipython", arguments: {} },
+			{ type: "toolCall", id: "two", name: "javascript", arguments: {} },
 		]);
 		const changes = new Map();
 		mergeTurnFileChanges(
@@ -79,7 +79,7 @@ describe("edit summaries", () => {
 			message,
 			[
 				result("one", "edit", { diff: "-1 old\n+1 new" }),
-				result("two", "ipython", { diffs: [{ path: "a.ts", oldStr: "new", newStr: "newer" }] }),
+				result("two", "javascript", { diffs: [{ path: "a.ts", oldStr: "new", newStr: "newer" }] }),
 			],
 			"/tmp",
 		);
@@ -90,7 +90,7 @@ describe("edit summaries", () => {
 		const absolutePath = `${homedir()}/same.ts`;
 		const message = assistant([
 			{ type: "toolCall", id: "one", name: "edit", arguments: { path: "~/same.ts" } },
-			{ type: "toolCall", id: "two", name: "ipython", arguments: {} },
+			{ type: "toolCall", id: "two", name: "javascript", arguments: {} },
 		]);
 		const changes = new Map();
 		mergeTurnFileChanges(
@@ -98,7 +98,7 @@ describe("edit summaries", () => {
 			message,
 			[
 				result("one", "edit", { diff: "-1 old\n+1 new" }),
-				result("two", "ipython", { diffs: [{ path: absolutePath, oldStr: "new", newStr: "newer" }] }),
+				result("two", "javascript", { diffs: [{ path: absolutePath, oldStr: "new", newStr: "newer" }] }),
 			],
 			"/tmp",
 		);
@@ -116,7 +116,7 @@ describe("edit summaries", () => {
 			symlinkSync(realCwd, linkedCwd, "dir");
 
 			const message = assistant([
-				{ type: "toolCall", id: "one", name: "ipython", arguments: {} },
+				{ type: "toolCall", id: "one", name: "javascript", arguments: {} },
 				{ type: "toolCall", id: "two", name: "edit", arguments: { path: "same.ts" } },
 			]);
 			const changes = new Map();
@@ -124,7 +124,7 @@ describe("edit summaries", () => {
 				changes,
 				message,
 				[
-					result("one", "ipython", { diffs: [{ path: realpathSync(file), oldStr: "old", newStr: "new" }] }),
+					result("one", "javascript", { diffs: [{ path: realpathSync(file), oldStr: "old", newStr: "new" }] }),
 					result("two", "edit", { diff: "-1 new\n+1 newer" }),
 				],
 				linkedCwd,

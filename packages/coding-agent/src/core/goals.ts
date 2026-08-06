@@ -25,7 +25,7 @@ export interface GoalState {
 	lastError?: string;
 }
 
-/** Goal payload returned to the kernel-side goal skill. Keys are Python-conventional snake_case. */
+/** Goal payload returned to the REPL-side goal skill. Keys preserve the host wire format. */
 export type SerializedGoal = {
 	goal_id?: string;
 	objective: string;
@@ -37,7 +37,7 @@ export type SerializedGoal = {
 	updated_at?: number;
 };
 
-/** Reply payload for goal.* host requests from the IPython kernel. */
+/** Reply payload for goal.* host requests from the Bun worker. */
 export type GoalHostResponse = {
 	goal: SerializedGoal | null;
 	remaining_tokens: number | null;
@@ -224,7 +224,7 @@ Goal state:
 
 The goal persists across turns. Ending one turn does not reduce or redefine the objective. If the goal is not complete yet, make concrete progress toward the full objective.
 
-Before marking the goal complete, audit the current state against every requirement in the objective. Do not rely on intent, partial progress, memory of earlier work, or a plausible final answer as proof of completion. If the objective is achieved, run \`await goal.complete()\` in ipython so usage accounting is preserved.
+Before marking the goal complete, audit the current state against every requirement in the objective. Do not rely on intent, partial progress, memory of earlier work, or a plausible final answer as proof of completion. If the objective is achieved, run \`await goal.complete()\` in JavaScript so usage accounting is preserved.
 
 Do not call \`goal.complete()\` unless the goal is complete. Do not mark a goal complete merely because the budget is nearly exhausted or because you are stopping work.`;
 }

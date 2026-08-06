@@ -52,11 +52,12 @@ describe("createAgentSessionFromServices", () => {
 							baseDir: tempDir,
 							sourceInfo: createSyntheticSourceInfo("<test:agent-message>", { source: "test" }),
 							disableModelInvocation: true,
-							kind: "python" as const,
-							python: {
-								importName: "agent_message",
+							kind: "javascript" as const,
+							javascript: {
+								globalName: "agentMessage",
+								entryPath: join(tempDir, "src", "index.ts"),
 								packagePath: tempDir,
-								pyprojectPath: join(tempDir, "pyproject.toml"),
+								packageJsonPath: join(tempDir, "package.json"),
 							},
 						},
 					],

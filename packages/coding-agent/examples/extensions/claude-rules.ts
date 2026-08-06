@@ -2,7 +2,7 @@
  * Claude Rules Extension
  *
  * Scans the project's .claude/rules/ folder for rule files and lists them
- * in the system prompt. The agent can then use ipython to load
+ * in the system prompt. The agent can then use javascript to load
  * specific rules when needed.
  *
  * Best practices for .claude/rules/:
@@ -79,7 +79,7 @@ The following project rules are available in .claude/rules/:
 
 ${rulesList}
 
-When working on tasks related to these rules, use ipython to load the relevant rule files for guidance.
+When working on tasks related to these rules, use javascript to load the relevant rule files for guidance.
 `,
 		};
 	});

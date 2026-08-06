@@ -517,7 +517,7 @@ describe("buildRlmChildSnapshots", () => {
 					role: "assistant",
 					content: [
 						{ type: "text", text: "The repo is an npm workspace." },
-						{ type: "toolCall", id: "tool-1", name: "ipython", arguments: {} },
+						{ type: "toolCall", id: "tool-1", name: "javascript", arguments: {} },
 					],
 				},
 			] as AgentMessage[],

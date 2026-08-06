@@ -86,8 +86,8 @@ export type {
 	InputEvent,
 	InputEventResult,
 	InputSource,
-	IpythonToolCallEvent,
-	IpythonToolResultEvent,
+	JavaScriptToolCallEvent,
+	JavaScriptToolResultEvent,
 	KeybindingsManager,
 	LoadExtensionsResult,
 	// Events - Message
@@ -162,7 +162,7 @@ export {
 	defineTool,
 	isBashToolResult,
 	isEditToolResult,
-	isIpythonToolResult,
+	isJavaScriptToolResult,
 	isToolCallEventType,
 } from "./types.js";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.js";

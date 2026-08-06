@@ -103,13 +103,13 @@ describe("AgentActivityTracker", () => {
 		tracker.handleEvent({ type: "message_end", message: first });
 		expect(tracker.getStatus()).toEqual({ activity: "waiting", direction: "up", tokens: 500 });
 
-		tracker.handleEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "ipython", args: {} });
+		tracker.handleEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "javascript", args: {} });
 		expect(tracker.getStatus()).toEqual({ activity: "executing", direction: "up", tokens: 500 });
 
 		tracker.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "t1",
-			toolName: "ipython",
+			toolName: "javascript",
 			result: {},
 			isError: false,
 		});
@@ -123,12 +123,12 @@ describe("AgentActivityTracker", () => {
 
 	test("stays executing while a parallel tool call is still running", () => {
 		const tracker = new AgentActivityTracker();
-		tracker.handleEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "ipython", args: {} });
-		tracker.handleEvent({ type: "tool_execution_start", toolCallId: "t2", toolName: "ipython", args: {} });
+		tracker.handleEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "javascript", args: {} });
+		tracker.handleEvent({ type: "tool_execution_start", toolCallId: "t2", toolName: "javascript", args: {} });
 		tracker.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "t1",
-			toolName: "ipython",
+			toolName: "javascript",
 			result: {},
 			isError: false,
 		});
@@ -136,7 +136,7 @@ describe("AgentActivityTracker", () => {
 		tracker.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "t2",
-			toolName: "ipython",
+			toolName: "javascript",
 			result: {},
 			isError: false,
 		});

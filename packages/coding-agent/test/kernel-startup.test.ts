@@ -23,16 +23,23 @@ describe("KernelManager startup", () => {
 		}
 	});
 
-	it("surfaces kernels that exit before resolving ports", async () => {
-		const python = join(tempDir, "python");
-		writeExecutable(python, ["#!/bin/sh", 'echo "fake kernel died before binding" >&2', "exit 42", ""].join("\n"));
+	it("surfaces Bun workers that exit before initialization", async () => {
+		const bun = join(tempDir, "bun");
+		writeExecutable(
+			bun,
+			[
+				"#!/bin/sh",
+				'if [ "$1" = "--version" ]; then echo "1.3.14"; exit 0; fi',
+				'echo "fake Bun worker died before initialization" >&2',
+				"exit 42",
+				"",
+			].join("\n"),
+		);
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		const manager = new KernelManager({ python, cwd: tempDir });
+		const manager = new KernelManager({ bun, cwd: tempDir, workerPath: join(tempDir, "worker.ts") });
 
 		try {
-			await expect(manager.execute("print(1)")).rejects.toThrow(
-				/Kernel exited before resolving ports[\s\S]*fake kernel died before binding/,
-			);
+			await expect(manager.execute("console.log(1)")).rejects.toThrow(/Bun worker exited unexpectedly/);
 		} finally {
 			errorSpy.mockRestore();
 			await manager.dispose();

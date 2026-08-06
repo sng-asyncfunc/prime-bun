@@ -1,269 +1,164 @@
 # RLM Runtime Architecture
 
-Prime Agent gives each agent session a persistent IPython kernel and a native recursive sub-agent interface. The Python `rlm` package is a model-facing shim; the TypeScript host owns child execution, persistence, usage accounting, and lifecycle.
+Prime Agent gives each agent session a persistent Bun notebook and a native recursive subagent interface. JavaScript code runs in a dedicated Bun worker; the TypeScript host owns child execution, persistence, usage accounting, and lifecycle.
 
-## Architecture
-
-```mermaid
-flowchart TD
-    session["AgentSession · TypeScript<br/>IPython tool + host request handlers"]
-    manager["KernelManager · TypeScript<br/>execution + comm dispatch"]
-    kernel["IPython kernel process · Python"]
-    runtime["prime-agent-runtime<br/>rlm module + Python skills"]
-    code["Model-executed Python code"]
-
-    session -->|"owns"| manager
-    manager <-->|"Jupyter protocol over ZeroMQ"| kernel
-    kernel --> runtime --> code
-    code -->|"rlm.run · goal.* · agent_message.*"| runtime
-    runtime -->|"comm target: host.request"| manager
-    manager -->|"typed dispatch"| session
-```
-
-When the model delegates work:
-
-```python
-handle = await rlm("inspect the API", name="api-reviewer")
-print(handle.rlm_child_id, handle.name, handle.session_dir, handle.model)
-```
-
-the call travels through a Jupyter comm target named `host.request`. `KernelManager` dispatches request type `rlm.run` to the parent `AgentSession`, which starts a child through the same TypeScript agent machinery as the parent. The call returns over the comm immediately after task admission with a child handle; it never waits for or returns the child's answer. Results arrive only through explicit `agent_message` replies or files.
-
-The same bridge supports other typed host requests. Bundled Python skills such as `goal` call `rlm.host_request("goal.get", ...)`; state and policy remain in the TypeScript host.
-
-## Delegation Flow
+## Components
 
 ```mermaid
-sequenceDiagram
-    participant M as Parent model
-    participant H as Parent AgentSession
-    participant K as IPython kernel
-    participant C as Child AgentSession
-    participant P as Model provider
+flowchart LR
+    model["Model"]
+    session["AgentSession · TypeScript"]
+    manager["KernelManager"]
+    worker["Bun worker process"]
+    globals["rlm · agentMessage · skills"]
+    children["Child AgentSession instances"]
 
-    M->>H: IPython tool call
-    H->>K: execute await rlm("inspect the API")
-    K->>H: host.request · rlm.run
-    H->>H: check depth and resolve model
-    H->>H: admit child task and update registry
-    H-->>K: RLMSpawnHandle
-    K-->>H: tool output
-    H-->>M: IPython result
-    H->>C: create child runtime and prompt
-    loop Child agent loop
-        C->>P: stream model request
-        P-->>C: response or tool call
-    end
-    C-->>H: explicit agent_message reply
-    H-->>M: ordinary agent message
-    H->>H: update registry and attribute usage
+    model -->|"javascript tool call"| session
+    session --> manager
+    manager -->|"fd 3 · commands"| worker
+    worker -->|"fd 4 · results and host requests"| manager
+    worker <--> globals
+    session --> children
+    globals -->|"typed host request"| session
+    children -->|"messages · files"| session
 ```
 
-## Component Ownership
+The worker is a durable control process, not a second agent implementation. Provider calls and agent loops never run inside Bun.
 
-| Component | Responsibility |
-|---|---|
-| `src/core/kernel/index.ts` | ZeroMQ sockets, Jupyter framing, execution, comm dispatch, interrupt, and shutdown. |
-| `src/core/tools/ipython.ts` | Agent tool wrapper, lazy kernel provisioning, namespace bootstrap, and output shaping. |
-| `src/core/agent-session.ts` | RLM policy, child creation, registry, usage attribution, cancellation, and goal handlers. |
-| `src/core/rlm-runtime.ts` | Typed request/spawn-handle validation for `rlm.run`, model discovery, list, and delete. |
-| `prime-agent-runtime/src/rlm/` | Python shim, handle types, callable `rlm`, and session-backed harness state. |
+## Runtime resolution and provisioning
 
-The Python side does not call providers or implement an agent loop.
+Prime Agent requires Bun 1.3.14 or newer. Resolution order is:
 
-## Kernel Lifecycle
+1. `PRIME_AGENT_KERNEL_BUN`, when set;
+2. `bun` on `PATH`; or
+3. `~/.bun/bin/bun`.
 
-The kernel is created lazily on first IPython use. Python resolution is:
+If Bun is missing, interactive setup can install it from the official Bun installer. `PRIME_AGENT_INSTALL_BUN=1` allows unattended installation and `PRIME_AGENT_INSTALL_BUN=0` disables it.
 
-1. `PRIME_AGENT_KERNEL_PYTHON`, when it can import `ipykernel`;
-2. `~/.prime/agent/kernel-venv/bin/python`, bootstrapped with `uv`; or
-3. the XDG data location when `~/.prime` is not writable.
+The prepared runtime lives at `~/.prime/agent/kernel-bun` by default; `PRIME_AGENT_KERNEL_BUN_DIR` overrides it. First use copies the worker assets and installs their pinned production dependencies. A content hash and schema marker prevent stale assets from being reused. Later starts work offline while the prepared runtime remains current.
 
-The managed environment includes Python 3.11, `ipykernel`, and `prime-agent-runtime`. A bootstrap marker detects stale environments.
+## Worker protocol
 
-Startup creates a temporary Jupyter connection file with loopback TCP ports and an HMAC key, starts `python -m ipykernel_launcher`, connects shell, IOPub, and control sockets, waits for subscription propagation, and probes readiness with `kernel_info_request`.
+`KernelManager` starts one Bun worker per session. Standard input and output remain available to notebook code. Protocol traffic uses two extra pipes:
 
-The manager owns the child process, connection directory, ZeroMQ sockets, and a bounded stderr tail. Shutdown sends `shutdown_request`, closes sockets, terminates the process as a fallback, and removes temporary connection data. Persistent sessions may snapshot the kernel namespace into their session artifact directory for revival.
+- file descriptor 3 carries newline-delimited commands from the host to the worker;
+- file descriptor 4 carries newline-delimited results, stream events, display data, and host requests from the worker to the host.
 
-## Jupyter Transport
+Every message carries a protocol version and correlation ID. The manager rejects mismatched protocol versions, malformed responses, and unknown reply IDs. Cell execution is serialized so a notebook has one ordered shared namespace.
 
-Prime Agent uses three channels:
+Notebook output is separate from protocol output. `console.log`, `console.error`, Bun Shell streams, display attachments, and final expression values are collected for the active cell without corrupting the control channel.
 
-```text
-shell    execute_request, execute_reply, kernel_info_request
-iopub    stdout, stderr, results, errors, status, comm_open
-control  interrupt, shutdown, and host-request replies during execution
+## Cell execution
+
+Cells accept JavaScript and TypeScript syntax with top-level `await`. Acorn identifies top-level declarations and the worker rewrites them into durable global bindings. Later cells can reuse those bindings:
+
+```javascript
+const report = await Bun.file("report.json").json();
+report.items.length;
 ```
 
-Messages use normal Jupyter multipart framing:
-
-```text
-<IDS|MSG>
-signature
-header
-parent_header
-metadata
-content
+```javascript
+const largeItems = report.items.filter((item) => item.size > 1000);
+largeItems.length;
 ```
 
-JSON frames are signed with HMAC-SHA256. Ordinary output is accepted only when `parent_header.msg_id` matches the active execution. Comm messages are handled before that filter because asynchronous Python tasks can open comms after their scheduling cell returns to idle.
+The final expression is inspected and returned separately from stdout and stderr. Bun Shell is preloaded as `$`, and `sh(command)` is available for dynamic command strings. Use the target project's own package manager or executable environment for project commands.
 
-Calls to `KernelManager.execute()` are serialized. One kernel has one shared namespace and does not run two ordinary IPython cells concurrently. RLM child agents can still run concurrently because each delegation uses a distinct comm and child runtime.
+## Native globals and skills
 
-## Why Host-Request Responses Use the Control Channel
+The worker prepares these runtime globals before the first cell:
 
-A running cell can await task admission:
+- `rlm` for recursive child admission, listing, deletion, and typed host requests;
+- `agentMessage` for parent, child, and sibling messages;
+- `harness` for continual-harness reads and writes;
+- `$` and `sh` for project commands; and
+- enabled JavaScript-backed skills.
 
-```python
-handle = await rlm("subtask")
+A JavaScript-backed skill declares its entry and global name in `package.json`:
+
+```json
+{
+  "type": "module",
+  "primeAgent": {
+    "entry": "src/index.ts",
+    "global": "releaseAudit"
+  }
+}
 ```
 
-IPython processes shell messages serially. Sending the admission response on the shell channel would deadlock: the active `execute_request` cannot finish until the response arrives, while the kernel will not process that shell response until the request finishes.
+The entry module may export `createSkill(context)`. Its context contains the live working directory, `display(mimeType, data)`, and `hostRequest(type, payload)`. If loading fails, Prime Agent exposes an unavailable placeholder that reports the original error instead of preventing the notebook from starting.
 
-The Python shim therefore registers comm handlers on the control channel, and the host sends admission responses there. Future completion is scheduled with `loop.call_soon_threadsafe()` because the control handler may run on another thread. Child answers do not use this response path; they arrive later through explicit `agent_message` replies or files.
+## RLM child lifecycle
 
-## Python API
+`await rlm(prompt, options)` sends a typed host request. Admission returns immediately with a handle containing `rlmChildId`, `name`, `sessionDir`, and `model`. It never returns the child's eventual answer.
 
-`prime-agent-runtime` exports:
-
-```python
-rlm
-run(prompt: str, **kwargs)
-find_models(query: str = "", limit: int = 8)
-list_subagents()
-delete_subagent(selector)
-host_request(request_type: str, payload: dict | None = None)
-RLMSpawnHandle
-RLMModel
-RLMSubagent
-TokenUsage
+```javascript
+const child = await rlm("Audit authorization and reply to the parent.", {
+  name: "authorization-auditor",
+});
 ```
 
-The IPython bootstrap places the callable `rlm` object in the user namespace, so these are equivalent:
+Children reply explicitly:
 
-```python
-await rlm("subtask")
-await rlm.run("subtask")
+```javascript
+await agentMessage.send(findings, { receiverRole: "parent" });
 ```
 
-`RLMSpawnHandle` contains `rlm_child_id`, `name`, `session_dir`, and `model`. It confirms admission only and never contains the child's answer.
+The parent can recover or address direct children later:
 
-Supported `rlm.run` options are:
-
-- `name`: a unique readable child session name; and
-- `model`: an exact `provider/model` selector from `rlm.find_models()`.
-
-Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. If an exact selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
-
-## Child Execution
-
-`AgentSession.runRlmChild()` performs the following sequence:
-
-1. Check `RLM_DEPTH < RLM_MAX_DEPTH`.
-2. Resolve the requested model or inherit the parent model.
-3. Create a `sub-xxxxxxxx` child directory under the parent artifact directory.
-4. Admit the task into the parent registry and return its `RLMSpawnHandle`.
-5. In detached work, create a child `SessionManager`, `Agent`, and `AgentSession`.
-6. Reuse provider hooks, resource loader, model registry, tools, transport, retry settings, and thinking configuration.
-7. Run the child prompt, retain its session, and update lifecycle state independently of the admission call.
-8. Attribute child usage to the parent assistant turn and persist the attribution.
-
-Children receive incremented `RLM_DEPTH`, the inherited maximum depth, and their own `RLM_SESSION_DIR`. The default maximum depth is 1, so root sessions may create children and those children may not create grandchildren unless the limit is configured higher.
-
-## Independent Delegation
-
-Each direct call admits an independent child and returns its handle immediately:
-
-```python
-api_review = await rlm("review the API", name="api-reviewer")
-test_review = await rlm("review the tests", name="test-reviewer")
-audit = await rlm("slow independent audit", name="audit-reviewer")
+```javascript
+const children = await rlm.listSubagents();
+await agentMessage.send("Also inspect token refresh.", {
+  receiverRole: "child",
+  receiverName: child.name,
+});
 ```
 
-End the turn instead of waiting for completion. Children send requested answers with `await agent_message.send(message, receiver_role="parent")`, and replies arrive as ordinary agent messages over later turns. A child may instead write results to files for the parent to read. The host runs each admitted child as an independent `AgentSession`; daemon-backed children can be retained as independently addressable session workers.
+The TypeScript host enforces recursion depth, relationship reach, session ownership, and message policy. Notebook code cannot bypass those checks.
 
-## Parent-Scoped Sub-Agent Registry
+## Host requests and deadlock avoidance
 
-The TypeScript parent maintains the authoritative direct-child registry. `await rlm.list_subagents()` returns stable child IDs, active-session IDs when daemon-backed, session IDs, names, directories, and running/completed status.
+Host requests travel over the dedicated protocol pipe while a cell is running. The host can therefore service goal, messaging, MCP, refinement, heartbeat, and RLM operations without waiting for the cell to finish. Responses use the same request ID and return either a value or a structured error.
 
-This registry survives kernel restart, compaction, and parent restore. Successfully completed daemon-backed children are rehydrated from the parent artifact registry. Inline children remain inspectable in the current process but have no active-session ID.
+Detached tasks may continue after a cell result. Their host requests remain routed while the worker is alive, and late agent-message receipts are persisted into the completed JavaScript tool result.
 
-The parent can continue a retained daemon child with `await agent_message.send(..., receiver_role="child", receiver_name=child.session_name)`. `rlm.delete_subagent()` accepts an exact child ID, active-session ID, session ID, or unique name. Deletion cancels or closes the runtime, writes a durable tombstone, and removes the child from messaging and observation. It does not erase the transcript or artifacts on disk.
+## State snapshots
 
-Registry scope follows the parent transcript. An unrelated new parent session does not inherit children.
+Prime Agent snapshots durable top-level bindings with Bun's JavaScriptCore serializer. Primitive values, plain objects, cycles, dates, regular expressions, maps, sets, array buffers, and typed arrays are preserved when the runtime serializer supports them. Functions, promises, weak collections, and custom class instances are not guaranteed to survive restart.
 
-## Usage and Cost Attribution
+Snapshot restore is best effort:
 
-The admission handle does not contain usage or completion data. Prime Agent asynchronously folds the child's assistant usage and cost into the parent assistant turn that launched it.
+- each serializable binding is restored independently;
+- rejected values are reported without discarding the rest of the snapshot;
+- runtime globals and skill globals are never overwritten; and
+- a visible restore notice lists restored and failed bindings.
 
-The parent transcript persists a `child_usage_attributed` entry containing:
+The live worker remains authoritative while a session is running. Snapshots provide restart recovery, not transactional durability.
 
-- the target parent assistant message ID;
-- the child usage being attributed; and
-- the resulting aggregate usage.
+## Abort and recovery
 
-On reload, the aggregate is reapplied to the parent message. Context-tree reporting subtracts attributed child usage when showing each node's own usage, so tree-wide own usage and root aggregate totals remain reconcilable. Child work increases billable session totals but does not inflate the parent model's context-window measurement.
+Ordinary execution is serialized. When an abort signal fires, Prime Agent stops the Bun worker process tree because arbitrary JavaScript cannot be safely interrupted in place. The next cell starts a fresh worker and restores the latest snapshot on a best-effort basis. This makes abort deterministic and prevents a cancelled cell from continuing to mutate notebook state.
 
-## Continual Harness State
+Startup, execution, host requests, and shutdown all have bounded failure paths. Worker exit rejects pending cells and requests, and session disposal waits for in-flight host work before tearing down routing.
 
-`rlm.harness` is a persisted state ledger for prompt notes, memories, reusable skill descriptions, sub-agent specifications, and refinement events. It is not a second execution engine.
+## Attachments and file diffs
 
-Session-local state lives in the session artifact directory under `harness/harness_state.json`. Explicitly global entries live under `~/.prime/agent/harness/`. The Python store reloads after external modification so host-side `/refine` writes and kernel writes do not overwrite each other.
+Skills can emit display data through `display(mimeType, data)`. Supported images become tool-result attachments. Oversized attachments fail the cell loudly; animated GIFs are identified, and image compression notes when an animation is flattened.
 
-`/refine` runs a dedicated review over the current trajectory and applies small create/update/delete edits. Rollback uses recorded before/after snapshots. The base system prompt remains immutable; refinements are supplemental state.
+The `edit` skill reports structured file diffs. JavaScript cell UI and ACP events preserve those diffs so source changes remain visible even though they originated inside the notebook.
 
-## Goal Requests
+## Trust model
 
-The bundled `goal` Python skill is a thin host-bridge client:
+The Bun worker runs with the same operating-system permissions as the session worker. It is a protocol and lifecycle boundary, not a security sandbox. Model-generated code, installed JavaScript packages, skills, extensions, and project commands are trusted code. Use an external sandbox or restricted environment for untrusted repositories or instructions.
 
-```python
-await goal.get()
-await goal.create("ship the release", token_budget=200000)
-await goal.complete()
-```
+## Source map
 
-Goal state, persistence, token and wall-clock accounting, and continuation prompting live in `AgentSession`. When goals are disabled, the skill and `goal.*` host handlers are not registered.
-
-## Session Artifacts
-
-For a persisted root session, the relevant layout is:
-
-```text
-~/.prime/agent/
-  sessions/
-    <root-session-id>.jsonl
-  session-artifacts/
-    <root-session-id>/
-      kernel-state.dill
-      kernel-state.json
-      scheduled-jobs.json
-      harness/
-        harness_state.json
-      sub-xxxxxxxx/
-        <child-session-id>.jsonl
-        sub-yyyyyyyy/
-```
-
-Exact artifact files are created only when their features are used. Non-persistent sessions place RLM directories under the OS temporary directory and do not gain revivable session artifacts.
-
-## Trust Boundary
-
-IPython executes model-generated Python and shell-magics with the worker's OS permissions. The kernel boundary isolates protocol and lifecycle concerns; it is not a security sandbox. Installed Python packages, skills, and extensions are trusted code. Use an external sandbox or restricted execution environment when the workspace or generated code is untrusted.
-
-Provider credentials are resolved by the TypeScript host. The bounded model catalog crosses into Python as metadata; the full auth store does not.
-
-## Failure Modes
-
-| Failure | Behavior |
-|---|---|
-| Managed runtime is missing | Kernel bootstrap rebuilds it; a custom Python without `rlm` fails clearly when recursion is called. |
-| Depth limit reached | Python raises before opening a comm; the host checks again. |
-| Unsupported options | Host rejects the request. |
-| Requested model unavailable | Spawn fails instead of substituting another model. |
-| Shell-channel comm reply | Deadlock risk; current replies use control. |
-| Child cancellation | Host aborts the child and removes failed/cancelled registry entries. |
-| Parent teardown | Active descendants are cancelled and their runtimes are closed. |
-
-## Focused Validation
-
-From the repository root, the implementation is covered by focused kernel, recursion, context-tree, daemon RLM, and runtime tests. When changing child creation or accounting, include `agent-session-recursion.test.ts`; when changing comm transport, include the kernel comm tests; when changing daemon retention, include the daemon RLM lifecycle tests.
+| Path | Responsibility |
+|------|----------------|
+| `src/core/tools/javascript.ts` | Model-facing tool, lazy provisioning, output shaping, and abort integration |
+| `src/core/kernel/bun-runtime.ts` | Bun discovery and minimum-version enforcement |
+| `src/core/kernel/bootstrap.ts` | Runtime asset preparation and dependency installation |
+| `src/core/kernel/index.ts` | Worker lifecycle, protocol routing, host requests, and cell serialization |
+| `src/core/kernel/bun-worker.ts` | Cell evaluation, globals, output capture, and skill loading |
+| `src/core/kernel/bun-rlm-runtime.ts` | JavaScript RLM, messaging, and harness API |
+| `src/core/kernel/state-snapshot.ts` | Snapshot persistence and restore metadata |

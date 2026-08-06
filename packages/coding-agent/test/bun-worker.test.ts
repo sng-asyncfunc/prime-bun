@@ -140,11 +140,14 @@ describe("Bun worker", () => {
 		const runtime = await resolveBunRuntime();
 		client = BunWorkerTestClient.start(runtime.path);
 		client.send({
+			bunPath: runtime.path,
 			commandPrefix: "",
 			cwd: process.cwd(),
 			id: "initialize",
+			kernelDirectory: process.cwd(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			shellPath: "/bin/sh",
+			skills: [],
 			type: "initialize",
 		});
 		const ready = await client.waitForType("ready");
@@ -194,6 +197,40 @@ describe("Bun worker", () => {
 		});
 		const names = await client.waitForType("list_names_result");
 		expect(names.names).toEqual(["state"]);
+	});
+
+	it("exposes the JavaScript RLM and package installation APIs", async () => {
+		client.send({
+			cellId: "runtime-api-cell",
+			code: "({ rlm: typeof rlm, harness: typeof rlm.harness.createMemory, installPackage: typeof installPackage, hostRequest: typeof hostRequest });",
+			id: "runtime-api-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const result = await client.waitForType("result", (message) => message.replyTo === "runtime-api-execute");
+		requireSuccess(result);
+		expect(result.value).toContain('rlm: "function"');
+		expect(result.value).toContain('harness: "function"');
+		expect(result.value).toContain('installPackage: "function"');
+		expect(result.value).toContain('hostRequest: "function"');
+	});
+
+	it("rejects package names that Bun would parse as command flags", async () => {
+		client.send({
+			cellId: "install-package-flag-cell",
+			code: 'await installPackage("--registry=https://example.test");',
+			id: "install-package-flag-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const result = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "install-package-flag-execute",
+		);
+		expect(result).toMatchObject({
+			error: { message: "installPackage package names cannot start with '-'" },
+			status: "error",
+		});
 	});
 
 	it("keeps protocol framing separate from direct stdout and stderr", async () => {
@@ -269,12 +306,16 @@ console.log("after-wait");
 	});
 
 	it("uses the configured shell path and command prefix while exposing Bun Shell", async () => {
+		const runtime = await resolveBunRuntime();
 		client.send({
+			bunPath: runtime.path,
 			commandPrefix: "export PRIME_PREFIX=applied",
 			cwd: process.cwd(),
 			id: "shell-initialize",
+			kernelDirectory: process.cwd(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			shellPath: "/bin/sh",
+			skills: [],
 			type: "initialize",
 		});
 		await client.waitForType("ready", (message) => message.replyTo === "shell-initialize");

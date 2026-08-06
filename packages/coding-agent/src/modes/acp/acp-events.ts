@@ -1,6 +1,6 @@
 import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
 import type { AgentConnectionSessionEvent } from "../agent-connection/types.js";
-import type { PrimeAgentIpythonMeta, PrimeAgentSessionMeta } from "./acp-meta.js";
+import type { PrimeAgentJavaScriptMeta, PrimeAgentSessionMeta } from "./acp-meta.js";
 import { primeAgentMeta } from "./acp-meta.js";
 
 /**
@@ -19,12 +19,12 @@ export interface AcpSessionUpdate {
 	[key: string]: unknown;
 }
 
-/** prime-agent's model-facing tool is IPython; bash is the secondary escape hatch. */
-export const IPYTHON_TOOL_NAME = "ipython";
+/** prime-agent's model-facing tool is Bun; bash is the secondary escape hatch. */
+export const JAVASCRIPT_TOOL_NAME = "javascript";
 
 export function acpToolKind(toolName: string): AcpToolKind {
 	switch (toolName) {
-		case IPYTHON_TOOL_NAME:
+		case JAVASCRIPT_TOOL_NAME:
 		case "bash":
 			return "execute";
 		case "read":
@@ -64,8 +64,8 @@ function assistantDeltaUpdates(event: AssistantMessageEvent): AcpSessionUpdate[]
 	return [];
 }
 
-/** Extract the IPython cell source so a client can show what is executing. */
-function ipythonCellSource(args: unknown): string | undefined {
+/** Extract the Bun cell source so a client can show what is executing. */
+function javaScriptCellSource(args: unknown): string | undefined {
 	if (!args || typeof args !== "object") return undefined;
 	const code = (args as { code?: unknown }).code;
 	return typeof code === "string" ? code : undefined;
@@ -91,18 +91,18 @@ function toolResultText(result: unknown): string | undefined {
 }
 
 /**
- * Rich IPython output that ACP has no content type for.
+ * Rich Bun output that ACP has no content type for.
  *
- * The ipython tool reports media and diffs under `details` (images additionally
+ * The JavaScript tool reports media and diffs under `details` (images additionally
  * ride along as ACP image content blocks); mirror those exact fields rather than
  * inventing a MIME bundle the tool never produces.
  */
-function ipythonRichOutput(result: unknown): PrimeAgentIpythonMeta | undefined {
+function javaScriptRichOutput(result: unknown): PrimeAgentJavaScriptMeta | undefined {
 	if (!result || typeof result !== "object") return undefined;
 	const details = (result as { details?: unknown }).details;
 	if (!details || typeof details !== "object") return undefined;
 	const { attachments, diffs } = details as { attachments?: unknown; diffs?: unknown };
-	const meta: PrimeAgentIpythonMeta = {};
+	const meta: PrimeAgentJavaScriptMeta = {};
 	if (Array.isArray(attachments) && attachments.length > 0) {
 		meta.attachments = attachments.map((attachment) => {
 			// KernelAttachment exposes mimeType, base64 `data`, and an optional path.
@@ -142,12 +142,12 @@ export function acpUpdatesForSessionEvent(
 			return assistantDeltaUpdates(event.assistantMessageEvent);
 
 		case "tool_execution_start": {
-			const cell = event.toolName === IPYTHON_TOOL_NAME ? ipythonCellSource(event.args) : undefined;
+			const cell = event.toolName === JAVASCRIPT_TOOL_NAME ? javaScriptCellSource(event.args) : undefined;
 			return [
 				{
 					sessionUpdate: "tool_call",
 					toolCallId: event.toolCallId,
-					title: event.toolName === IPYTHON_TOOL_NAME ? "IPython cell" : event.toolName,
+					title: event.toolName === JAVASCRIPT_TOOL_NAME ? "Bun cell" : event.toolName,
 					kind: acpToolKind(event.toolName),
 					status: "in_progress" satisfies AcpToolStatus,
 					rawInput: cell !== undefined ? { code: cell } : event.args,
@@ -157,14 +157,14 @@ export function acpUpdatesForSessionEvent(
 
 		case "tool_execution_end": {
 			const text = toolResultText(event.result);
-			const rich = event.toolName === IPYTHON_TOOL_NAME ? ipythonRichOutput(event.result) : undefined;
+			const rich = event.toolName === JAVASCRIPT_TOOL_NAME ? javaScriptRichOutput(event.result) : undefined;
 			return [
 				{
 					sessionUpdate: "tool_call_update",
 					toolCallId: event.toolCallId,
 					status: (event.isError ? "failed" : "completed") satisfies AcpToolStatus,
 					...(text ? { content: [{ type: "content", content: textContent(text) }] } : {}),
-					...(rich ? { _meta: primeAgentMeta({ ipython: rich }) } : {}),
+					...(rich ? { _meta: primeAgentMeta({ javascript: rich }) } : {}),
 				},
 			];
 		}
@@ -281,7 +281,7 @@ export function acpUpdatesForSessionEvent(
 				},
 			];
 
-		case "ipython_sent_agent_message":
+		case "javascript_sent_agent_message":
 			return [
 				{
 					sessionUpdate: "session_info_update",

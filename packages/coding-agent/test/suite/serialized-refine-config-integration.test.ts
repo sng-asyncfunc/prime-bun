@@ -20,7 +20,7 @@ type SerializedInternals = {
 	_rlmHeartbeatController?: unknown;
 	_agentMessageController?: unknown;
 	_agentObserveController?: unknown;
-	_ipythonKernelProvisioner?: unknown;
+	_bunKernelProvisioner?: unknown;
 	_createKernelHostHandlers(): Record<string, unknown>;
 };
 
@@ -149,7 +149,7 @@ describe("Serialized refine controller availability (unit)", () => {
 
 		const internals = harness.session as unknown as SerializedInternals;
 		expect(internals._rlmHeartbeatController).toBeUndefined();
-		const initialProvisioner = internals._ipythonKernelProvisioner;
+		const initialProvisioner = internals._bunKernelProvisioner;
 
 		// Simulate print/headless mode attaching a controller after construction.
 		const fakeController = {
@@ -161,7 +161,7 @@ describe("Serialized refine controller availability (unit)", () => {
 		harness.session.setRlmHeartbeatController(fakeController);
 
 		expect(internals._rlmHeartbeatController).toBe(fakeController);
-		expect(internals._ipythonKernelProvisioner).not.toBe(initialProvisioner);
+		expect(internals._bunKernelProvisioner).not.toBe(initialProvisioner);
 		expect(internals._createKernelHostHandlers()).toHaveProperty("rlm_heartbeat.create");
 
 		// Verify the controller is usable via host request.

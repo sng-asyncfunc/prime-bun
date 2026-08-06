@@ -478,25 +478,25 @@ describe("parseArgs", () => {
 		});
 
 		test("parses --tools flag", () => {
-			const result = parseArgs(["--tools", "ipython,dynamic_tool"]);
-			expect(result.tools).toEqual(["ipython", "dynamic_tool"]);
+			const result = parseArgs(["--tools", "javascript,dynamic_tool"]);
+			expect(result.tools).toEqual(["javascript", "dynamic_tool"]);
 		});
 
 		test("parses -t shorthand", () => {
-			const result = parseArgs(["-t", "ipython,dynamic_tool"]);
-			expect(result.tools).toEqual(["ipython", "dynamic_tool"]);
+			const result = parseArgs(["-t", "javascript,dynamic_tool"]);
+			expect(result.tools).toEqual(["javascript", "dynamic_tool"]);
 		});
 
 		test("parses --no-tools with explicit --tools flags", () => {
-			const result = parseArgs(["--no-tools", "--tools", "ipython,dynamic_tool"]);
+			const result = parseArgs(["--no-tools", "--tools", "javascript,dynamic_tool"]);
 			expect(result.noTools).toBe(true);
-			expect(result.tools).toEqual(["ipython", "dynamic_tool"]);
+			expect(result.tools).toEqual(["javascript", "dynamic_tool"]);
 		});
 
 		test("parses --no-builtin-tools with explicit --tools flags", () => {
-			const result = parseArgs(["--no-builtin-tools", "--tools", "ipython,dynamic_tool"]);
+			const result = parseArgs(["--no-builtin-tools", "--tools", "javascript,dynamic_tool"]);
 			expect(result.noBuiltinTools).toBe(true);
-			expect(result.tools).toEqual(["ipython", "dynamic_tool"]);
+			expect(result.tools).toEqual(["javascript", "dynamic_tool"]);
 		});
 
 		test("rejects removed built-in tools", () => {
@@ -504,7 +504,7 @@ describe("parseArgs", () => {
 			expect(result.tools).toEqual(["read", "bash", "edit"]);
 			expect(result.diagnostics).toContainEqual({
 				type: "error",
-				message: "Unknown built-in tool(s): read. Available built-in tools: ipython",
+				message: "Unknown built-in tool(s): read. Available built-in tools: javascript",
 			});
 		});
 	});

@@ -20,7 +20,7 @@ import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } fr
 
 // Tools
 const PLAN_MODE_TOOLS = ["bash", "questionnaire"];
-const NORMAL_MODE_TOOLS = ["ipython", "bash", "edit"];
+const NORMAL_MODE_TOOLS = ["javascript", "bash", "edit"];
 
 // Type guard for assistant messages
 function isAssistantMessage(m: AgentMessage): m is AssistantMessage {
@@ -166,7 +166,7 @@ You are in plan mode - a read-only exploration mode for safe code analysis.
 
 Restrictions:
 - You can only use: bash and questionnaire
-- You CANNOT use: ipython or edit (file modifications are disabled)
+- You CANNOT use: javascript or edit (file modifications are disabled)
 - Bash is restricted to an allowlist of read-only commands
 
 Ask clarifying questions using the questionnaire tool.

@@ -1565,8 +1565,8 @@ confirm_kernel_runtime_setup() {
 	esac
 
 	if prime_agent_prompt_yes_no \
-		"Prepare IPython runtime now?" \
-		"Installs uv, Python 3.11, ipykernel, and Prime Agent runtime." \
+		"Prepare Bun runtime now?" \
+		"Installs Bun and prepares Prime Agent's JavaScript runtime." \
 		"Prepare? [Y/n]"; then
 		prime_agent_bootstrap_kernel_on_install=1
 		return
@@ -1575,17 +1575,17 @@ confirm_kernel_runtime_setup() {
 	fi
 
 	if [ "$prompt_status" -eq 2 ]; then
-		printf 'No terminal detected; preparing the IPython runtime during install.\n'
+		printf 'No terminal detected; preparing the Bun runtime during install.\n'
 		prime_agent_bootstrap_kernel_on_install=1
 		return
 	fi
 
 	prime_agent_bootstrap_kernel_on_install=0
 	if [ "$prime_agent_screen_enabled" = 1 ]; then
-		prime_agent_screen "IPython setup skipped" "" "The runtime can be prepared on first ipython use." ""
+		prime_agent_screen "Bun setup skipped" "" "The runtime can be prepared on first JavaScript use." ""
 		sleep 0.4
 	else
-		printf '\nSkipping IPython runtime setup.\n'
+		printf '\nSkipping Bun runtime setup.\n'
 	fi
 }
 
@@ -1596,13 +1596,13 @@ install_prime_agent_package() {
 Linking command binaries.
 Installing runtime packages.
 Preloading search tools.
-Preparing IPython kernel.
+Preparing Bun runtime.
 Finalizing npm install."
 		prime_agent_run_quiet_with_animation_steps \
 			"Installing Prime Agent" \
 			"Installing Prime Agent" \
 			"$npm_install_details" \
-			env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1 PRIME_AGENT_INSTALL_UV=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+			env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1 PRIME_AGENT_INSTALL_BUN=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
 	else
 		npm_install_details="Preparing global install.
 Linking command binaries.

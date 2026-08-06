@@ -14,28 +14,29 @@ otherwise mutate another session.
 
 Call directly from the kernel:
 
-```python
-children = await rlm.list_subagents()
-child = next((item for item in children if item.active_session_id), None)
-if child is not None:
-    worker = await agent_observe.get_agent(child.session_name)
-    recent = await agent_observe.recent_messages(child.session_name, limit=6)
-    # Deletion is a parent-owned RLM operation, not an observe mutation:
-    await rlm.delete_subagent(child)
+```javascript
+const children = await rlm.listSubagents();
+const child = children.find((item) => item.activeSessionId);
+if (child) {
+  const worker = await agentObserve.getAgent(child.sessionName);
+  const recent = await agentObserve.recentMessages(child.sessionName, { limit: 6 });
+  // Deletion is a parent-owned RLM operation, not an observe mutation:
+  await rlm.deleteSubagent(child);
+}
 ```
 
 ## API
 
-- `await agent_observe.list_agents()` returns `current` and `agents`. Each
+- `await agentObserve.listAgents()` returns `current` and `agents`. Each
   agent includes active session id, session id, optional name, runtime kind,
   cwd, status, streaming state, message count, pending count, and a latest
   message preview. The list is restricted to self, parent, siblings, and direct
-  children. For direct children, `await rlm.list_subagents()` also exposes
+  children. For direct children, `await rlm.listSubagents()` also exposes
   parent-owned lifecycle handles.
-- `await agent_observe.get_agent(target)` returns `agent`, where `agent`
+- `await agentObserve.getAgent(target)` returns `agent`, where `agent`
   contains one agent summary. `target` is resolved like other live-session
   selectors: active id, session id/name, or unambiguous suffix.
-- `await agent_observe.recent_messages(target, limit=8, max_chars=800)`
+- `await agentObserve.recentMessages(target, { limit: 8, maxChars: 800 })`
   returns up to `limit` recent bounded message previews for the target session.
   `limit` must be 1-50, and `max_chars` must be 80-2000.
 

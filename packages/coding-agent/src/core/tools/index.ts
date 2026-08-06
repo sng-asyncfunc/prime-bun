@@ -19,13 +19,14 @@ export {
 } from "./edit.js";
 export { withFileMutationQueue } from "./file-mutation-queue.js";
 export {
-	createIpythonTool,
-	createIpythonToolDefinition,
-	IpythonKernelProvisioner,
-	type IpythonToolDetails,
-	type IpythonToolInput,
-	type IpythonToolOptions,
-} from "./ipython.js";
+	BunKernelProvisioner,
+	createJavaScriptTool,
+	createJavaScriptToolDefinition,
+	imageBlocksFromAttachments,
+	type JavaScriptToolDetails,
+	type JavaScriptToolInput,
+	type JavaScriptToolOptions,
+} from "./javascript.js";
 export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -39,21 +40,21 @@ export {
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.js";
-import { createIpythonTool, createIpythonToolDefinition, type IpythonToolOptions } from "./ipython.js";
+import { createJavaScriptTool, createJavaScriptToolDefinition, type JavaScriptToolOptions } from "./javascript.js";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "ipython";
-export const allToolNames: Set<ToolName> = new Set(["ipython"]);
+export type ToolName = "javascript";
+export const allToolNames: Set<ToolName> = new Set(["javascript"]);
 
 export interface ToolsOptions {
-	ipython?: IpythonToolOptions;
+	javascript?: JavaScriptToolOptions;
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	switch (toolName) {
-		case "ipython":
-			return createIpythonToolDefinition(cwd, options?.ipython);
+		case "javascript":
+			return createJavaScriptToolDefinition(cwd, options?.javascript);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -61,8 +62,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 
 export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
 	switch (toolName) {
-		case "ipython":
-			return createIpythonTool(cwd, options?.ipython);
+		case "javascript":
+			return createJavaScriptTool(cwd, options?.javascript);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -70,12 +71,12 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
 	return {
-		ipython: createIpythonToolDefinition(cwd, options?.ipython),
+		javascript: createJavaScriptToolDefinition(cwd, options?.javascript),
 	};
 }
 
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
 	return {
-		ipython: createIpythonTool(cwd, options?.ipython),
+		javascript: createJavaScriptTool(cwd, options?.javascript),
 	};
 }

@@ -26,11 +26,11 @@ export { ExtensionSelectorComponent } from "./extension-selector.js";
 export { FooterComponent } from "./footer.js";
 export { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./injected-prompt-message.js";
 export {
-	getIpythonCodeFromArgs,
-	IPythonCellComponent,
-	type IPythonCellContentBlock,
-	type IPythonCellState,
-} from "./ipython-cell.js";
+	getJavaScriptCodeFromArgs,
+	JavaScriptCellComponent,
+	type JavaScriptCellContentBlock,
+	type JavaScriptCellState,
+} from "./javascript-cell.js";
 export { keyHint, keyText, rawKeyHint } from "./keybinding-hints.js";
 export { LoginDialogComponent } from "./login-dialog.js";
 export { ModelSelectorComponent } from "./model-selector.js";

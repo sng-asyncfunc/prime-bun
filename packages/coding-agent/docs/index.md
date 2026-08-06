@@ -1,6 +1,6 @@
 # Prime Agent Documentation
 
-Prime Agent is an RLM-native coding and research harness built around a persistent IPython kernel, recursive subagents, durable sessions, and a multi-process local runtime. It began as a hard fork of pi-mono, but Prime Agent is now the product, CLI, install source, and development repository.
+Prime Agent is an RLM-native coding and research harness built around a persistent Bun notebook, recursive subagents, durable sessions, and a multi-process local runtime. It began as a hard fork of pi-mono, but Prime Agent is now the product, CLI, install source, and development repository.
 
 ## Quick Start
 
@@ -26,7 +26,7 @@ Public releases are currently installed from versioned release artifacts. The in
 - [Quickstart](quickstart.md) - install, authenticate, and run a first session.
 - [Using Prime Agent](usage.md) - interactive mode, RLM subagents, slash commands, context files, and CLI reference.
 - [Architecture overview](architecture.md) - client, daemon, worker, session, kernel, provider, and storage boundaries.
-- [RLM programming model](rlm.md) - programmatic execution, native subagents, Python skills, and durable state.
+- [RLM programming model](rlm.md) - programmatic JavaScript execution, native subagents, prepared skills, and durable state.
 - [Long-running and background agents](long-running-agents.md) - daemon workers, messaging, heartbeats, goals, schedules, and autonomous mode.
 - [Providers](providers.md) - subscription and API-key setup for built-in providers.
 - [Settings](settings.md) - global and project settings.
@@ -37,8 +37,8 @@ Public releases are currently installed from versioned release artifacts. The in
 ## Customization
 
 - [Extensions](extensions.md) - TypeScript modules for tools, commands, events, and custom UI.
-- [Skills](skills.md) - markdown and Python-backed skills, including how to ask Prime Agent to create them.
-- [MCP integrations](mcp-integrations.md) - use MCP servers through Python skills without expanding the model's tool surface.
+- [Skills](skills.md) - markdown and JavaScript-backed skills, including how to ask Prime Agent to create them.
+- [MCP integrations](mcp-integrations.md) - use MCP servers through JavaScript skills without expanding the model's tool surface.
 - [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
 - [Themes](themes.md) - built-in and custom terminal themes.
 - [Prime Agent packages](packages.md) - bundle and share extensions, skills, prompts, and themes.
@@ -72,4 +72,4 @@ Public releases are currently installed from versioned release artifacts. The in
 - [Architecture overview](architecture.md) - system topology and end-to-end prompt flow.
 - [Daemon Architecture](daemon.md) - supervisor, catalog, worker, lifecycle, and recovery details.
 - [Agent Connection Architecture](agent-connection.md) - client/runtime connection boundary.
-- [RLM Runtime Architecture](rlm-runtime.md) - ZeroMQ kernel transport and recursive subagent execution.
+- [RLM Runtime Architecture](rlm-runtime.md) - Bun worker transport and recursive subagent execution.

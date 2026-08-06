@@ -34,7 +34,7 @@ function startsStackContext(line: ErrorDetailLine): boolean {
 	if (line.trimmed.startsWith("File ") && line.trimmed.includes(", line ")) {
 		return true;
 	}
-	if (line.trimmed.startsWith("Cell In[") && line.trimmed.includes(", line ")) {
+	if (/^at\s/.test(line.trimmed)) {
 		return true;
 	}
 	if (line.trimmed.startsWith("---->")) {

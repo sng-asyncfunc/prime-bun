@@ -24,9 +24,9 @@ function addToolGuidance(options: BuildSystemPromptOptions, basePrompt: string):
 
 	const parts: string[] = [];
 
-	if (hasTool("ipython")) {
+	if (hasTool("javascript")) {
 		parts.push(
-			"• Use the `ipython` tool for Python execution, file access, data inspection, and shell subprocesses.",
+			"• Use the `javascript` tool for JavaScript or TypeScript execution, file access, data inspection, and Bun Shell subprocesses.",
 		);
 	}
 

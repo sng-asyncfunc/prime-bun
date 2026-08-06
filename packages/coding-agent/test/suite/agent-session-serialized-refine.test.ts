@@ -1942,7 +1942,7 @@ describe("P0 concurrency regressions", () => {
 	});
 
 	it("serialized same-entry Python harness-write: concurrent kernel write rejected via baselineState", async () => {
-		// Verify that a concurrent Python kernel harness write (e.g.
+		// Verify that a concurrent Bun notebook harness write (e.g.
 		// rlm.harness.create_memory) during serialized background planning
 		// is detected via baselineState comparison and the stale edit is
 		// rejected, preserving the concurrent write.
@@ -2023,7 +2023,7 @@ describe("P0 concurrency regressions", () => {
 		// Wait for planning to start.
 		await planStartedPromise;
 
-		// Simulate a concurrent Python kernel harness write while planning is in flight.
+		// Simulate a concurrent Bun notebook harness write while planning is in flight.
 		const concurrentState = loadHarnessState(localDir, "local");
 		const sharedEntry = concurrentState.entries.memory?.shared;
 		expect(sharedEntry).toBeDefined();
@@ -2092,7 +2092,7 @@ describe("P0 concurrency regressions", () => {
 		expect(internals._pendingRequestedRefine).toBeUndefined();
 
 		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
-		const toolUseAssistant = fauxAssistantMessage([fauxToolCall("ipython", { code: "await refine.run()" })], {
+		const toolUseAssistant = fauxAssistantMessage([fauxToolCall("javascript", { code: "await refine.run()" })], {
 			stopReason: "toolUse",
 		});
 		internals._lastAssistantMessage = toolUseAssistant;

@@ -21,7 +21,7 @@ import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
-import { createIpythonTool } from "../src/index.js";
+import { createJavaScriptTool } from "../src/index.js";
 import { createTestResourceLoader } from "./utilities.js";
 
 const API_KEY = process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
@@ -92,7 +92,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			initialState: {
 				model,
 				systemPrompt: "You are a helpful assistant. Be concise.",
-				tools: [createIpythonTool(process.cwd())],
+				tools: [createJavaScriptTool(process.cwd())],
 			},
 		});
 

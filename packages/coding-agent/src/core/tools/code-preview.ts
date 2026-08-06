@@ -1,30 +1,24 @@
-import { parseIpythonBashCell } from "./ipython-cell-code.js";
-
 const DESCRIPTOR_MAX_WIDTH = 64;
-
-const MAGIC_LINE_PATTERN = /^\s*!/;
-const COMMENT_LINE_PATTERN = /^\s*#/;
+const COMMENT_LINE_PATTERN = /^\s*(?:#|\/\/)/;
 const CD_PREFIX_PATTERN = /^\s*cd\s+([^&;|]+)(?:&&|;)\s*/;
 const BASH_SET_PATTERN = /^\s*set\s+[-+][A-Za-z]*(?:\s+[-+]?\w+)*(?:\s+pipefail)?\s*$/;
 const BASH_SETUP_PATTERN = /^(?:export\s+\w+=|source\s+\S+|\.\s+\S+)/;
-const PYTHON_IMPORT_PATTERN = /^\s*(?:import\s+\S|from\s+\S+\s+import\s+)/;
-const PYTHON_DECORATOR_PATTERN = /^\s*@/;
-const PYTHON_DEFINITION_PATTERN = /^\s*(?:async\s+def|def|class)\s+/;
-const PYTHON_MAIN_PATTERN = /^\s*if\s+__name__\s*==\s*['"]__main__['"]\s*:/;
-const PYTHON_CONTROL_PATTERN = /^\s*(?:if|elif|else|for|while|with|try|except|finally)\b.*:\s*$/;
-const PYTHON_CALL_PATTERN = /^\s*(?:await\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*\(/;
-const PYTHON_LOW_SIGNAL_CALL_PATTERN = /^\s*(?:await\s+)?(?:print|len|str|repr|int|float|list|dict|set|tuple)\s*\(/;
-const PYTHON_ASSIGNMENT_CALL_PATTERN =
-	/^\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*:\s*[^=]+)?\s*=\s*(?:await\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*\(/;
-const PYTHON_LOW_SIGNAL_ASSIGNMENT_CALL_PATTERN =
-	/^\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*:\s*[^=]+)?\s*=\s*(?:await\s+)?(?:Path|pathlib\.Path|json\.loads|json\.dumps|str|int|float|list|dict|set|tuple)\s*\(/;
-const PYTHON_EFFECT_CALL_PATTERN =
-	/^\s*(?:await\s+)?[A-Za-z_][A-Za-z0-9_.]*\.(?:write_text|write_bytes|mkdir|unlink|rename|replace|touch|append|extend|update|add|remove|discard|close|commit|execute|run)\s*\(/;
 const HEREDOC_PATTERN = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/;
-const PATH_ASSIGN_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:Path|pathlib\.Path)\(["']([^"']+)["']\)/;
-const STRING_ASSIGN_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']+)["']/;
+const JAVASCRIPT_IMPORT_PATTERN = /^\s*import\s+/;
+const JAVASCRIPT_DEFINITION_PATTERN =
+	/^\s*(?:export\s+)?(?:async\s+)?(?:function|class)\s+|^\s*(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\(/;
+const JAVASCRIPT_CONTROL_PATTERN = /^\s*(?:if|else|for|while|switch|try|catch|finally)\b/;
+const JAVASCRIPT_CALL_PATTERN = /^\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\(/;
+const JAVASCRIPT_LOW_SIGNAL_CALL_PATTERN =
+	/^\s*(?:await\s+)?(?:console\.(?:log|error|warn)|JSON\.(?:parse|stringify)|String|Number|Boolean|Array|Object)\s*\(/;
+const JAVASCRIPT_ASSIGNMENT_CALL_PATTERN =
+	/^\s*(?:const|let|var)\s+[A-Za-z_$][\w$]*(?:\s*:\s*[^=]+)?\s*=\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\(/;
+const JAVASCRIPT_EFFECT_CALL_PATTERN =
+	/^\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.(?:write|writeFile|mkdir|rm|unlink|rename|append|push|set|add|delete|close|commit|execute|run)\s*\(/;
+const JAVASCRIPT_SHELL_TEMPLATE_PATTERN = /^\s*(?:await\s+)?\$`([\s\S]*)`\s*;?$/;
+const JAVASCRIPT_SH_CALL_PATTERN = /^\s*(?:await\s+)?sh\(\s*["'`]([^"'`]+)["'`]/;
 
-export type CodePreviewLanguage = "bash" | "python";
+export type CodePreviewLanguage = "bash" | "javascript";
 
 export interface CodePreview {
 	language: CodePreviewLanguage;
@@ -35,7 +29,6 @@ interface PreviewCandidate {
 	language: CodePreviewLanguage;
 	text: string;
 	score: number;
-	index: number;
 }
 
 function collapseWhitespace(text: string): string {
@@ -43,18 +36,15 @@ function collapseWhitespace(text: string): string {
 }
 
 function truncateDescriptor(text: string): string {
-	if (text.length <= DESCRIPTOR_MAX_WIDTH) {
-		return text;
-	}
-	return `${text.slice(0, DESCRIPTOR_MAX_WIDTH - 1).trimEnd()}…`;
+	return text.length <= DESCRIPTOR_MAX_WIDTH ? text : `${text.slice(0, DESCRIPTOR_MAX_WIDTH - 1).trimEnd()}…`;
 }
 
 function redactNoise(text: string): string {
 	return text
 		.replace(/[A-Za-z0-9+/]{80,}={0,2}/g, "<blob>")
-		.replace(/\b((?=\w*(?:token|key|secret|password))[A-Za-z_]\w*)\s*=\s*(["'])[^"']*\2/gi, "$1=<redacted>")
+		.replace(/\b((?=\w*(?:token|key|secret|password))[A-Za-z_]\w*)\s*[:=]\s*(["'])[^"']*\2/gi, "$1=<redacted>")
 		.replace(
-			/\b((?=\w*(?:token|key|secret|password))[A-Za-z_]\w*)\s*=\s*(?!<redacted>)(?!["'])\S+/gi,
+			/\b((?=\w*(?:token|key|secret|password))[A-Za-z_]\w*)\s*[:=]\s*(?!<redacted>)(?!["'])\S+/gi,
 			"$1=<redacted>",
 		)
 		.replace(/(["'])sk-[^"']+\1/g, "$1<redacted>$1")
@@ -63,10 +53,6 @@ function redactNoise(text: string): string {
 
 function descriptor(text: string): string {
 	return truncateDescriptor(collapseWhitespace(redactNoise(text)));
-}
-
-function stripBashPrefix(line: string): string {
-	return line.replace(MAGIC_LINE_PATTERN, "").trim().replace(CD_PREFIX_PATTERN, "").trim();
 }
 
 function isSkippableBashLine(line: string): boolean {
@@ -81,8 +67,7 @@ function isSkippableBashLine(line: string): boolean {
 
 function shellWords(line: string): string[] {
 	const words: string[] = [];
-	const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
-	for (const match of line.matchAll(pattern)) {
+	for (const match of line.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
 		words.push(match[1] ?? match[2] ?? match[3] ?? "");
 	}
 	return words;
@@ -108,24 +93,13 @@ function simplifyRunnerCommand(line: string): string | undefined {
 			return cwd ? `${command} (${pathTail(cwd)})` : command;
 		}
 	}
-	if (words[0] === "pnpm") {
-		const cwdIndex = words.findIndex((word) => word === "-C" || word === "--dir");
+	if (words[0] === "pnpm" || words[0] === "bun") {
+		const cwdIndex = words.findIndex((word) => word === "-C" || word === "--cwd" || word === "--dir");
 		const cwd = cwdIndex >= 0 ? words[cwdIndex + 1] : undefined;
 		const rest = words.filter((_, index) => index !== cwdIndex && index !== cwdIndex + 1);
 		return cwd ? `${rest.join(" ")} (${pathTail(cwd)})` : undefined;
 	}
-	const pytestIndex = words.findIndex(
-		(word, index) => word === "pytest" || (word === "pytest" && words[index - 1] === "-m"),
-	);
-	if (words[0] === "uv" && words[1] === "run" && pytestIndex >= 0) {
-		return `pytest ${words.slice(pytestIndex + 1).join(" ")}`.trim();
-	}
-	if ((words[0] === "python" || words[0] === "python3") && words[1] === "-m" && words[2] === "pytest") {
-		return `pytest ${words.slice(3).join(" ")}`.trim();
-	}
-	if (joined.includes("node_modules/.bin/")) {
-		return joined.replace(/\S*node_modules\/\.bin\//g, "");
-	}
+	if (joined.includes("node_modules/.bin/")) return joined.replace(/\S*node_modules\/\.bin\//g, "");
 	return undefined;
 }
 
@@ -133,10 +107,11 @@ function simplifyMutationCommand(line: string): string | undefined {
 	const words = shellWords(line);
 	if (words.length === 0) return undefined;
 	if (words[0] === "cat" && words[1] === ">" && words[2]) return `write ${pathTail(words[2])}`;
-	if (words[0] === "tee" && words.at(-1))
+	if (words[0] === "tee" && words.at(-1)) {
 		return `${words.includes("-a") ? "append" : "write"} ${pathTail(words.at(-1) ?? "")}`;
+	}
 	if (words[0] === "apply_patch") return "apply patch";
-	if (["rm", "mv", "cp", "git", "npm"].includes(words[0] ?? "")) return line;
+	if (["rm", "mv", "cp", "git", "npm", "bun"].includes(words[0] ?? "")) return line;
 	if (
 		(words[0] === "sed" && words.some((word) => word.startsWith("-i"))) ||
 		(words[0] === "perl" && words.includes("-pi"))
@@ -158,58 +133,31 @@ function splitCommandChain(line: string): string[] {
 }
 
 function heredocBody(lines: readonly string[], startIndex: number, delimiter: string): string | undefined {
-	// While args stream, preview the partial heredoc body rather than the low-signal heredoc opener.
 	const body: string[] = [];
-	for (let i = startIndex + 1; i < lines.length; i++) {
-		const line = lines[i] ?? "";
-		if (line.trim() === delimiter) {
-			return body.join("\n");
-		}
+	for (let index = startIndex + 1; index < lines.length; index += 1) {
+		const line = lines[index] ?? "";
+		if (line.trim() === delimiter) return body.join("\n");
 		body.push(line);
 	}
 	return body.length > 0 ? body.join("\n") : undefined;
 }
 
 function previewHeredoc(lines: readonly string[]): CodePreview | undefined {
-	// A generic heredoc body is low-signal; keep it as a fallback and prefer a
-	// later, more specific heredoc (python/bash/node/write) if one follows.
 	let fallback: CodePreview | undefined;
-	for (let i = 0; i < lines.length; i++) {
-		const line = stripBashPrefix(lines[i] ?? "");
-		if (isSkippableBashLine(line)) {
-			continue;
-		}
-		const heredocMatch = line.match(HEREDOC_PATTERN);
-		const delimiter = heredocMatch?.[1];
-		if (!delimiter) {
-			continue;
-		}
-		const body = heredocBody(lines, i, delimiter);
-		if (!body) {
-			continue;
-		}
-		if (/\b(?:uv\s+run\s+)?python3?\b/.test(line)) {
-			const preview = previewPythonCode(body);
-			if (preview.text) {
-				return preview;
-			}
-			continue;
-		}
-		// Match bash/sh as an interpreter word (incl. /bin/sh), not a path suffix like script.sh.
-		if (/(?<![\w.])(?:bash|sh)\b/.test(line)) {
-			const preview = previewBashCommand(body);
-			return preview.text ? preview : { language: "bash", text: descriptor(body) };
-		}
-		if (/\bnode\b/.test(line)) {
-			return { language: "bash", text: `node: ${descriptor(body)}` };
-		}
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = (lines[index] ?? "").trim().replace(CD_PREFIX_PATTERN, "").trim();
+		if (isSkippableBashLine(line)) continue;
+		const delimiter = line.match(HEREDOC_PATTERN)?.[1];
+		if (!delimiter) continue;
+		const body = heredocBody(lines, index, delimiter);
+		if (!body) continue;
+		if (/\b(?:bun|node)\b/.test(line)) return previewJavaScriptCode(body);
+		if (/(?<![\w.])(?:bash|sh)\b/.test(line)) return previewBashCommand(body);
 		const catWrite = line.match(/\b(?:cat|tee)\b.*(?:>|\s)(\S+)\s*<<-?/);
 		if (catWrite?.[1]) {
 			return { language: "bash", text: `${line.includes("tee -a") ? "append" : "write"} ${pathTail(catWrite[1])}` };
 		}
-		if (/\bapply_patch\b/.test(line)) {
-			return { language: "bash", text: "apply patch" };
-		}
+		if (/\bapply_patch\b/.test(line)) return { language: "bash", text: "apply patch" };
 		fallback ??= { language: "bash", text: descriptor(body) };
 	}
 	return fallback;
@@ -220,8 +168,12 @@ function bashLineScore(line: string, index: number): number {
 	const words = shellWords(line);
 	let score = 30;
 	if (simplified !== line) score += 40;
-	if (["rm", "mv", "cp", "git", "npm", "pnpm", "pytest", "vitest"].includes(words[0] ?? "")) score += 20;
-	if (/\b(?:rm|mv|cp|git\s+(?:add|commit)|npm\s+install|sed\s+-i|perl\s+-pi|tee|cat\s*>|apply_patch)\b/.test(line))
+	if (["rm", "mv", "cp", "git", "npm", "pnpm", "bun", "vitest"].includes(words[0] ?? "")) score += 20;
+	if (
+		/\b(?:rm|mv|cp|git\s+(?:add|commit)|npm\s+install|bun\s+add|sed\s+-i|perl\s+-pi|tee|cat\s*>|apply_patch)\b/.test(
+			line,
+		)
+	)
 		score += 40;
 	return score + index;
 }
@@ -229,215 +181,68 @@ function bashLineScore(line: string, index: number): number {
 export function previewBashCommand(command: string): CodePreview {
 	const lines = command.split("\n");
 	const heredoc = previewHeredoc(lines);
-	if (heredoc?.text) {
-		return { language: heredoc.language, text: descriptor(heredoc.text) };
-	}
-
+	if (heredoc?.text) return { language: heredoc.language, text: descriptor(heredoc.text) };
 	let best: PreviewCandidate | undefined;
 	let index = 0;
 	for (const rawLine of lines) {
-		for (const rawPart of splitCommandChain(rawLine)) {
-			const commandLine = stripBashPrefix(rawPart.trim());
-			if (!commandLine || isSkippableBashLine(commandLine)) {
-				continue;
-			}
+		for (const part of splitCommandChain(rawLine)) {
+			const line = part.trim().replace(CD_PREFIX_PATTERN, "").trim();
+			if (!line || isSkippableBashLine(line)) continue;
 			const candidate = {
 				language: "bash" as const,
-				text: simplifyBashCommandLine(commandLine),
-				score: bashLineScore(commandLine, index),
-				index,
+				text: simplifyBashCommandLine(line),
+				score: bashLineScore(line, index),
 			};
-			if (!best || candidate.score > best.score) {
-				best = candidate;
-			}
+			if (!best || candidate.score > best.score) best = candidate;
 			index += 1;
 		}
 	}
 	return { language: "bash", text: best ? descriptor(best.text) : "" };
 }
 
-function isSkippablePythonLine(line: string): boolean {
+function shellCommandFromJavaScript(line: string): string | undefined {
+	const template = line.match(JAVASCRIPT_SHELL_TEMPLATE_PATTERN)?.[1];
+	if (template) return simplifyBashCommandLine(template);
+	const call = line.match(JAVASCRIPT_SH_CALL_PATTERN)?.[1];
+	return call ? simplifyBashCommandLine(call) : undefined;
+}
+
+function javaScriptLineScore(line: string, index: number): number {
 	const trimmed = line.trim();
-	return !trimmed || COMMENT_LINE_PATTERN.test(trimmed) || PYTHON_IMPORT_PATTERN.test(trimmed);
+	if (!trimmed || COMMENT_LINE_PATTERN.test(trimmed) || JAVASCRIPT_IMPORT_PATTERN.test(trimmed)) return -1;
+	if (shellCommandFromJavaScript(trimmed)) return 100 + index;
+	if (JAVASCRIPT_EFFECT_CALL_PATTERN.test(trimmed)) return 90 + index;
+	if (JAVASCRIPT_CONTROL_PATTERN.test(trimmed)) return 65 + index;
+	if (JAVASCRIPT_DEFINITION_PATTERN.test(trimmed)) return 50 + index;
+	if (JAVASCRIPT_ASSIGNMENT_CALL_PATTERN.test(trimmed)) return 70 + index;
+	if (JAVASCRIPT_CALL_PATTERN.test(trimmed) && !JAVASCRIPT_LOW_SIGNAL_CALL_PATTERN.test(trimmed)) return 75 + index;
+	if (JAVASCRIPT_LOW_SIGNAL_CALL_PATTERN.test(trimmed)) return 20 + index;
+	return 35 + index;
 }
 
-function pythonIndent(line: string): number {
-	const match = line.match(/^\s*/);
-	return match?.[0].length ?? 0;
-}
-
-function pythonPrintInnerCall(line: string): string | undefined {
-	const printMatch = line.trim().match(/^print\((.*)\)$/);
-	const inner = printMatch?.[1]?.trim();
-	return inner && PYTHON_CALL_PATTERN.test(inner) ? inner : undefined;
-}
-
-function pythonPathVars(lines: readonly string[]): Map<string, string> {
-	const vars = new Map<string, string>();
-	for (const line of lines) {
-		const pathMatch = line.match(PATH_ASSIGN_PATTERN) ?? line.match(STRING_ASSIGN_PATTERN);
-		if (pathMatch?.[1] && pathMatch[2]?.includes("/")) {
-			vars.set(pathMatch[1], pathMatch[2]);
-		}
-	}
-	return vars;
-}
-
-function pythonFileOperation(line: string, paths: ReadonlyMap<string, string>): string | undefined {
-	const match = line
-		.trim()
-		.match(
-			/^(?:await\s+)?([A-Za-z_][A-Za-z0-9_]*)\.(write_text|write_bytes|read_text|read_bytes|mkdir|unlink|rename|replace|touch)\s*\(/,
-		);
-	if (!match?.[1] || !match[2]) return undefined;
-	const path = paths.get(match[1]);
-	if (!path) return undefined;
-	const action: Record<string, string> = {
-		write_text: "write",
-		write_bytes: "write",
-		read_text: "read",
-		read_bytes: "read",
-		mkdir: "mkdir",
-		unlink: "delete",
-		rename: "rename",
-		replace: "replace",
-		touch: "touch",
-	};
-	return `${action[match[2]] ?? match[2]} ${pathTail(path)}`;
-}
-
-function pythonSubprocessCommand(line: string): string | undefined {
+function simplifyJavaScriptLine(line: string): string {
 	const trimmed = line.trim();
-	const shellMatch = trimmed.match(/subprocess\.(?:run|check_call|check_output|Popen)\(\s*["`]([^"`]+)["`]/);
-	if (shellMatch?.[1]) return simplifyBashCommandLine(shellMatch[1]);
-	const listMatch = trimmed.match(/subprocess\.(?:run|check_call|check_output|Popen)\(\s*\[([^\]]+)\]/);
-	if (listMatch?.[1]) {
-		const words = [...listMatch[1].matchAll(/["']([^"']+)["']/g)].map((match) => match[1] ?? "");
-		return simplifyBashCommandLine(words.join(" "));
-	}
-	return undefined;
+	const shell = shellCommandFromJavaScript(trimmed);
+	if (shell) return shell;
+	const consoleMatch = trimmed.match(/^console\.(?:log|error|warn)\((.*)\);?$/);
+	return consoleMatch?.[1]?.trim() || trimmed;
 }
 
-function simplifyPythonPreviewLine(line: string, paths: ReadonlyMap<string, string>): string {
-	return (
-		pythonFileOperation(line, paths) ?? pythonSubprocessCommand(line) ?? pythonPrintInnerCall(line) ?? line.trim()
-	);
-}
-
-function pythonPreviewLine(lines: readonly string[], index: number, paths: ReadonlyMap<string, string>): string {
-	const line = lines[index] ?? "";
-	if (index > 0 && PYTHON_DEFINITION_PATTERN.test(line)) {
-		const previous = lines[index - 1] ?? "";
-		if (PYTHON_DECORATOR_PATTERN.test(previous.trim())) {
-			return `${previous.trim()} ${line.trim()}`;
-		}
-	}
-	if (PYTHON_CONTROL_PATTERN.test(line)) {
-		const childIndex = firstPythonChildLine(lines, index);
-		if (childIndex !== undefined) {
-			return `${line.trim().replace(/:\s*$/, ":")} ${simplifyPythonPreviewLine(lines[childIndex] ?? "", paths)}`;
-		}
-	}
-	return simplifyPythonPreviewLine(line, paths);
-}
-
-function firstPythonChildLine(lines: readonly string[], parentIndex: number): number | undefined {
-	const parentIndent = pythonIndent(lines[parentIndex] ?? "");
-	for (let i = parentIndex + 1; i < lines.length; i++) {
-		const line = lines[i] ?? "";
-		if (isSkippablePythonLine(line) || PYTHON_DECORATOR_PATTERN.test(line.trim())) {
-			continue;
-		}
-		if (pythonIndent(line) <= parentIndent) {
-			return undefined;
-		}
-		return i;
-	}
-	return undefined;
-}
-
-function pythonLineScore(lines: readonly string[], index: number, paths: ReadonlyMap<string, string>): number {
-	const line = lines[index] ?? "";
-	const trimmed = line.trim();
-	if (isSkippablePythonLine(line) || PYTHON_DECORATOR_PATTERN.test(trimmed)) {
-		return -1;
-	}
-	if (pythonFileOperation(line, paths)) {
-		return 95;
-	}
-	if (pythonSubprocessCommand(line)) {
-		return 90;
-	}
-	if (PYTHON_MAIN_PATTERN.test(line)) {
-		return 70;
-	}
-	if (PYTHON_EFFECT_CALL_PATTERN.test(line)) {
-		return 80;
-	}
-	if (PYTHON_CONTROL_PATTERN.test(line)) {
-		const childIndex = firstPythonChildLine(lines, index);
-		return childIndex === undefined ? 20 : Math.max(20, pythonLineScore(lines, childIndex, paths) - 5);
-	}
-	if (PYTHON_DEFINITION_PATTERN.test(line)) {
-		return 50;
-	}
-	if (PYTHON_LOW_SIGNAL_ASSIGNMENT_CALL_PATTERN.test(line)) {
-		return 25;
-	}
-	const printInnerCall = pythonPrintInnerCall(line);
-	if (printInnerCall && !PYTHON_LOW_SIGNAL_CALL_PATTERN.test(printInnerCall)) {
-		return 55;
-	}
-	if (PYTHON_ASSIGNMENT_CALL_PATTERN.test(line)) {
-		return 60;
-	}
-	if (PYTHON_CALL_PATTERN.test(line) && !PYTHON_LOW_SIGNAL_CALL_PATTERN.test(line)) {
-		return 65;
-	}
-	if (PYTHON_CALL_PATTERN.test(line)) {
-		return 15;
-	}
-	return 30;
-}
-
-function pythonPreviewIndex(lines: readonly string[], index: number): number {
-	const line = lines[index] ?? "";
-	if (!PYTHON_CONTROL_PATTERN.test(line)) {
-		return index;
-	}
-	const childIndex = firstPythonChildLine(lines, index);
-	return childIndex === undefined ? index : pythonPreviewIndex(lines, childIndex);
-}
-
-export function previewPythonCode(code: string): CodePreview {
-	const lines = code.split("\n");
-	const paths = pythonPathVars(lines);
-	let bestIndex: number | undefined;
-	let bestScore = -1;
-
-	for (let i = 0; i < lines.length; i++) {
-		const score = pythonLineScore(lines, i, paths);
-		if (score > bestScore) {
-			bestIndex = i;
-			bestScore = score;
-		}
-	}
-
-	if (bestIndex !== undefined && bestScore >= 0) {
-		const previewIndex = pythonPreviewIndex(lines, bestIndex);
-		return {
-			language: "python",
-			text: descriptor(pythonPreviewLine(lines, previewIndex, paths)),
+export function previewJavaScriptCode(code: string): CodePreview {
+	const lines = code.trimEnd().split("\n");
+	let best: PreviewCandidate | undefined;
+	for (const [index, line] of lines.entries()) {
+		const score = javaScriptLineScore(line, index);
+		if (score < 0) continue;
+		const candidate = {
+			language: shellCommandFromJavaScript(line) ? ("bash" as const) : ("javascript" as const),
+			text: simplifyJavaScriptLine(line),
+			score,
 		};
+		if (!best || candidate.score > best.score) best = candidate;
 	}
-	return { language: "python", text: "" };
-}
-
-export function previewIpythonCode(code: string): CodePreview {
-	const trimmedCode = code.trimEnd();
-	const bashCell = parseIpythonBashCell(trimmedCode);
-	if (bashCell) {
-		return previewBashCommand(bashCell.body);
-	}
-	return previewPythonCode(trimmedCode);
+	return {
+		language: best?.language ?? "javascript",
+		text: best ? descriptor(best.text) : "",
+	};
 }

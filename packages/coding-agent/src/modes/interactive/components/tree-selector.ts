@@ -876,13 +876,13 @@ class TreeList implements Component {
 					.slice(0, 50);
 				return `[bash: ${cmd}${rawCmd.length > 50 ? "..." : ""}]`;
 			}
-			case "ipython": {
+			case "javascript": {
 				const rawCode = String(args.code || "");
 				const code = rawCode
 					.replace(/[\n\t]/g, " ")
 					.trim()
 					.slice(0, 50);
-				return `[ipython: ${code}${rawCode.length > 50 ? "..." : ""}]`;
+				return `[javascript: ${code}${rawCode.length > 50 ? "..." : ""}]`;
 			}
 			default: {
 				// Custom tool - show name and truncated JSON args

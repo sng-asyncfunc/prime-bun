@@ -185,8 +185,8 @@ import {
 	createSessionSlashCommandResultMessage,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
-	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 	isSessionSlashCommandMessage,
+	JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { throwIfPromptAdmissionCancelled } from "./prompt-admission.js";
@@ -255,7 +255,7 @@ import {
 } from "./session-manager.js";
 import type { SessionStats } from "./session-stats.js";
 import type { SettingsManager } from "./settings-manager.js";
-import { getPythonSkillRuntimeInfo, type Skill } from "./skills.js";
+import { getJavaScriptSkillRuntimeInfo, type Skill } from "./skills.js";
 import {
 	parseRefineCommandOptions,
 	parseSessionSlashCommand,
@@ -267,7 +267,7 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
 import { createAllToolDefinitions } from "./tools/index.js";
-import { IpythonKernelProvisioner } from "./tools/ipython.js";
+import { BunKernelProvisioner } from "./tools/javascript.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { addAssistantUsage, emptyUsage } from "./usage.js";
 import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR, WEBSEARCH_SKILL_NAME } from "./websearch-credential.js";
@@ -315,7 +315,7 @@ export type CompactionReason = "manual" | "threshold" | "overflow" | "requested"
 export type AgentSessionEvent =
 	| AgentEvent
 	| {
-			type: "ipython_sent_agent_message";
+			type: "javascript_sent_agent_message";
 			toolCallId: string;
 			message: KernelSentAgentMessage;
 	  }
@@ -419,13 +419,13 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Model registry for API key resolution and model discovery */
 	modelRegistry: ModelRegistry;
-	/** Initial active built-in tool names. Default: [ipython] */
+	/** Initial active built-in tool names. Default: [javascript] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
 	/**
 	 * Whether the built-in long-running goals feature is available: the bundled
-	 * goal skill in the IPython kernel, its goal.* host handlers, and /goal.
+	 * goal skill in the Bun kernel, its goal.* host handlers, and /goal.
 	 * Default: true.
 	 */
 	includeGoals?: boolean;
@@ -439,7 +439,7 @@ export interface AgentSessionConfig {
 	 */
 	includeCompactSkill?: boolean;
 	/**
-	 * Optional host-side controller for the bundled rlm-heartbeat Python skill.
+	 * Optional host-side controller for the bundled rlm-heartbeat JavaScript skill.
 	 * When omitted, rlm_heartbeat.* host requests are unavailable.
 	 */
 	rlmHeartbeatController?: AgentRlmHeartbeatController;
@@ -474,12 +474,12 @@ export interface AgentSessionConfig {
 	/** Host-side autonomous continuation policy. */
 	autonomous?: AgentAutonomousConfig;
 	/**
-	 * Boot the IPython kernel in the background as soon as the session is created,
-	 * so the first ipython tool call doesn't pay the kernel cold start.
+	 * Boot the Bun kernel in the background as soon as the session is created,
+	 * so the first javascript tool call doesn't pay the kernel cold start.
 	 *
 	 * Only applies to main agents (rlmDepth 0); subagent kernels stay lazy. Default: false.
 	 */
-	prewarmIpythonKernel?: boolean;
+	prewarmBunKernel?: boolean;
 	/** Test/extension hook for automatic refine review decisions. Defaults to the model-backed review gate. */
 	autoRefineReviewer?: AutoRefineReviewer;
 	/**
@@ -792,9 +792,9 @@ function visibleSessionActionProjection(actions: readonly QueuedSessionAction[])
 	);
 }
 
-const IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY = "ipython_sent_agent_message";
+const JAVASCRIPT_SENT_AGENT_MESSAGE_CUSTOM_ENTRY = "javascript_sent_agent_message";
 
-interface PersistedIpythonSentAgentMessage {
+interface PersistedJavaScriptSentAgentMessage {
 	toolCallId: string;
 	message: KernelSentAgentMessage;
 }
@@ -803,7 +803,7 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parsePersistedIpythonSentAgentMessage(value: unknown): PersistedIpythonSentAgentMessage | undefined {
+function parsePersistedJavaScriptSentAgentMessage(value: unknown): PersistedJavaScriptSentAgentMessage | undefined {
 	if (!isObjectRecord(value) || typeof value.toolCallId !== "string" || !isObjectRecord(value.message)) {
 		return undefined;
 	}
@@ -838,7 +838,7 @@ function appendSentAgentMessageToToolResult(
 	toolCallId: string,
 	sentMessage: KernelSentAgentMessage,
 ): boolean {
-	if (message.role !== "toolResult" || message.toolName !== "ipython" || message.toolCallId !== toolCallId) {
+	if (message.role !== "toolResult" || message.toolName !== "javascript" || message.toolCallId !== toolCallId) {
 		return false;
 	}
 	const details = isObjectRecord(message.details) ? message.details : {};
@@ -1149,7 +1149,7 @@ export class AgentSession {
 	private _retryResolve: (() => void) | undefined = undefined;
 	private _retryAuthFailureSources: AuthSourceToken[] = [];
 	private _agentMessageOutcomes = new Map<string, AgentMessageOutcome>();
-	private _lateIpythonSentAgentMessages = new Map<string, KernelSentAgentMessage[]>();
+	private _lateJavaScriptSentAgentMessages = new Map<string, KernelSentAgentMessage[]>();
 	/** Outcome disclosures whose session-file append failed; retained for context rebuilds. */
 	private readonly _unpersistedCompactionOutcomes: CustomMessage[] = [];
 
@@ -1194,12 +1194,12 @@ export class AgentSession {
 	// re-populate the retained map after it's been cleared.
 	private _disposing = false;
 	private _disposeAsyncPromise?: Promise<void>;
-	private _ipythonKernelProvisioner?: IpythonKernelProvisioner;
+	private _bunKernelProvisioner?: BunKernelProvisioner;
 	/** Artifact dir backing the current provisioner's kernel snapshot, if any. */
-	private _ipythonKernelSnapshotDir?: string;
+	private _bunKernelSnapshotDir?: string;
 	/** True once the runtime has been built once; later builds are in-process rebuilds (/reload). */
-	private _ipythonRuntimeBuilt = false;
-	private readonly _prewarmIpythonKernel: boolean;
+	private _bunRuntimeBuilt = false;
+	private readonly _prewarmBunKernel: boolean;
 	private _rlmDepth: number;
 	private readonly _configuredRlmMaxDepth: number | undefined;
 	private _rlmMaxDepth: number;
@@ -1314,7 +1314,7 @@ export class AgentSession {
 		const resolvedRlmMaxDepth = this._resolveRlmMaxDepth();
 		this._rlmMaxDepth = resolvedRlmMaxDepth.maxDepth;
 		this._rlmMaxDepthSource = resolvedRlmMaxDepth.source;
-		this._prewarmIpythonKernel = (config.prewarmIpythonKernel ?? false) && this._rlmDepth === 0;
+		this._prewarmBunKernel = (config.prewarmBunKernel ?? false) && this._rlmDepth === 0;
 		this._autoRefineReviewer = config.autoRefineReviewer;
 		this._serializedRefine = config.serializedRefine ?? false;
 		this._rlmSessionDir = config.rlmSessionDir;
@@ -1342,7 +1342,7 @@ export class AgentSession {
 			// admission is unavailable mid-construction, so ride the next turn.
 			this._pendingNextTurnMessages.push(createGoalContextMessage(this._goalState, "continuation"));
 		}
-		this._restoreLateIpythonSentAgentMessages();
+		this._restoreLateJavaScriptSentAgentMessages();
 		if (this._goalState.status === "active") {
 			this._goalAccountingStartedAt = Date.now();
 		}
@@ -1501,25 +1501,25 @@ export class AgentSession {
 		this._emit({ type: "session_action_update", actions });
 	}
 
-	private _restoreLateIpythonSentAgentMessages(): void {
-		this._lateIpythonSentAgentMessages.clear();
+	private _restoreLateJavaScriptSentAgentMessages(): void {
+		this._lateJavaScriptSentAgentMessages.clear();
 		for (const entry of this.sessionManager.getBranch()) {
-			if (entry.type !== "custom" || entry.customType !== IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY) {
+			if (entry.type !== "custom" || entry.customType !== JAVASCRIPT_SENT_AGENT_MESSAGE_CUSTOM_ENTRY) {
 				continue;
 			}
-			const persisted = parsePersistedIpythonSentAgentMessage(entry.data);
+			const persisted = parsePersistedJavaScriptSentAgentMessage(entry.data);
 			if (persisted) {
-				this._rememberLateIpythonSentAgentMessage(persisted.toolCallId, persisted.message);
+				this._rememberLateJavaScriptSentAgentMessage(persisted.toolCallId, persisted.message);
 			}
 		}
 	}
 
-	private _rememberLateIpythonSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): boolean {
-		const messages = this._lateIpythonSentAgentMessages.get(toolCallId) ?? [];
+	private _rememberLateJavaScriptSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): boolean {
+		const messages = this._lateJavaScriptSentAgentMessages.get(toolCallId) ?? [];
 		const isNew = !messages.some((entry) => entry.id === message.id);
 		if (isNew) {
 			messages.push(message);
-			this._lateIpythonSentAgentMessages.set(toolCallId, messages);
+			this._lateJavaScriptSentAgentMessages.set(toolCallId, messages);
 		}
 		for (let index = this.agent.state.messages.length - 1; index >= 0; index -= 1) {
 			if (appendSentAgentMessageToToolResult(this.agent.state.messages[index], toolCallId, message)) {
@@ -1529,22 +1529,22 @@ export class AgentSession {
 		return isNew;
 	}
 
-	private _applyLateIpythonSentAgentMessages(message: AgentMessage): void {
-		if (message.role !== "toolResult" || message.toolName !== "ipython") {
+	private _applyLateJavaScriptSentAgentMessages(message: AgentMessage): void {
+		if (message.role !== "toolResult" || message.toolName !== "javascript") {
 			return;
 		}
-		for (const sentMessage of this._lateIpythonSentAgentMessages.get(message.toolCallId) ?? []) {
+		for (const sentMessage of this._lateJavaScriptSentAgentMessages.get(message.toolCallId) ?? []) {
 			appendSentAgentMessageToToolResult(message, message.toolCallId, sentMessage);
 		}
 	}
 
-	private _recordLateIpythonSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): void {
+	private _recordLateJavaScriptSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): void {
 		const record = () => {
-			if (this._disposed || !this._rememberLateIpythonSentAgentMessage(toolCallId, message)) {
+			if (this._disposed || !this._rememberLateJavaScriptSentAgentMessage(toolCallId, message)) {
 				return;
 			}
-			this.sessionManager.appendCustomEntry(IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY, { toolCallId, message });
-			this._emit({ type: "ipython_sent_agent_message", toolCallId, message });
+			this.sessionManager.appendCustomEntry(JAVASCRIPT_SENT_AGENT_MESSAGE_CUSTOM_ENTRY, { toolCallId, message });
+			this._emit({ type: "javascript_sent_agent_message", toolCallId, message });
 		};
 		this._agentEventQueue = this._agentEventQueue.then(record, record);
 		this._agentEventQueue.catch(() => {});
@@ -2029,27 +2029,27 @@ export class AgentSession {
 	}
 
 	/**
-	 * Goals are pursued through the IPython goal skill, so the only tool the
-	 * model needs is ipython. Force-activate it (including into a live
+	 * Goals are pursued through the Bun goal skill, so the only tool the
+	 * model needs is javascript. Force-activate it (including into a live
 	 * continuation context) so the model can always reach `goal.complete()`.
 	 */
 	private _ensureGoalRuntimeActive(context?: AgentContext): void {
 		if (!this._includeGoals) {
 			throw new Error("Goals are disabled. Enable goals before using /goal.");
 		}
-		const ipythonTool = this._toolRegistry.get("ipython");
-		if (!ipythonTool) {
-			throw new Error("Goals require the ipython tool, which is not available in this session.");
+		const javascriptTool = this._toolRegistry.get("javascript");
+		if (!javascriptTool) {
+			throw new Error("Goals require the javascript tool, which is not available in this session.");
 		}
 		const activeToolNames = new Set(this.getActiveToolNames());
-		if (!activeToolNames.has("ipython")) {
-			activeToolNames.add("ipython");
+		if (!activeToolNames.has("javascript")) {
+			activeToolNames.add("javascript");
 			this.setActiveToolsByName([...activeToolNames]);
 		}
 		if (context) {
 			const contextTools = [...(context.tools ?? [])];
-			if (!contextTools.some((tool) => tool.name === "ipython")) {
-				contextTools.push(ipythonTool);
+			if (!contextTools.some((tool) => tool.name === "javascript")) {
+				contextTools.push(javascriptTool);
 				context.tools = contextTools;
 			}
 		}
@@ -2115,7 +2115,7 @@ export class AgentSession {
 			return false;
 		}
 		// Usage is attributed at the assistant message's message_end, which fires
-		// before that turn's ipython cell runs. goal.complete() only arrives later
+		// before that turn's javascript cell runs. goal.complete() only arrives later
 		// over the kernel host bridge, so the completing turn is always accounted
 		// while the goal is still active. Only count turns spent pursuing the goal;
 		// post-completion turns (e.g. a closing summary) must not be attributed.
@@ -2811,7 +2811,7 @@ export class AgentSession {
 	}
 
 	/**
-	 * Handle a goal.* request from the IPython kernel host bridge (the bundled
+	 * Handle a goal.* request from the Bun kernel host bridge (the bundled
 	 * goal skill). All goal state stays host-side; the kernel only sees the
 	 * serialized snake_case response.
 	 */
@@ -3146,7 +3146,7 @@ export class AgentSession {
 		}
 		const goal = this._goalWithAccountedWallClock();
 		// A turn can cross the budget and complete the goal at once: accounting
-		// runs at message_end, before the completing ipython cell executes, so a
+		// runs at message_end, before the completing javascript cell executes, so a
 		// budget-limit context may already be steered. It is stale now — drop it.
 		this._clearQueuedGoalContexts();
 		this._setGoalState({
@@ -3422,7 +3422,7 @@ export class AgentSession {
 	private async _processAgentEvent(event: AgentEvent): Promise<void> {
 		let clearedDispatchEnded = false;
 		if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "toolResult") {
-			this._applyLateIpythonSentAgentMessages(event.message);
+			this._applyLateJavaScriptSentAgentMessages(event.message);
 		}
 		if (event.type === "message_start" || event.type === "message_end") {
 			const cleared = this._capturingCancelledAction(event.message);
@@ -3763,7 +3763,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	/**
-	 * Async teardown for graceful quit/switch: await the IPython kernel's dispose
+	 * Async teardown for graceful quit/switch: await the Bun kernel's dispose
 	 * (which flushes a final namespace snapshot) before the synchronous dispose, so
 	 * the latest state reaches disk instead of racing process exit.
 	 */
@@ -3940,7 +3940,7 @@ export class AgentSession {
 		this._rlmChildCleanupFailures.clear();
 		this._deletedRlmChildIds.clear();
 		try {
-			await this._ipythonKernelProvisioner?.dispose();
+			await this._bunKernelProvisioner?.dispose();
 		} catch {
 			// a failed kernel startup already cleaned up after itself
 		}
@@ -4121,7 +4121,7 @@ export class AgentSession {
 	buildSessionContext(): SessionContext {
 		const context = this.sessionManager.buildSessionContext();
 		for (const message of context.messages) {
-			this._applyLateIpythonSentAgentMessages(message);
+			this._applyLateJavaScriptSentAgentMessages(message);
 		}
 		this._mergeUnpersistedCompactionOutcomes(context.messages);
 		return context;
@@ -6865,7 +6865,7 @@ export class AgentSession {
 	// Added to history (not a nextTurn message) so it also reaches the continue()-driven
 	// auto-compaction resume, which never injects nextTurn messages.
 	private async _notifyKernelStateAfterCompaction(): Promise<void> {
-		const provisioner = this._ipythonKernelProvisioner;
+		const provisioner = this._bunKernelProvisioner;
 		// No kernel means no state to remind about; only stay silent in that case.
 		if (!provisioner?.hasRunningKernel) return;
 		// Bound the probe so a wedged kernel can't stall recovery, and abort it on timeout so
@@ -6889,13 +6889,13 @@ export class AgentSession {
 					? ` These names are still defined: ${names.join(", ")}.`
 					: " You have not defined any names yet.";
 		const content = [
-			"<ipython_state>",
-			`Your IPython kernel persisted through compaction; all variables, imports, and helpers you defined remain available.${detail}`,
-			"</ipython_state>",
+			"<javascript_state>",
+			`Your Bun kernel persisted through compaction; all variables, imports, and helpers you defined remain available.${detail}`,
+			"</javascript_state>",
 		].join("\n");
 		const message = {
 			role: "custom" as const,
-			customType: "ipython_state",
+			customType: "javascript_state",
 			content,
 			display: false,
 			timestamp: Date.now(),
@@ -6915,19 +6915,19 @@ export class AgentSession {
 	}
 
 	/**
-	 * Tell the model when a resumed session revived its IPython kernel state, so it
+	 * Tell the model when a resumed session revived its Bun kernel state, so it
 	 * knows which variables are actually available instead of assuming the kernel is
 	 * the one it left. Delivered as context before the next turn.
 	 */
-	private _onIpythonStateRestored(result: RestoreResult): void {
-		const lines = ["<ipython_state_restored>"];
+	private _onJavaScriptStateRestored(result: RestoreResult): void {
+		const lines = ["<javascript_state_restored>"];
 		if (result.restored.length > 0) {
 			lines.push(
-				`Your IPython kernel state was revived from your previous session. These names are available again: ${result.restored.join(", ")}.`,
+				`Your Bun kernel state was revived from your previous session. These names are available again: ${result.restored.join(", ")}.`,
 			);
 		} else {
 			lines.push(
-				"Your previous IPython kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.",
+				"Your previous Bun kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.",
 			);
 		}
 		if (result.failed.length > 0) {
@@ -6935,10 +6935,10 @@ export class AgentSession {
 				`These could not be restored and must be recreated if needed: ${result.failed.map((f) => f.name).join(", ")}.`,
 			);
 		}
-		lines.push("</ipython_state_restored>");
+		lines.push("</javascript_state_restored>");
 		void this.sendCustomMessage(
 			{
-				customType: IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
+				customType: JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE,
 				content: lines.join("\n"),
 				display: true,
 				details: { restored: result.restored.length > 0 },
@@ -7128,7 +7128,7 @@ export class AgentSession {
 		const newEntries = this.sessionManager.getEntries();
 		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 		this._mergeUnpersistedCompactionOutcomes(this.agent.state.messages);
-		this._restoreLateIpythonSentAgentMessages();
+		this._restoreLateJavaScriptSentAgentMessages();
 
 		// Get the saved compaction entry for the extension event
 		const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -8535,7 +8535,7 @@ export class AgentSession {
 		flagValues?: Map<string, boolean | string>;
 		includeAllExtensionTools?: boolean;
 	}): void {
-		const pythonSkills = getPythonSkillRuntimeInfo(this._modelVisibleSkills());
+		const javascriptSkills = getJavaScriptSkillRuntimeInfo(this._modelVisibleSkills());
 		let configuredBaseToolDefinitions: Record<string, ToolDefinition>;
 		if (this._baseToolsOverride) {
 			configuredBaseToolDefinitions = Object.fromEntries(
@@ -8549,28 +8549,30 @@ export class AgentSession {
 			// kernel so the session never holds two live kernels. Gate the new kernel's
 			// startup on the old one's dispose (which flushes a final snapshot), so a
 			// reload can't restore from a snapshot the old kernel is still writing.
-			const previousDispose = this._ipythonKernelProvisioner?.dispose();
-			this._ipythonKernelSnapshotDir = this.sessionManager.getSessionArtifactDir();
+			const previousDispose = this._bunKernelProvisioner?.dispose();
+			this._bunKernelSnapshotDir = this.sessionManager.getSessionArtifactDir();
 			// Only surface the "revived from your previous session" notice on the first
 			// build (a genuine resume). A later rebuild (/reload) restores state silently
 			// for continuity — the conversation is unchanged, so there's nothing to flag.
-			const notifyRestore = !this._ipythonRuntimeBuilt;
-			this._ipythonKernelProvisioner = new IpythonKernelProvisioner(this._cwd, {
+			const notifyRestore = !this._bunRuntimeBuilt;
+			this._bunKernelProvisioner = new BunKernelProvisioner(this._cwd, {
+				commandPrefix: this.settingsManager.getShellCommandPrefix(),
 				env: this._rlmKernelEnv(),
 				sessionId: this.sessionId,
 				hostHandlers: this._createKernelHostHandlers(),
-				pythonSkills,
-				snapshotDir: this._ipythonKernelSnapshotDir,
+				javascriptSkills,
+				snapshotDir: this._bunKernelSnapshotDir,
 				readyGate: previousDispose,
-				onRestore: notifyRestore ? (result) => this._onIpythonStateRestored(result) : undefined,
+				shellPath: this.settingsManager.getShellPath(),
+				onRestore: notifyRestore ? (result) => this._onJavaScriptStateRestored(result) : undefined,
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
-				ipython: {
-					provisioner: this._ipythonKernelProvisioner,
+				javascript: {
+					provisioner: this._bunKernelProvisioner,
 					commandPrefix: this.settingsManager.getShellCommandPrefix(),
 					shellPath: this.settingsManager.getShellPath(),
 					onLateSentAgentMessage: (toolCallId, message) =>
-						this._recordLateIpythonSentAgentMessage(toolCallId, message),
+						this._recordLateJavaScriptSentAgentMessage(toolCallId, message),
 				},
 			});
 		}
@@ -8605,11 +8607,11 @@ export class AgentSession {
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 
-		const defaultActiveToolNames = this._baseToolsOverride ? Object.keys(this._baseToolsOverride) : ["ipython"];
+		const defaultActiveToolNames = this._baseToolsOverride ? Object.keys(this._baseToolsOverride) : ["javascript"];
 		const baseActiveToolNames = [...(options.activeToolNames ?? defaultActiveToolNames)];
 		if (this._goalState.status === "active" && this._includeGoals) {
-			// An active goal needs ipython so the model can reach the goal skill.
-			baseActiveToolNames.push("ipython");
+			// An active goal needs javascript so the model can reach the goal skill.
+			baseActiveToolNames.push("javascript");
 		}
 		this._refreshToolRegistry({
 			activeToolNames: [...new Set(baseActiveToolNames)],
@@ -8620,14 +8622,13 @@ export class AgentSession {
 		// has a kernel snapshot — so its state is revived and the model is told what
 		// came back before the first turn, rather than a turn later when the kernel
 		// would otherwise lazily start on first use.
-		const hasSnapshot =
-			!!this._ipythonKernelSnapshotDir && existsSync(snapshotPathIn(this._ipythonKernelSnapshotDir));
-		if ((this._prewarmIpythonKernel || hasSnapshot) && this.getActiveToolNames().includes("ipython")) {
-			this._ipythonKernelProvisioner?.prewarm();
+		const hasSnapshot = !!this._bunKernelSnapshotDir && existsSync(snapshotPathIn(this._bunKernelSnapshotDir));
+		if ((this._prewarmBunKernel || hasSnapshot) && this.getActiveToolNames().includes("javascript")) {
+			this._bunKernelProvisioner?.prewarm();
 		}
 
 		// Subsequent builds are in-process rebuilds (/reload), not a fresh resume.
-		this._ipythonRuntimeBuilt = true;
+		this._bunRuntimeBuilt = true;
 	}
 
 	/**
@@ -8657,7 +8658,7 @@ export class AgentSession {
 		return skills;
 	}
 
-	/** Typed handlers for host requests arriving from the IPython kernel comm bridge. */
+	/** Typed handlers for host requests arriving from the Bun kernel comm bridge. */
 	private _createKernelHostHandlers(): HostRequestHandlers {
 		const handlers: HostRequestHandlers = {
 			"rlm.run": createRlmRunHostHandler(async ({ prompt, kwargs, cellSourceCode }) => ({
@@ -10841,7 +10842,7 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 			this._mergeUnpersistedCompactionOutcomes(this.agent.state.messages);
-			this._restoreLateIpythonSentAgentMessages();
+			this._restoreLateJavaScriptSentAgentMessages();
 			this._reloadGoalStateFromBranch();
 			this._reloadRlmMaxDepthFromBranch();
 			this._invalidateQueuedPromptPreparation();

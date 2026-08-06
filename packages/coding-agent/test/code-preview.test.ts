@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { previewBashCommand, previewIpythonCode, previewPythonCode } from "../src/core/tools/code-preview.js";
+import { previewBashCommand, previewJavaScriptCode } from "../src/core/tools/code-preview.js";
 
 describe("code preview", () => {
 	it("skips bash setup and previews the real command", () => {
@@ -9,42 +9,42 @@ describe("code preview", () => {
 	it("simplifies common runner wrappers", () => {
 		expect(
 			previewBashCommand("npx tsx ../../node_modules/vitest/dist/cli.js --run test/code-preview.test.ts"),
-		).toEqual({
-			language: "bash",
-			text: "vitest --run test/code-preview.test.ts",
+		).toEqual({ language: "bash", text: "vitest --run test/code-preview.test.ts" });
+	});
+
+	it("unwraps Bun heredocs in bash", () => {
+		const command = `set -e
+bun <<'JS'
+const path = "package.json";
+await Bun.write(path, await Bun.file(path).text());
+JS`;
+		expect(previewBashCommand(command)).toEqual({
+			language: "javascript",
+			text: "await Bun.write(path, await Bun.file(path).text());",
 		});
 	});
 
-	it("unwraps python heredocs in bash", () => {
-		const command = `set -e
-python3 - <<'PY'
-from pathlib import Path
-path = Path("package.json")
-text = path.read_text()
-path.write_text(text)
-PY`;
-		expect(previewBashCommand(command)).toEqual({ language: "python", text: "path.write_text(text)" });
+	it("previews Bun shell templates as bash", () => {
+		const code = `const cwd = "packages/coding-agent";
+await \`\${cwd}\`;
+await $\`npm run check\`;`;
+		expect(previewJavaScriptCode(code)).toEqual({ language: "bash", text: "npm check" });
 	});
 
-	it("unwraps bash cells in ipython", () => {
-		const code = `%%bash
-set -e
-python3 - <<'PY'
-import json
-data = json.loads("{}")
-print(data.keys())
-PY`;
-		expect(previewIpythonCode(code)).toEqual({ language: "python", text: "data.keys()" });
+	it("previews sh helper calls as bash", () => {
+		expect(previewJavaScriptCode('await sh("git status --short")')).toEqual({
+			language: "bash",
+			text: "git status --short",
+		});
 	});
 
-	it("prefers meaningful python effects over setup assignments", () => {
-		const code = `from pathlib import Path
-p = Path("packages/coding-agent/src/modes/interactive/components/ipython-cell.ts")
-txt = p.read_text()
-p.write_text(txt.replace("old", "new"))`;
-		expect(previewPythonCode(code)).toEqual({
-			language: "python",
-			text: "write packages/coding-agent/src/modes/interactive/components/ip…",
+	it("prefers meaningful JavaScript effects over setup assignments", () => {
+		const code = `const path = "packages/coding-agent/src/core/tools/javascript.ts";
+const text = await Bun.file(path).text();
+await Bun.write(path, text.replace("old", "new"));`;
+		expect(previewJavaScriptCode(code)).toEqual({
+			language: "javascript",
+			text: 'await Bun.write(path, text.replace("old", "new"));',
 		});
 	});
 
@@ -63,78 +63,37 @@ p.write_text(txt.replace("old", "new"))`;
 		});
 	});
 
-	it("extracts python subprocesses and control-block effects", () => {
-		const subprocessCode = `import subprocess
-subprocess.run(["npm", "run", "check"])
-`;
-		expect(previewPythonCode(subprocessCode)).toEqual({ language: "python", text: "npm check" });
-
-		const controlCode = `from pathlib import Path
-p = Path("packages/foo.ts")
-if p.exists():
-    p.unlink()
-`;
-		expect(previewPythonCode(controlCode)).toEqual({ language: "python", text: "delete packages/foo.ts" });
-	});
-
 	it("prefers executable calls over helper definitions", () => {
-		const code = `def helper():
-    return 1
-run_check()
-`;
-		expect(previewPythonCode(code)).toEqual({ language: "python", text: "run_check()" });
+		const code = `function helper() {
+  return 1;
+}
+await runCheck();`;
+		expect(previewJavaScriptCode(code)).toEqual({ language: "javascript", text: "await runCheck();" });
 	});
 
-	it("redacts sensitive python preview values", () => {
-		expect(previewPythonCode('password = "supersecretvalue"')).toEqual({
-			language: "python",
-			text: "password=<redacted>",
+	it("redacts sensitive JavaScript preview values", () => {
+		expect(previewJavaScriptCode('const password = "supersecretvalue";')).toEqual({
+			language: "javascript",
+			text: "const password=<redacted>;",
 		});
-		expect(previewPythonCode('client = OpenAI(api_key="sk-testsecretvalue")')).toEqual({
-			language: "python",
-			text: "client = OpenAI(api_key=<redacted>)",
+		expect(previewJavaScriptCode('const client = createClient({ apiKey: "sk-testsecretvalue" });')).toEqual({
+			language: "javascript",
+			text: "const client = createClient({ apiKey=<redacted> });",
 		});
 	});
 
-	it("falls back when heredoc has no useful preview", () => {
+	it("falls back to bash when a heredoc has no useful JavaScript preview", () => {
 		const command = `npm run check
-python3 - <<'PY'
-import json
-from pathlib import Path
-PY`;
+bun <<'JS'
+import "node:path";
+JS`;
 		expect(previewBashCommand(command)).toEqual({ language: "bash", text: "npm check" });
-	});
-
-	it("continues past empty python heredocs", () => {
-		const command = `python3 - <<'PY'
-import json
-from pathlib import Path
-PY
-python3 - <<'PY'
-from pathlib import Path
-p = Path("packages/foo.ts")
-p.write_text("hello")
-PY`;
-		expect(previewBashCommand(command)).toEqual({ language: "python", text: "write packages/foo.ts" });
 	});
 
 	it("does not treat a .sh script path as an inline bash heredoc", () => {
 		const command = `./script.sh <<'EOF'
 hello world
 EOF`;
-		// The .sh suffix must not trigger the bash-interpreter branch; preview the body.
 		expect(previewBashCommand(command)).toEqual({ language: "bash", text: "hello world" });
-	});
-
-	it("prefers a later meaningful heredoc over an earlier generic one", () => {
-		const command = `cat <<'CFG'
-key=value
-CFG
-python3 - <<'PY'
-from pathlib import Path
-p = Path("packages/foo.ts")
-p.write_text("hello")
-PY`;
-		expect(previewBashCommand(command)).toEqual({ language: "python", text: "write packages/foo.ts" });
 	});
 });

@@ -6,7 +6,9 @@ import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
-import type { KernelBootstrapProgressHandler, KernelPythonSkill } from "./bootstrap.js";
+import type { JavaScriptSkillRuntimeInfo } from "../skills.js";
+import { ensureKernelBun, type KernelBootstrapProgressHandler } from "./bootstrap.js";
+import { createHarnessHostHandlers } from "./bun-harness-host.js";
 import {
 	BUN_WORKER_PROTOCOL_VERSION,
 	type BunWorkerDisplayMessage,
@@ -47,13 +49,6 @@ const RUNTIME_NAMESPACE_NAMES = new Set([
 	"__primeHostRequest",
 ]);
 
-export class KernelBusyAfterInterruptError extends Error {
-	constructor() {
-		super("Bun worker recovery is still in progress");
-		this.name = "KernelBusyAfterInterruptError";
-	}
-}
-
 export type HostRequestHandler = (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
 export type HostRequestHandlers = Record<string, HostRequestHandler>;
 
@@ -72,9 +67,10 @@ export interface KernelManagerOptions {
 	hostHandlers?: HostRequestHandlers;
 	snapshot?: KernelSnapshotConfig;
 	workerPath?: string;
-	python?: string;
-	pythonSkills?: readonly KernelPythonSkill[];
-	username?: string;
+	kernelDirectory?: string;
+	commandPrefix?: string;
+	shellPath?: string;
+	javascriptSkills?: readonly JavaScriptSkillRuntimeInfo[];
 }
 
 export interface KernelStartOptions {
@@ -151,6 +147,7 @@ interface ActiveExecution {
 	attachments: KernelAttachment[];
 	sentAgentMessages: KernelSentAgentMessage[];
 	aborting: boolean;
+	fatalDisplayError?: string;
 }
 
 interface Deferred<T> {
@@ -290,6 +287,7 @@ export class KernelManager {
 	private readonly pendingProtocolRequests = new Map<string, PendingProtocolRequest>();
 	private readonly inFlightHostRequests = new Set<Promise<void>>();
 	private readonly lateSentAgentMessageHandlers = new Map<string, (message: KernelSentAgentMessage) => void>();
+	private readonly harnessHostHandlers: HostRequestHandlers;
 	private kernelDiagnostics = "";
 	private snapshotTimer?: ReturnType<typeof globalThis.setTimeout>;
 	private snapshotDirty = false;
@@ -299,6 +297,13 @@ export class KernelManager {
 
 	constructor(options: KernelManagerOptions = {}) {
 		this.options = options;
+		const environment = { ...process.env, ...options.env };
+		this.harnessHostHandlers = environment.RLM_GLOBAL_HARNESS_STATE_DIR
+			? createHarnessHostHandlers({
+					globalDirectory: environment.RLM_GLOBAL_HARNESS_STATE_DIR,
+					localDirectory: environment.RLM_HARNESS_STATE_DIR,
+				})
+			: {};
 	}
 
 	get ownerSessionId(): string | undefined {
@@ -328,12 +333,17 @@ export class KernelManager {
 		installSignalHandlersOnce();
 		liveKernels.add(this);
 		onProgress?.("Resolving Bun runtime");
-		const runtime = await resolveBunRuntime({
-			env: this.options.bun ? { ...process.env, PRIME_AGENT_KERNEL_BUN: this.options.bun } : process.env,
-		});
+		const bootstrappedRuntime = this.options.workerPath ? undefined : await ensureKernelBun({ onProgress });
+		const runtime =
+			bootstrappedRuntime ??
+			(await resolveBunRuntime({
+				env: this.options.bun ? { ...process.env, PRIME_AGENT_KERNEL_BUN: this.options.bun } : process.env,
+			}));
 		if ((this.state as string) === "shutdown") throw new Error("Kernel was disposed during startup");
 		onProgress?.("Starting Bun worker");
-		const worker = spawn(runtime.path, [resolveWorkerPath(this.options.workerPath)], {
+		const workerPath = this.options.workerPath ?? bootstrappedRuntime?.workerPath;
+		const kernelDirectory = this.options.kernelDirectory ?? bootstrappedRuntime?.kernelDirectory ?? process.cwd();
+		const worker = spawn(runtime.path, [resolveWorkerPath(workerPath)], {
 			cwd: this.options.cwd,
 			env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
 			stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
@@ -351,11 +361,18 @@ export class KernelManager {
 
 		const ready = await this.sendRequest(
 			{
-				commandPrefix: "",
+				bunPath: runtime.path,
+				commandPrefix: this.options.commandPrefix ?? "",
 				cwd: this.options.cwd ?? process.cwd(),
 				id: randomUUID(),
+				kernelDirectory,
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
-				shellPath: "/bin/sh",
+				shellPath: this.options.shellPath ?? "/bin/sh",
+				skills: (this.options.javascriptSkills ?? []).map((skill) => ({
+					entryPath: skill.entryPath,
+					globalName: skill.globalName,
+					name: skill.name,
+				})),
 				type: "initialize",
 			},
 			"ready",
@@ -435,6 +452,14 @@ export class KernelManager {
 			this.handleDisplay(message);
 			return;
 		}
+		if (message.type === "protocol_error" && message.replyTo) {
+			const pending = this.pendingProtocolRequests.get(message.replyTo);
+			if (pending) {
+				this.pendingProtocolRequests.delete(message.replyTo);
+				pending.reject(new Error(`${message.error.name}: ${message.error.message}`));
+				return;
+			}
+		}
 		if (message.type === "diagnostic" || message.type === "protocol_error") {
 			this.appendKernelDiagnostic(`${message.error.name}: ${message.error.message}`);
 			return;
@@ -513,7 +538,9 @@ export class KernelManager {
 		const onAbort = () => {
 			if (execution.aborting) return;
 			execution.aborting = true;
-			void this.abortAndRecover(execution).finally(() => aborted.resolve());
+			void this.abortAndRecover(execution)
+				.catch((error) => this.appendKernelDiagnostic(`worker recovery failed: ${errorMessage(error)}`))
+				.finally(() => aborted.resolve());
 		};
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		if (opts.signal?.aborted) onAbort();
@@ -548,6 +575,18 @@ export class KernelManager {
 					evalue: outcome.message.error.message,
 					traceback: outcome.message.error.stack?.split("\n") ?? [],
 				});
+			}
+			if (execution.fatalDisplayError) {
+				return this.executionResult(
+					execution,
+					"error",
+					{
+						ename: "AttachmentTooLargeError",
+						evalue: execution.fatalDisplayError,
+						traceback: [execution.fatalDisplayError],
+					},
+					outcome.message.value,
+				);
 			}
 			return this.executionResult(execution, "ok", undefined, outcome.message.value);
 		} finally {
@@ -601,7 +640,9 @@ export class KernelManager {
 		if (message.mimeType === ATTACHMENT_DISPLAY_MIME) {
 			const attachment = parseAttachmentDisplay(message.data);
 			if (attachment === "oversized") {
-				execution.stderr += `${execution.stderr ? "\n" : ""}attachment dropped: exceeds ${MAX_ATTACHMENT_DATA_CHARS} base64 chars`;
+				const error = `attachment dropped: exceeds ${MAX_ATTACHMENT_DATA_CHARS} base64 chars`;
+				execution.fatalDisplayError = error;
+				execution.stderr += `${execution.stderr ? "\n" : ""}${error}`;
 			} else if (attachment) {
 				execution.attachments.push(attachment);
 			}
@@ -616,7 +657,8 @@ export class KernelManager {
 	private startHostRequest(message: BunWorkerHostRequestMessage): void {
 		const task = (async () => {
 			try {
-				const handler = this.options.hostHandlers?.[message.requestType];
+				const handler =
+					this.options.hostHandlers?.[message.requestType] ?? this.harnessHostHandlers[message.requestType];
 				if (!handler)
 					throw new Error(`host request type "${message.requestType}" is not available in this session`);
 				const payload = isRecord(message.payload)

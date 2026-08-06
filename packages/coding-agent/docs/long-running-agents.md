@@ -18,7 +18,7 @@ flowchart TD
         policy["Continuation policy"]
         queue["Session prompt queue"]
         session["AgentSession"]
-        kernel["Persistent IPython kernel"]
+        kernel["Persistent Bun notebook"]
         children["RLM child sessions"]
 
         heartbeat --> queue
@@ -40,11 +40,11 @@ flowchart TD
     artifacts -. "restore after restart" .-> session
 ```
 
-The client can detach at any point. The resident worker continues to own the queue, schedules, session, kernel, descendants, and persisted state.
+The client can detach at any point. The resident worker continues to own the queue, schedules, session, notebook, descendants, and persisted state.
 
 ## Daemon-Backed Sessions
 
-Normal interactive sessions run in resident worker processes managed by a local supervisor. The worker owns the root session, its IPython kernel, scheduled jobs, and RLM descendants.
+Normal interactive sessions run in resident worker processes managed by a local supervisor. The worker owns the root session, its Bun notebook, scheduled jobs, and RLM descendants.
 
 Closing the terminal UI detaches the client; it does not stop the worker. List and reconnect to active agents with:
 
@@ -76,29 +76,28 @@ The daemon routes direct messages between active sessions and retained daemon-ba
 prime-agent send <agent> "Please verify the latest migration"
 ```
 
-From the IPython kernel, use the preloaded `agent_message` Python skill:
+From the Bun notebook, use the preloaded `agentMessage` global:
 
-```python
-roster = await agent_message.list_agents()
-receipt = await agent_message.send(
-    "Recheck the endpoint after the latest edit",
-    receiver_role="sibling",
-    receiver_name="api-reviewer",
-    mode="auto",
-)
-print(receipt["deliveryStatus"])
+```javascript
+const roster = await agentMessage.listAgents();
+const receipt = await agentMessage.send("Recheck the endpoint after the latest edit", {
+  receiverRole: "sibling",
+  receiverName: "api-reviewer",
+});
+console.log(receipt.deliveryStatus);
 ```
 
 For the current parent's direct RLM children, prefer the parent-scoped registry:
 
-```python
-children = await rlm.list_subagents()
-child = next(item for item in children if item.session_name == "api-reviewer")
-await agent_message.send(
-    "Continue with the updated diff",
-    receiver_role="child",
-    receiver_name=child.session_name,
-)
+```javascript
+const children = await rlm.listSubagents();
+const child = children.find((item) => item.sessionName === "api-reviewer");
+if (child) {
+  await agentMessage.send("Continue with the updated diff", {
+    receiverRole: "child",
+    receiverName: child.sessionName,
+  });
+}
 ```
 
 Delivery modes are:
@@ -107,7 +106,7 @@ Delivery modes are:
 - `steer`: intentionally inject the message into active work; and
 - `follow_up`: wait until the target's current work finishes.
 
-A receipt is `delivered` when it reached an idle target's context or `queued` when accepted for later delivery. `agent_message.send("all", message)` broadcasts only within the family roster. The daemon derives sender identity and enforces message-size, rate, and pending-queue limits.
+A receipt is `delivered` when it reached an idle target's context or `queued` when accepted for later delivery. `agentMessage.broadcast(message)` broadcasts only within the family roster. The daemon derives sender identity and enforces message-size, rate, and pending-queue limits.
 
 ## Heartbeats and Scheduled Prompts
 
@@ -137,24 +136,22 @@ Heartbeat delivery defaults to steering active work. Add `--follow-up` when the 
 
 An agent can create several internal heartbeats programmatically:
 
-```python
-first = await rlm_heartbeat.create(
-    "check whether the test run finished",
-    interval="5m",
-    label="tests",
-)
-second = await rlm_heartbeat.create(
-    "inspect the deployment status",
-    interval="10m",
-    label="deploy",
-    delivery_mode="follow_up",
-)
+```javascript
+const first = await rlmHeartbeat.create("check whether the test run finished", {
+  interval: "5m",
+  label: "tests",
+});
+const second = await rlmHeartbeat.create("inspect the deployment status", {
+  interval: "10m",
+  label: "deploy",
+  deliveryMode: "follow_up",
+});
 
-await rlm_heartbeat.list()
-await rlm_heartbeat.update(first["heartbeat"]["id"], status="pause")
+await rlmHeartbeat.list();
+await rlmHeartbeat.update(first.heartbeat.id, { status: "pause" });
 ```
 
-RLM heartbeats are distinct from the user's `/heartbeat`; the Python skill cannot replace or clear the user-owned heartbeat.
+RLM heartbeats are distinct from the user's `/heartbeat`; the JavaScript skill cannot replace or clear the user-owned heartbeat.
 
 ### General schedules
 
@@ -189,9 +186,9 @@ Manage its state with:
 
 The model uses the kernel-side `goal` skill to inspect or finish the objective:
 
-```python
-state = await goal.get()
-await goal.complete()
+```javascript
+const state = await goal.get();
+await goal.complete();
 ```
 
 Goal state records token usage, elapsed time, continuation count, and an optional explicit token budget. The harness keeps prompting an active goal after ordinary assistant turns; only `goal.complete()` marks successful completion. Creating a persistent goal is an explicit user or host action, not something the agent should infer from every task.
@@ -227,13 +224,13 @@ Goals and autonomous mode are complementary but different:
 
 ## Compaction and Continuity
 
-Automatic compaction handles context growth during long tasks. On overflow or near the configured threshold, Prime Agent summarizes older messages, retains recent context, and continues. The IPython kernel persists through compaction, so variables, imports, helper functions, and task state remain available.
+Automatic compaction handles context growth during long tasks. On overflow or near the configured threshold, Prime Agent summarizes older messages, retains recent context, and continues. The Bun notebook persists through compaction, so variables, helper functions, and task state remain available.
 
 The agent can inspect or request compaction programmatically:
 
-```python
-await compact.status()
-await compact.run("Preserve the failing tests and remaining migration steps")
+```javascript
+await compact.status();
+await compact.run("Preserve the failing tests and remaining migration steps");
 ```
 
 Compaction is not a completion signal. It does not stop goals, autonomous continuations, heartbeats, or existing child sessions; later parent turns continue from the compacted context.

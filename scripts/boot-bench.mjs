@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 /**
- * Kernel boot fan-out benchmark for ENG-4387. Boots N IPython kernels concurrently
- * and reports boot success rate, per-kernel latency, peak RSS, and wall time.
+ * Kernel boot fan-out benchmark for ENG-4387. Boots N Bun workers concurrently
+ * and reports boot success rate, per-worker latency, peak RSS, and wall time.
  *
- *   node scripts/boot-bench.mjs --mode forkserver --n 100
+ *   node scripts/boot-bench.mjs --mode gated --n 100
  *
  * Modes:
- *   ungated     direct `python -m ipykernel_launcher`, no boot gate
- *   gated       direct spawn through the boot-gate semaphore (today's default)
- *   forkserver  fork each kernel from the pre-imported template (PRIME_AGENT_KERNEL_FORKSERVER=1)
+ *   ungated     direct Bun worker spawn, no boot gate
+ *   gated       spawn through the boot-gate semaphore (today's default)
  *
- * Also asserts a forked kernel is a real, reachable kernel (runs code over ZMQ)
- * and that namespaces are isolated (a var set in kernel A is absent in kernel B).
+ * Also asserts workers are reachable and namespaces are isolated.
  *
  * Requires the coding-agent package to be built (dist/). Run from the repo root.
  */
@@ -21,7 +19,6 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = join(fileURLToPath(import.meta.url), "..", "..");
 const kernelMod = join(repoRoot, "packages", "coding-agent", "dist", "core", "kernel", "index.js");
-const bootstrapMod = join(repoRoot, "packages", "coding-agent", "dist", "core", "kernel", "bootstrap.js");
 const bootGateMod = join(repoRoot, "packages", "coding-agent", "dist", "core", "kernel", "boot-gate.js");
 
 function arg(name, def) {
@@ -32,11 +29,7 @@ function arg(name, def) {
 const mode = arg("mode", "gated");
 const n = Number(arg("n", 50)) || 50;
 
-// Pin per-mode so the default-on forkserver doesn't leak into the direct-spawn modes.
-process.env.PRIME_AGENT_KERNEL_FORKSERVER = mode === "forkserver" ? "1" : "0";
-
 const { KernelManager } = await import(kernelMod);
-const { ensureKernelPython } = await import(bootstrapMod);
 const { withKernelBootPermit } = await import(bootGateMod);
 
 function peakRssMb() {
@@ -50,8 +43,8 @@ function pct(sorted, p) {
 	return Math.round(sorted[idx]);
 }
 
-async function bootOne(python) {
-	const m = new KernelManager({ python });
+async function bootOne() {
+	const m = new KernelManager();
 	const started = performance.now();
 	const boot = () => m.start();
 	if (mode === "ungated") await boot();
@@ -62,10 +55,8 @@ async function bootOne(python) {
 
 async function main() {
 	console.log(`mode=${mode} n=${n} platform=${process.platform}`);
-	const python = await ensureKernelPython({});
-
 	const wallStart = performance.now();
-	const results = await Promise.allSettled(Array.from({ length: n }, () => bootOne(python)));
+	const results = await Promise.allSettled(Array.from({ length: n }, () => bootOne()));
 	const wallMs = performance.now() - wallStart;
 
 	const ok = results.filter((r) => r.status === "fulfilled");
@@ -83,10 +74,10 @@ async function main() {
 	// Reachability + isolation check on the first two booted kernels.
 	if (managers.length >= 2) {
 		const [a, b] = managers;
-		const setA = await a.execute("bench_marker = 4387\nprint(bench_marker)");
-		const seeB = await b.execute("print('bench_marker' in dir())");
+		const setA = await a.execute("const benchMarker = 4387; console.log(benchMarker)");
+		const seeB = await b.execute("console.log(typeof benchMarker)");
 		const reachable = setA.status === "ok" && setA.stdout.includes("4387");
-		const isolated = seeB.status === "ok" && /False/.test(seeB.stdout);
+		const isolated = seeB.status === "ok" && seeB.stdout.includes("undefined");
 		console.log(`reachable: ${reachable ? "yes" : "NO"}   isolated: ${isolated ? "yes" : "NO"}`);
 	}
 

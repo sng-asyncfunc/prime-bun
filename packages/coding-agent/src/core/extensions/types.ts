@@ -65,8 +65,8 @@ import type {
 	BashToolDetails,
 	BashToolInput,
 	EditToolInput,
-	IpythonToolDetails,
-	IpythonToolInput,
+	JavaScriptToolDetails,
+	JavaScriptToolInput,
 } from "../tools/index.js";
 
 export type { ExecOptions, ExecResult } from "../exec.js";
@@ -797,9 +797,9 @@ export interface EditToolCallEvent extends ToolCallEventBase {
 	input: EditToolInput;
 }
 
-export interface IpythonToolCallEvent extends ToolCallEventBase {
-	toolName: "ipython";
-	input: IpythonToolInput;
+export interface JavaScriptToolCallEvent extends ToolCallEventBase {
+	toolName: "javascript";
+	input: JavaScriptToolInput;
 }
 
 export interface CustomToolCallEvent extends ToolCallEventBase {
@@ -813,7 +813,7 @@ export interface CustomToolCallEvent extends ToolCallEventBase {
  * `event.input` is mutable. Mutate it in place to patch tool arguments before execution.
  * Later `tool_call` handlers see earlier mutations. No re-validation is performed after mutation.
  */
-export type ToolCallEvent = BashToolCallEvent | EditToolCallEvent | IpythonToolCallEvent | CustomToolCallEvent;
+export type ToolCallEvent = BashToolCallEvent | EditToolCallEvent | JavaScriptToolCallEvent | CustomToolCallEvent;
 
 interface ToolResultEventBase {
 	type: "tool_result";
@@ -833,9 +833,9 @@ export interface EditToolResultEvent extends ToolResultEventBase {
 	details: EditToolDetails | undefined;
 }
 
-export interface IpythonToolResultEvent extends ToolResultEventBase {
-	toolName: "ipython";
-	details: IpythonToolDetails | undefined;
+export interface JavaScriptToolResultEvent extends ToolResultEventBase {
+	toolName: "javascript";
+	details: JavaScriptToolDetails | undefined;
 }
 
 export interface CustomToolResultEvent extends ToolResultEventBase {
@@ -847,7 +847,7 @@ export interface CustomToolResultEvent extends ToolResultEventBase {
 export type ToolResultEvent =
 	| BashToolResultEvent
 	| EditToolResultEvent
-	| IpythonToolResultEvent
+	| JavaScriptToolResultEvent
 	| CustomToolResultEvent;
 
 // Type guards for ToolResultEvent
@@ -857,8 +857,8 @@ export function isBashToolResult(e: ToolResultEvent): e is BashToolResultEvent {
 export function isEditToolResult(e: ToolResultEvent): e is EditToolResultEvent {
 	return e.toolName === "edit";
 }
-export function isIpythonToolResult(e: ToolResultEvent): e is IpythonToolResultEvent {
-	return e.toolName === "ipython";
+export function isJavaScriptToolResult(e: ToolResultEvent): e is JavaScriptToolResultEvent {
+	return e.toolName === "javascript";
 }
 
 /**
@@ -883,7 +883,7 @@ export function isIpythonToolResult(e: ToolResultEvent): e is IpythonToolResultE
  */
 export function isToolCallEventType(toolName: "bash", event: ToolCallEvent): event is BashToolCallEvent;
 export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
-export function isToolCallEventType(toolName: "ipython", event: ToolCallEvent): event is IpythonToolCallEvent;
+export function isToolCallEventType(toolName: "javascript", event: ToolCallEvent): event is JavaScriptToolCallEvent;
 export function isToolCallEventType<TName extends string, TInput extends Record<string, unknown>>(
 	toolName: TName,
 	event: ToolCallEvent,

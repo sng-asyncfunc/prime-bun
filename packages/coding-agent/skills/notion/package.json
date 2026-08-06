@@ -1,0 +1,9 @@
+{
+	"name": "@prime-agent/skill-notion",
+	"private": true,
+	"type": "module",
+	"primeAgent": {
+		"entry": "src/index.ts",
+		"global": "notion"
+	}
+}

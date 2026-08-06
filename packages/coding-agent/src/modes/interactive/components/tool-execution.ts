@@ -10,7 +10,7 @@ import type { AgentConnectionToolDefinition } from "../../agent-connection/index
 import { type Theme, theme } from "../theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../theme/working-icon.js";
 import { FileChangeSummaryComponent, getToolFileChanges } from "./edit-summary.js";
-import { getIpythonCodeFromArgs, IPythonCellComponent } from "./ipython-cell.js";
+import { getJavaScriptCodeFromArgs, JavaScriptCellComponent } from "./javascript-cell.js";
 import { ToolPanel } from "./tool-panel.js";
 
 export interface ToolExecutionOptions {
@@ -50,8 +50,8 @@ function createReplayBuiltInToolDefinition(
 	cwd: string,
 	toolDefinition: ToolExecutionDefinition | undefined,
 ): ToolDefinition<any, any> | undefined {
-	if (toolName === "ipython") {
-		return createAllToolDefinitions(cwd).ipython;
+	if (toolName === "javascript") {
+		return createAllToolDefinitions(cwd).javascript;
 	}
 	switch (toolName) {
 		case "bash": {
@@ -72,7 +72,7 @@ export class ToolExecutionComponent extends Container {
 	private selfRenderContainer: Container;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
-	private ipythonCellComponent?: IPythonCellComponent;
+	private javaScriptCellComponent?: JavaScriptCellComponent;
 	private rendererState: any = {};
 	private imageComponents: Image[] = [];
 	private toolName: string;
@@ -158,7 +158,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private getRenderShell(): "default" | "self" {
-		if (this.shouldUseIpythonRenderer()) {
+		if (this.shouldUseJavaScriptRenderer()) {
 			return "self";
 		}
 		if (!this.builtInToolDefinition) {
@@ -170,8 +170,8 @@ export class ToolExecutionComponent extends Container {
 		return this.toolDefinition.renderShell ?? this.builtInToolDefinition.renderShell ?? "default";
 	}
 
-	private shouldUseIpythonRenderer(): boolean {
-		return this.toolName === "ipython" && !this.toolDefinition?.renderCall && !this.toolDefinition?.renderResult;
+	private shouldUseJavaScriptRenderer(): boolean {
+		return this.toolName === "javascript" && !this.toolDefinition?.renderCall && !this.toolDefinition?.renderResult;
 	}
 
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
@@ -323,9 +323,9 @@ export class ToolExecutionComponent extends Container {
 		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
 			this.selfRenderContainer.clear();
 
-			if (this.shouldUseIpythonRenderer()) {
+			if (this.shouldUseJavaScriptRenderer()) {
 				const state = {
-					code: getIpythonCodeFromArgs(this.args),
+					code: getJavaScriptCodeFromArgs(this.args),
 					content: this.result?.content,
 					details: this.result?.details,
 					isPartial: this.isPartial,
@@ -337,12 +337,12 @@ export class ToolExecutionComponent extends Container {
 					showImages: this.showImages,
 					cwd: this.cwd,
 				};
-				if (!this.ipythonCellComponent) {
-					this.ipythonCellComponent = new IPythonCellComponent(state);
+				if (!this.javaScriptCellComponent) {
+					this.javaScriptCellComponent = new JavaScriptCellComponent(state);
 				} else {
-					this.ipythonCellComponent.update(state);
+					this.javaScriptCellComponent.update(state);
 				}
-				this.selfRenderContainer.addChild(this.ipythonCellComponent);
+				this.selfRenderContainer.addChild(this.javaScriptCellComponent);
 				hasContent = true;
 			} else {
 				hasContent = this.mountRenderers(this.selfRenderContainer, true);
@@ -391,7 +391,7 @@ export class ToolExecutionComponent extends Container {
 		const isBuiltInEdit =
 			this.toolName === "edit" &&
 			(this.toolDefinition === undefined || this.toolDefinition.replayBuiltInToolName === "edit");
-		if (!this.expanded && this.result && (isBuiltInEdit || this.shouldUseIpythonRenderer())) {
+		if (!this.expanded && this.result && (isBuiltInEdit || this.shouldUseJavaScriptRenderer())) {
 			const changes = getToolFileChanges(this.toolName, this.args, this.result, this.cwd);
 			if (changes.length > 0) {
 				const container = this.usesSelfRenderShell() ? this.selfRenderContainer : this.contentPanel;

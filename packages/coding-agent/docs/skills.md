@@ -4,14 +4,14 @@
 
 Skills are self-contained capability packages that Prime Agent loads on demand. A skill provides specialized workflows, setup instructions, helper scripts, and reference documentation for specific tasks.
 
-Prime Agent implements the [Agent Skills standard](https://agentskills.io/specification), warning about violations but remaining lenient. It also supports Python-backed skills: a superset of markdown skills that install Python packages into the persistent IPython kernel.
+Prime Agent implements the [Agent Skills standard](https://agentskills.io/specification), warning about violations but remaining lenient. It also supports JavaScript-backed skills: a superset of markdown skills that load native JavaScript or TypeScript values into the persistent Bun notebook.
 
 ## Table of Contents
 
 - [Locations](#locations)
 - [Built-in Skills](#built-in-skills)
 - [How Skills Work](#how-skills-work)
-- [Python-Backed Skills](#python-backed-skills)
+- [JavaScript-Backed Skills](#javascript-backed-skills)
 - [Creating Skills with Prime Agent](#creating-skills-with-prime-agent)
 - [Skill Commands](#skill-commands)
 - [Skill Structure](#skill-structure)
@@ -49,8 +49,8 @@ Disable discovery with `--no-skills` (explicit `--skill` paths still load).
 Prime Agent ships with built-in skills that load by default:
 
 - `prime-intellect` - Prime Intellect products and workflows via the prime CLI: verifiers environments and the Environments Hub, evaluations (local and hosted), Hosted Training and prime-rl, sandboxes, tunnels, Prime Inference, GPU compute, and storage. Reference docs for each area load on demand from the skill's `references/` directory.
-- `skill-creator` - teaches the agent to create new skills: markdown skill layout, frontmatter rules, placement and precedence, and the full Python-backed skill contract (package layout, `run()` convention, optional CLI, kernel venv behavior) with a working template in `references/python-skills.md`.
-- `websearch` - a Python-backed Google search skill using the [Serper](https://serper.dev) API.
+- `skill-creator` - teaches the agent to create markdown and JavaScript-backed skills, including package metadata, prepared globals, `createSkill(context)`, and verification, with a working template in `references/javascript-skills.md`.
+- `websearch` - a JavaScript-backed Google search skill using the [Serper](https://serper.dev) API.
 
 Built-in skills behave like any other skill but have the lowest precedence: a user, project, package, or `--skill` skill with the same name overrides the built-in one.
 
@@ -71,10 +71,10 @@ export PRIME_AGENT_WEBSEARCH_NUM_RESULTS=5
 
 A `SERPER_API_KEY` in the environment, if set, takes precedence over the stored key.
 
-Once loaded, the model can call it directly in the IPython kernel by import name:
+Once loaded, the model can call its prepared global directly in the Bun notebook:
 
-```python
-print(await websearch("latest Prime Agent release"))
+```javascript
+console.log(await websearch("latest Prime Agent release"));
 ```
 
 Until a key is configured, web search returns a clear message telling the agent
@@ -131,82 +131,83 @@ For project-level Claude Code skills, add to `.prime/agent/settings.json`:
 
 1. At startup, Prime Agent scans skill locations and extracts names, descriptions, type, and file locations
 2. The system prompt includes visible skills in XML format per the [specification](https://agentskills.io/integrate-skills)
-3. When a task matches, the agent uses `ipython` to load the full `SKILL.md` (models don't always do this; use prompting or `/skill:name` to force it)
+3. When a task matches, the agent uses `javascript` to load the full `SKILL.md` (models don't always do this; use prompting or `/skill:name` to force it)
 4. The agent follows the instructions, using relative paths to reference scripts and assets
 
 This is progressive disclosure: only descriptions are always in context, full instructions load on-demand.
 
 Skills with `disable-model-invocation: true` are hidden from the startup skill list. They can still be invoked explicitly with `/skill:name`.
 
-## Python-Backed Skills
+## JavaScript-Backed Skills
 
-A Python-backed skill uses the same `SKILL.md` metadata and invocation behavior as a markdown skill, but also provides a Python package for the IPython kernel.
+A JavaScript-backed skill uses the same `SKILL.md` metadata and invocation behavior as a markdown skill, but also provides a JavaScript or TypeScript entry module for the Bun notebook.
 
 ```
-web-search/
+release-audit/
 ├── SKILL.md
-├── pyproject.toml
+├── package.json
 └── src/
-    └── web_search/
-        └── __init__.py
+    └── index.ts
 ```
 
 Detection rules:
+
 - `SKILL.md` is still required
-- `pyproject.toml` marks the skill as Python-backed
-- the import name is the skill name with hyphens converted to underscores
-- `src/<import_name>/__init__.py` must exist
+- `package.json` marks the skill as JavaScript-backed
+- `primeAgent.entry` names a relative entry file inside the skill directory
+- `primeAgent.global` names the valid JavaScript identifier exposed in the notebook
+- the entry module exports `createSkill(context)`, a default value, or another directly loadable value
 
-For `web-search`, Prime Agent exposes `web_search` in IPython. If the module defines `run()`, the module is wrapped as an async callable:
+Example `package.json`:
 
-```python
-await web_search("prime agent skills")
-await web_search.run("prime agent skills")
-help(web_search)
+```json
+{
+  "name": "release-audit",
+  "private": true,
+  "type": "module",
+  "primeAgent": {
+    "entry": "src/index.ts",
+    "global": "releaseAudit"
+  }
+}
 ```
 
-Python skills are installed editable into the kernel venv during kernel setup. By default this is `~/.prime/agent/kernel-venv`; set `PRIME_AGENT_KERNEL_VENV` to override it. If `pyproject.toml` changes, Prime Agent rebuilds the kernel venv so dependency changes are picked up.
+Example entry module:
 
-If you set `PRIME_AGENT_KERNEL_PYTHON`, Prime Agent does not install packages into that environment. The Python must already have `ipykernel`, `prime-agent-runtime`, and the default runtime packages installed. Missing Python skill imports are disabled with a warning and calling the skill raises a `RuntimeError`.
+```typescript
+interface SkillContext {
+  readonly cwd: string;
+  display(mimeType: string, data: unknown): void;
+  hostRequest(type: string, payload?: unknown): Promise<unknown>;
+}
 
-### Optional CLI Command
-
-A Python skill can expose a shell command by declaring a console script in `pyproject.toml`. The script name must exactly match the Python import name, including underscores:
-
-```toml
-[project]
-name = "web-search"
-version = "0.1.0"
-dependencies = ["requests"]
-
-[project.scripts]
-web_search = "rlm.skill:cli"
+export function createSkill(context: SkillContext) {
+  return async (options: { repository: string; targetVersion: string }) => {
+    const packageJson = await Bun.file(`${context.cwd}/${options.repository}/package.json`).json();
+    return { currentVersion: packageJson.version, targetVersion: options.targetVersion };
+  };
+}
 ```
 
-The `rlm.skill:cli` helper imports `web_search.run`, parses CLI arguments with `tyro`, awaits async results, and prints non-`None` return values.
+The model calls the prepared global directly:
 
-```python
-async def run(query: str, limit: int = 5) -> str:
-    """Search the web and return a concise summary."""
-    ...
+```javascript
+const report = await releaseAudit({ repository: ".", targetVersion: "0.7.1" });
 ```
 
-The model can then call the skill from normal Python or from shell mode:
+The context working directory is live: it reflects later `process.chdir()` calls. `display()` emits rich cell output, while `hostRequest()` invokes host-owned capabilities. Runtime globals and other skill globals cannot be overwritten by a skill.
 
-```python
-await web_search("prime agent")
-!web_search "prime agent" --limit 3
-```
+Prime Agent does not install arbitrary third-party skill dependencies automatically. Declare them in the skill's `package.json` and run `bun install` in that skill directory. A load failure leaves the notebook available and exposes an unavailable placeholder with the original error.
 
 ## Creating Skills with Prime Agent
 
-Prime Agent ships with a built-in `skill-creator` skill that teaches the agent both the Agent Skills format and the Python-backed package contract. You can ask for a skill in normal language:
+Prime Agent ships with a built-in `skill-creator` skill that teaches the agent both the Agent Skills format and the JavaScript-backed package contract. You can ask for a skill in normal language:
 
 ```text
-Create a project Python-backed skill named release-audit in
+Create a project JavaScript-backed skill named release-audit in
 .prime/agent/skills/release-audit. It should expose
-await release_audit(repository, target_version), include concise SKILL.md
-instructions, declare its dependencies, and verify the callable in a fresh
+await releaseAudit({ repository, targetVersion }), include concise SKILL.md
+instructions, declare primeAgent.entry and primeAgent.global, and verify the callable in a fresh
 Prime Agent session.
 ```
 
@@ -219,16 +220,16 @@ To force the creation workflow explicitly, invoke the built-in skill command:
 Tell the agent three things:
 
 1. **Scope:** use `.prime/agent/skills/<name>/` for a project skill committed with the repository, or `~/.prime/agent/skills/<name>/` for a personal skill.
-2. **Kind:** ask for a markdown skill when the capability is primarily instructions; ask for a Python-backed skill when the agent should call reusable functionality from IPython.
-3. **Contract:** describe the intended Python call, inputs, output, dependencies, credentials, and verification behavior.
+2. **Kind:** ask for a markdown skill when the capability is primarily instructions; ask for a JavaScript-backed skill when the agent should call reusable functionality from the Bun notebook.
+3. **Contract:** describe the intended JavaScript call, inputs, output, dependencies, credentials, and verification behavior.
 
-The agent should create `SKILL.md` in both cases. For a Python-backed skill it should also create `pyproject.toml` and `src/<import_name>/__init__.py`, expose a documented callable, and verify that the package imports in the kernel.
+The agent should create `SKILL.md` in both cases. For a JavaScript-backed skill it should also create `package.json` and its entry module, expose a documented global, and verify that the module loads in the Bun notebook.
 
-Use `/reload` to rediscover new or edited skill metadata. Start a fresh Prime Agent session after adding a Python-backed skill so kernel setup can install and import the package.
+Use `/reload` to rediscover new or edited skill metadata. Start a fresh Prime Agent session after adding a JavaScript-backed skill so the notebook prepares its global from startup.
 
 ### Installed Skills and Continual Harness Skills
 
-An installed Python-backed skill is a real package on disk that adds executable functionality to the kernel. A continual harness skill entry is a persisted description of a reusable Python call, including its reference and argument contract. `/refine` can create or update the latter after a repeated procedure emerges, but it does not replace packaging new functionality with `skill-creator`.
+An installed JavaScript-backed skill is a real package on disk that adds executable functionality to the notebook. A continual harness skill entry is a persisted description of a reusable JavaScript call, including its global reference and argument contract. `/refine` can create or update the latter after a repeated procedure emerges, but it does not replace packaging new functionality with `skill-creator`.
 
 ## Skill Commands
 

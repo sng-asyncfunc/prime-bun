@@ -2,23 +2,14 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getBundledSkillsDir } from "../src/config.js";
-import type { PythonSkillRuntimeInfo } from "../src/core/skills.js";
-import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
+import { BunKernelProvisioner } from "../src/core/tools/javascript.js";
+import { bundledJavaScriptSkill } from "./bun-skill-test-utils.js";
 
-function bundledAgentObserveSkill(): PythonSkillRuntimeInfo {
-	const packagePath = join(getBundledSkillsDir(), "agent-observe");
-	return {
-		name: "agent-observe",
-		importName: "agent_observe",
-		packagePath,
-		pyprojectPath: join(packagePath, "pyproject.toml"),
-	};
-}
+const AGENT_OBSERVE_SKILL = bundledJavaScriptSkill("agent-observe", "agentObserve");
 
-describe("agent-observe skill over the kernel host bridge", () => {
+describe("agent-observe skill over the Bun host bridge", () => {
 	let tempDir: string;
-	let provisioner: IpythonKernelProvisioner | undefined;
+	let provisioner: BunKernelProvisioner | undefined;
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `pi-agent-observe-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -33,8 +24,8 @@ describe("agent-observe skill over the kernel host bridge", () => {
 
 	it("lists agents and reads bounded recent messages", async () => {
 		const requests: Array<{ type: string; payload: Record<string, unknown> }> = [];
-		provisioner = new IpythonKernelProvisioner(tempDir, {
-			pythonSkills: [bundledAgentObserveSkill()],
+		provisioner = new BunKernelProvisioner(tempDir, {
+			javascriptSkills: [AGENT_OBSERVE_SKILL],
 			hostHandlers: {
 				"agent_observe.list": async (payload) => {
 					requests.push({ type: "agent_observe.list", payload });
@@ -65,15 +56,18 @@ describe("agent-observe skill over the kernel host bridge", () => {
 
 		const manager = await provisioner.ensure();
 		const result = await manager.execute(`
-import json
-agents = await agent_observe.list_agents()
-agent = await agent_observe.get_agent("beta")
-recent = await agent_observe.recent_messages("beta", limit=3, max_chars=120)
-print(json.dumps({"agents": agents, "agent": agent, "recent": recent}, sort_keys=True))
+const agents = await agentObserve.listAgents();
+const agent = await agentObserve.getAgent("beta");
+const recent = await agentObserve.recentMessages("beta", { limit: 3, maxChars: 120 });
+console.log(JSON.stringify({ agents, agent, recent }));
 `);
 
 		expect(result.status).toBe("ok");
-		const output = JSON.parse(result.stdout.trim());
+		const output = JSON.parse(result.stdout.trim()) as {
+			agents: { agents: object[] };
+			agent: { agent: Record<string, unknown> };
+			recent: { messages: object[] };
+		};
 		expect(output.agents.agents).toHaveLength(2);
 		expect(output.agent.agent).toMatchObject({ activeSessionId: "beta", status: "model" });
 		expect(output.recent.messages).toEqual([{ index: 1, role: "assistant", text: "working", truncated: false }]);
@@ -82,7 +76,7 @@ print(json.dumps({"agents": agents, "agent": agent, "recent": recent}, sort_keys
 			"agent_observe.get",
 			"agent_observe.recent",
 		]);
-		expect(requests[2].payload).toMatchObject({
+		expect(requests[2]?.payload).toMatchObject({
 			type: "agent_observe.recent",
 			target: "beta",
 			limit: 3,
@@ -91,8 +85,8 @@ print(json.dumps({"agents": agents, "agent": agent, "recent": recent}, sort_keys
 	});
 
 	it("validates argument types before sending to the host", async () => {
-		provisioner = new IpythonKernelProvisioner(tempDir, {
-			pythonSkills: [bundledAgentObserveSkill()],
+		provisioner = new BunKernelProvisioner(tempDir, {
+			javascriptSkills: [AGENT_OBSERVE_SKILL],
 			hostHandlers: {
 				"agent_observe.get": async () => {
 					throw new Error("should not reach host");
@@ -102,12 +96,13 @@ print(json.dumps({"agents": agents, "agent": agent, "recent": recent}, sort_keys
 
 		const manager = await provisioner.ensure();
 		const result = await manager.execute(`
-try:
-    await agent_observe.get_agent(123)
-except TypeError as error:
-    print(f"TypeError: {error}")
+try {
+  await agentObserve.getAgent(123);
+} catch (error) {
+  console.log(error instanceof Error ? error.message : String(error));
+}
 `);
 		expect(result.status).toBe("ok");
-		expect(result.stdout.trim()).toBe("TypeError: target must be str, got int");
+		expect(result.stdout.trim()).toBe("target must be a string");
 	});
 });

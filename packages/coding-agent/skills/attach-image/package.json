@@ -1,0 +1,9 @@
+{
+	"name": "@prime-agent/skill-attach-image",
+	"private": true,
+	"type": "module",
+	"primeAgent": {
+		"entry": "src/index.ts",
+		"global": "attachImage"
+	}
+}

@@ -46,7 +46,12 @@ describe("AssistantMessageComponent", () => {
 		const component = new AssistantMessageComponent(
 			createAssistantMessage([
 				{ type: "text", text: "calling tool" },
-				{ type: "toolCall", id: "tool-1", name: "ipython", arguments: { code: "open('file.txt').read()" } },
+				{
+					type: "toolCall",
+					id: "tool-1",
+					name: "javascript",
+					arguments: { code: 'await Bun.file("file.txt").text()' },
+				},
 			]),
 		);
 		const rendered = component.render(60).join("\n");
@@ -61,7 +66,7 @@ describe("AssistantMessageComponent", () => {
 
 		const message = {
 			...createAssistantMessage([
-				{ type: "toolCall" as const, id: "tool-1", name: "ipython", arguments: { code: "while True: pass" } },
+				{ type: "toolCall" as const, id: "tool-1", name: "javascript", arguments: { code: "while True: pass" } },
 			]),
 			stopReason: "aborted" as const,
 			errorMessage: "Operation aborted",

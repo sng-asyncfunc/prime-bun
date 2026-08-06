@@ -1,0 +1,9 @@
+{
+	"name": "@prime-agent/skill-rlm-heartbeat",
+	"private": true,
+	"type": "module",
+	"primeAgent": {
+		"entry": "src/index.ts",
+		"global": "rlmHeartbeat"
+	}
+}

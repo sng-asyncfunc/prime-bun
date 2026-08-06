@@ -49,15 +49,16 @@ import type { SessionSummary } from "./daemon-session-list.js";
  */
 
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
-export const DAEMON_PROTOCOL_VERSION = 7;
-export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
+export const DAEMON_PROTOCOL_VERSION = 8;
+export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 8;
 // Revision 9 publishes persisted RLM spawn depth on passive session rows.
 // Revision 10 publishes persisted RLM spawn depth on all session catalog rows.
 // Revision 11 adds immediate get/set commands for active-session RLM max depth.
 // Revision 12 publishes idle-residency metadata on session summary rows.
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
-export const DAEMON_SCHEMA_REVISION = 13;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-13-816309b1cd50";
+// Revision 14 replaces the Python notebook event discriminator with JavaScript.
+export const DAEMON_SCHEMA_REVISION = 14;
+export const DAEMON_SCHEMA_ID = "protocol-8-schema-14-816309b1cd50";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -610,27 +611,27 @@ export interface DaemonCommandCompatibility {
 	capability?: DaemonServerCapability;
 }
 
-const LEGACY_DAEMON_COMMAND = { minProtocol: 7 } as const;
-const CURRENT_DAEMON_COMMAND = { minProtocol: 7 } as const;
-const RLM_MAX_DEPTH_COMMAND = { minProtocol: 7, minSchemaRevision: 11 } as const;
+const LEGACY_DAEMON_COMMAND = { minProtocol: 8 } as const;
+const CURRENT_DAEMON_COMMAND = { minProtocol: 8 } as const;
+const RLM_MAX_DEPTH_COMMAND = { minProtocol: 8, minSchemaRevision: 11 } as const;
 const SESSION_INPUT_ADMISSION_COMMAND = {
-	minProtocol: 7,
+	minProtocol: 8,
 	capability: "session_input_admission",
 } as const;
 const PROMPT_ADMISSION_CANCELLATION_COMMAND = {
-	minProtocol: 7,
+	minProtocol: 8,
 	minSchemaRevision: 8,
 	capability: "prompt_admission_cancellation",
 } as const;
 const CLIENT_OWNED_DAEMON_COMMAND = {
-	minProtocol: 7,
+	minProtocol: 8,
 	capability: "client_owned_sessions",
 } as const;
 const DELETE_RLM_SUBAGENT_COMMAND = {
-	minProtocol: 7,
+	minProtocol: 8,
 	capability: "delete_rlm_subagent",
 } as const;
-const FLAT_SESSION_TREE_COMMAND = { minProtocol: 7 } as const;
+const FLAT_SESSION_TREE_COMMAND = { minProtocol: 8 } as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
 	ack_result: LEGACY_DAEMON_COMMAND,
@@ -675,14 +676,14 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	get_context_tree: LEGACY_DAEMON_COMMAND,
 	get_commands: LEGACY_DAEMON_COMMAND,
 	get_resource_snapshot: LEGACY_DAEMON_COMMAND,
-	get_model_catalog: { minProtocol: 7, capability: "model_catalog" },
+	get_model_catalog: { minProtocol: 8, capability: "model_catalog" },
 	get_available_models: LEGACY_DAEMON_COMMAND,
 	get_queue: LEGACY_DAEMON_COMMAND,
 	clear_queue: LEGACY_DAEMON_COMMAND,
 	abort_and_clear_queue: LEGACY_DAEMON_COMMAND,
 	cron_list: LEGACY_DAEMON_COMMAND,
-	heartbeats_list: { minProtocol: 7, capability: "heartbeat_catalog" },
-	heartbeat_manage: { minProtocol: 7, capability: "heartbeat_management" },
+	heartbeats_list: { minProtocol: 8, capability: "heartbeat_catalog" },
+	heartbeat_manage: { minProtocol: 8, capability: "heartbeat_management" },
 	cron_add: LEGACY_DAEMON_COMMAND,
 	cron_cancel: LEGACY_DAEMON_COMMAND,
 	heartbeat_get: LEGACY_DAEMON_COMMAND,
@@ -928,8 +929,8 @@ export const DAEMON_OUTBOUND_COMPATIBILITY = {
 	session_list_item: LEGACY_DAEMON_COMMAND,
 	daemon_hello: LEGACY_DAEMON_COMMAND,
 	daemon_closing: LEGACY_DAEMON_COMMAND,
-	heartbeats_changed: { minProtocol: 7, capability: "heartbeat_catalog" },
-	session_event: LEGACY_DAEMON_COMMAND,
+	heartbeats_changed: { minProtocol: 8, capability: "heartbeat_catalog" },
+	session_event: CURRENT_DAEMON_COMMAND,
 	side_question_event: LEGACY_DAEMON_COMMAND,
 	session_status: LEGACY_DAEMON_COMMAND,
 	session_replaced: LEGACY_DAEMON_COMMAND,

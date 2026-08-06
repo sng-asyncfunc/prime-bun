@@ -461,17 +461,17 @@ Content`,
 	});
 
 	describe("bundled skills", () => {
-		it("should load the bundled websearch skill by default", async () => {
+		it("should load the bundled websearch JavaScript skill by default", async () => {
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
 
 			const { skills } = loader.getSkills();
 			const websearch = skills.find((s) => s.name === "websearch");
 			expect(websearch).toBeDefined();
-			expect(websearch?.kind).toBe("python");
-			if (websearch?.kind === "python") {
-				expect(websearch.python.importName).toBe("websearch");
-				expect(websearch.python.pyprojectPath.endsWith("pyproject.toml")).toBe(true);
+			expect(websearch?.kind).toBe("javascript");
+			if (websearch?.kind === "javascript") {
+				expect(websearch.javascript.globalName).toBe("websearch");
+				expect(websearch.javascript.packageJsonPath.endsWith("package.json")).toBe(true);
 			}
 		});
 

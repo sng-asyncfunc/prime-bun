@@ -9,7 +9,7 @@ describe("serializeConversation", () => {
 			{
 				role: "toolResult",
 				toolCallId: "tc1",
-				toolName: "ipython",
+				toolName: "javascript",
 				content: [{ type: "text", text: longContent }],
 				isError: false,
 				timestamp: Date.now(),
@@ -31,7 +31,7 @@ describe("serializeConversation", () => {
 			{
 				role: "toolResult",
 				toolCallId: "tc1",
-				toolName: "ipython",
+				toolName: "javascript",
 				content: [{ type: "text", text: shortContent }],
 				isError: false,
 				timestamp: Date.now(),

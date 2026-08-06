@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { $ } from "bun";
@@ -13,6 +14,7 @@ import {
 	type BunWorkerToHostMessage,
 	type HostToBunWorkerMessage,
 } from "./bun-protocol.js";
+import { type BunRlmRuntime, createBunRlmRuntime } from "./bun-rlm-runtime.js";
 import {
 	decodeSnapshotPayload,
 	encodeSnapshotPayload,
@@ -32,6 +34,9 @@ interface ShellResult {
 interface PrimeWorkerGlobals {
 	$: typeof $;
 	sh: (command: string) => Promise<ShellResult>;
+	installPackage: (...names: string[]) => Promise<ShellResult>;
+	hostRequest: (requestType: string, payload?: unknown) => Promise<unknown>;
+	rlm: BunRlmRuntime;
 	__primeHostRequest: (requestType: string, payload: unknown) => Promise<unknown>;
 	__primeDisplay: (mimeType: string, data: unknown) => void;
 }
@@ -57,11 +62,15 @@ const runtimeBindingNames = new Set([
 	"fetch",
 	"process",
 	"sh",
+	"installPackage",
+	"hostRequest",
+	"rlm",
 	"__primeDisplay",
 	"__primeHostRequest",
 ]);
 const pendingHostRequests = new Map<string, PendingHostRequest>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
+const requireModule = createRequire(import.meta.url);
 const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
 	...args: string[]
 ) => CellExecutor;
@@ -71,6 +80,8 @@ let lastCell: ActiveCell | undefined;
 let activeExecutionId: string | undefined;
 let commandPrefix = "";
 let shellPath = "/bin/sh";
+let bunPath = "bun";
+let kernelDirectory = process.cwd();
 let initialized = false;
 let shuttingDown = false;
 
@@ -120,6 +131,35 @@ function runShell(command: string): Promise<ShellResult> {
 			(error, stdout, stderr) => {
 				const exitCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
 				resolve({ exitCode, stderr, stdout });
+			},
+		);
+	});
+}
+
+function installPackage(...names: string[]): Promise<ShellResult> {
+	if (names.length === 0 || names.some((name) => !name.trim())) {
+		throw new Error("installPackage requires at least one non-empty package name");
+	}
+	if (names.some((name) => name.trimStart().startsWith("-"))) {
+		throw new Error("installPackage package names cannot start with '-'");
+	}
+	return new Promise((resolve, reject) => {
+		execFile(
+			bunPath,
+			["add", ...names],
+			{ cwd: kernelDirectory, encoding: "utf8", env: process.env, maxBuffer: 16 * 1024 * 1024 },
+			(error, stdout, stderr) => {
+				const exitCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
+				const result = { exitCode, stderr, stdout };
+				if (error) {
+					reject(
+						new Error(`bun add ${names.join(" ")} failed with exit code ${exitCode}: ${stderr.trim()}`, {
+							cause: error,
+						}),
+					);
+					return;
+				}
+				resolve(result);
 			},
 		);
 	});
@@ -308,6 +348,9 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 
 workerGlobals.$ = $;
 workerGlobals.sh = runShell;
+workerGlobals.installPackage = installPackage;
+workerGlobals.hostRequest = hostRequest;
+workerGlobals.rlm = createBunRlmRuntime(hostRequest);
 workerGlobals.__primeHostRequest = hostRequest;
 workerGlobals.__primeDisplay = display;
 
@@ -375,18 +418,67 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 	}
 }
 
-function initialize(message: Extract<HostToBunWorkerMessage, { type: "initialize" }>): void {
-	process.chdir(message.cwd);
-	commandPrefix = message.commandPrefix;
-	shellPath = message.shellPath;
-	initialized = true;
-	send({
-		bunVersion: Bun.version,
-		id: randomUUID(),
-		protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
-		replyTo: message.id,
-		type: "ready",
-	});
+async function initialize(message: Extract<HostToBunWorkerMessage, { type: "initialize" }>): Promise<void> {
+	try {
+		process.chdir(message.cwd);
+		bunPath = message.bunPath;
+		commandPrefix = message.commandPrefix;
+		kernelDirectory = message.kernelDirectory;
+		shellPath = message.shellPath;
+		for (const skill of message.skills) {
+			if (runtimeBindingNames.has(skill.globalName)) {
+				throw new Error(`JavaScript skill ${skill.name} conflicts with runtime global ${skill.globalName}`);
+			}
+			try {
+				const loaded: unknown = requireModule(skill.entryPath);
+				const exports = typeof loaded === "object" && loaded !== null ? (loaded as Record<string, unknown>) : {};
+				const factory = exports.createSkill;
+				const context = {
+					get cwd(): string {
+						return process.cwd();
+					},
+					display,
+					hostRequest,
+				};
+				const value = typeof factory === "function" ? await factory(context) : (exports.default ?? loaded);
+				if (value === undefined) throw new Error("module exports neither createSkill nor default");
+				Object.defineProperty(globalThis, skill.globalName, {
+					configurable: true,
+					enumerable: true,
+					value,
+					writable: false,
+				});
+			} catch (error) {
+				const failure = normalizeError(error);
+				const unavailable = async (): Promise<never> => {
+					throw new Error(`JavaScript skill ${skill.name} is unavailable: ${failure.message}`);
+				};
+				Object.defineProperty(globalThis, skill.globalName, {
+					configurable: true,
+					enumerable: true,
+					value: unavailable,
+					writable: false,
+				});
+				send({
+					error: failure,
+					id: randomUUID(),
+					protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+					type: "diagnostic",
+				});
+			}
+			runtimeBindingNames.add(skill.globalName);
+		}
+		initialized = true;
+		send({
+			bunVersion: Bun.version,
+			id: randomUUID(),
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			replyTo: message.id,
+			type: "ready",
+		});
+	} catch (error) {
+		sendProtocolError(message.id, error);
+	}
 }
 
 function acceptHostResponse(message: Extract<HostToBunWorkerMessage, { type: "host_response" }>): void {
@@ -428,7 +520,7 @@ function handleMessage(message: HostToBunWorkerMessage): void {
 	}
 	switch (message.type) {
 		case "initialize":
-			initialize(message);
+			void initialize(message);
 			return;
 		case "execute":
 			void executeCell(message);

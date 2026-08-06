@@ -60,7 +60,7 @@ done
 
 This tool executes a separate Prime Agent subprocess with a delegated system prompt and tool/model configuration.
 
-**Project-local agents** (`.prime/agent/agents/*.md`) are repo-controlled prompts that can instruct the model to run IPython, shell commands, and other tools.
+**Project-local agents** (`.prime/agent/agents/*.md`) are repo-controlled prompts that can instruct the model to run JavaScript, shell commands, and other tools.
 
 **Default behavior:** Only loads **user-level agents** from `~/.prime/agent/agents`.
 
@@ -82,7 +82,7 @@ Run 2 scouts in parallel: one to find models, one to find providers
 
 ### Chained workflow
 ```
-Use a chain: first have scout find the ipython tool, then have planner suggest improvements
+Use a chain: first have scout find the javascript tool, then have planner suggest improvements
 ```
 
 ### Workflow prompts
@@ -120,7 +120,7 @@ Use a chain: first have scout find the ipython tool, then have planner suggest i
 
 **Tool call formatting**:
 - `$ command` for bash
-- `ipython code` for ipython
+- `javascript code` for javascript
 - `edit ~/path` for edit
 
 ## Agent Definitions

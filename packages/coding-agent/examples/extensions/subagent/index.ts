@@ -72,11 +72,11 @@ function formatToolCall(
 	};
 
 	switch (toolName) {
-		case "ipython": {
+		case "javascript": {
 			const code = (args.code as string) || "...";
 			const preview = code.replace(/\s+/g, " ").trim();
 			return (
-				themeFg("muted", "ipython ") +
+				themeFg("muted", "javascript ") +
 				themeFg("toolOutput", preview.length > 60 ? `${preview.slice(0, 60)}...` : preview)
 			);
 		}

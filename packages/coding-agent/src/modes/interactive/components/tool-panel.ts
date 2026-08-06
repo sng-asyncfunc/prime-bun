@@ -24,7 +24,7 @@ export function toolPanelLine(line: string, width: number): string {
  * Panel shell for tool executions: a status header line followed by the
  * tool's own call/result components, every line on the panel background so
  * the whole block reads as one unit. Children render at the reduced content
- * width; lines that still overflow are truncated, matching ipython cell
+ * width; lines that still overflow are truncated, matching JavaScript cell
  * behavior.
  */
 export class ToolPanel implements Component {

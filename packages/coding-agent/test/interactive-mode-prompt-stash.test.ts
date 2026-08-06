@@ -70,8 +70,8 @@ type ResetHarness = PromptStashLiveMarkerHarness & {
 	agentRunFileChanges: Map<string, unknown>;
 	recapContainer: { clear: Mock };
 	ui: { requestRender: Mock };
-	ipythonToolComponents: Map<string, unknown>;
-	lateIpythonSentAgentMessages: Map<string, unknown>;
+	javaScriptToolComponents: Map<string, unknown>;
+	lateJavaScriptSentAgentMessages: Map<string, unknown>;
 	resetPendingToolState: Mock;
 	resetSubagentSummary: Mock;
 	setGoalAnnouncementBaseline: Mock;
@@ -552,8 +552,8 @@ describe("InteractiveMode prompt stash", () => {
 			agentRunFileChanges: new Map(),
 			recapContainer: { clear: vi.fn() },
 			ui: { requestRender: vi.fn() },
-			ipythonToolComponents: new Map(),
-			lateIpythonSentAgentMessages: new Map(),
+			javaScriptToolComponents: new Map(),
+			lateJavaScriptSentAgentMessages: new Map(),
 			resetPendingToolState: vi.fn(),
 			resetSubagentSummary: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
@@ -587,8 +587,8 @@ describe("InteractiveMode prompt stash", () => {
 			agentRunFileChanges: new Map(),
 			recapContainer: { clear: vi.fn() },
 			ui: { requestRender: vi.fn() },
-			ipythonToolComponents: new Map(),
-			lateIpythonSentAgentMessages: new Map(),
+			javaScriptToolComponents: new Map(),
+			lateJavaScriptSentAgentMessages: new Map(),
 			resetPendingToolState: vi.fn(),
 			resetSubagentSummary: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),

@@ -18,7 +18,7 @@ import type { ResourceLoader } from "../src/core/resource-loader.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import type { Skill } from "../src/core/skills.js";
-import { createIpythonTool } from "../src/index.js";
+import { createJavaScriptTool } from "../src/index.js";
 
 /**
  * API key for authenticated tests. Tests using this should be wrapped in
@@ -243,7 +243,7 @@ export function createTestSession(options: TestSessionOptions = {}): TestSession
 		initialState: {
 			model,
 			systemPrompt: options.systemPrompt ?? "You are a helpful assistant. Be extremely concise.",
-			tools: [createIpythonTool(process.cwd())],
+			tools: [createJavaScriptTool(process.cwd())],
 		},
 	});
 

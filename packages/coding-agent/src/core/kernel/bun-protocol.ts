@@ -8,9 +8,16 @@ interface BunWorkerProtocolMessage {
 
 export interface InitializeBunWorkerMessage extends BunWorkerProtocolMessage {
 	type: "initialize";
+	bunPath: string;
 	cwd: string;
+	kernelDirectory: string;
 	shellPath: string;
 	commandPrefix: string;
+	skills: Array<{
+		name: string;
+		globalName: string;
+		entryPath: string;
+	}>;
 }
 
 export interface ExecuteBunCellMessage extends BunWorkerProtocolMessage {

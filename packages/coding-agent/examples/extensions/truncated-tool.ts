@@ -178,7 +178,7 @@ export default function (pi: ExtensionAPI) {
 						text += `\n${theme.fg("dim", line)}`;
 					}
 					if (content.text.split("\n").length > 20) {
-						text += `\n${theme.fg("muted", "... (use ipython to see full output)")}`;
+						text += `\n${theme.fg("muted", "... (use javascript to see full output)")}`;
 					}
 				}
 

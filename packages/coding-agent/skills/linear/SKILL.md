@@ -5,7 +5,7 @@ description: Read and write Linear issues, projects, cycles, comments, and more 
 
 # Linear
 
-Talk to Linear through its official hosted MCP server from the IPython kernel.
+Talk to Linear through its official hosted MCP server from the Bun REPL.
 
 ## Setup
 
@@ -19,27 +19,25 @@ them through `/login`; don't ask them to set environment variables.
 The tool set is defined by the server, not by this skill, so **discover before
 you call** — don't assume tool names or argument names:
 
-```python
-import linear
+```javascript
+// 1. Discover available tools
+for (const tool of await linear.listTools()) {
+  console.log(tool.name, "-", tool.description);
+}
 
-# 1. Discover available tools
-for tool in await linear.list_tools():
-    print(tool["name"], "-", tool["description"])
+// 2. Inspect the tool's inputSchema returned by listTools().
 
-# 2. Inspect a specific tool's arguments (rendered from its JSON Schema)
-help(linear.list_issues)
-
-# 3. Call it; keyword args must match the tool's input schema
-result = await linear.list_issues(team="Engineering")
-print(result)
+// 3. Call it; the object must match the tool's input schema
+const result = await linear.list_issues({ team: "Engineering" });
+console.log(result);
 ```
 
 Notes:
 - Every tool is an `async` method — always `await`.
-- Results are already-parsed Python (a `dict` for structured output, otherwise a
-  string). No need to `json.loads` them.
-- For tools whose names aren't valid Python identifiers, use the escape hatch:
-  `await linear.call_tool("tool-name", {"arg": "value"})`.
-- Run `list_tools()` before relying on `help()` or assuming a tool exists — it
-  populates the schemas `help()` shows, and the server is the source of truth
+- Results are already-parsed JavaScript values (an object for structured output,
+  otherwise a string). No need to call `JSON.parse`.
+- For tools whose names aren't valid JavaScript property identifiers, use the escape hatch:
+  `await linear.callTool("tool-name", { arg: "value" })`.
+- Run `listTools()` before assuming a tool exists — it returns the server's
+  descriptions and JSON input schemas, and the server is the source of truth
   for tool names and arguments.

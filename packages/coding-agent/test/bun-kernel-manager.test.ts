@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -120,5 +121,37 @@ __primeDisplay(${JSON.stringify(AGENT_MESSAGE_DISPLAY_MIME)}, {
 			status: "error",
 		});
 		expect(recovered).toMatchObject({ status: "ok", result: "42" });
+	});
+
+	it("keeps skill path resolution aligned with the worker's current directory", async () => {
+		const firstDirectory = join(directory, "first");
+		const secondDirectory = join(directory, "second");
+		await mkdir(firstDirectory);
+		await mkdir(secondDirectory);
+		await writeFile(join(firstDirectory, "same.txt"), "old");
+		await writeFile(join(secondDirectory, "same.txt"), "old");
+		const editSkillRoot = join(process.cwd(), "skills", "edit");
+		const manager = createManager({
+			javascriptSkills: [
+				{
+					entryPath: join(editSkillRoot, "src", "index.ts"),
+					globalName: "edit",
+					name: "edit",
+					packageJsonPath: join(editSkillRoot, "package.json"),
+					packagePath: editSkillRoot,
+				},
+			],
+		});
+
+		const first = await manager.execute(
+			`process.chdir("first"); await edit({ path: "same.txt", oldStr: "old", newStr: "new" });`,
+		);
+		const second = await manager.execute(
+			`process.chdir("../second"); await edit({ path: "same.txt", oldStr: "old", newStr: "new" });`,
+		);
+
+		expect(first.diffs?.[0]?.path).toBe(realpathSync(join(firstDirectory, "same.txt")));
+		expect(second.diffs?.[0]?.path).toBe(realpathSync(join(secondDirectory, "same.txt")));
+		expect(first.diffs?.[0]?.path).not.toBe(second.diffs?.[0]?.path);
 	});
 });

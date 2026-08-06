@@ -922,8 +922,8 @@ export class InteractiveMode {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
-	private ipythonToolComponents = new Map<string, ToolExecutionComponent>();
-	private lateIpythonSentAgentMessages = new Map<string, KernelSentAgentMessage[]>();
+	private javaScriptToolComponents = new Map<string, ToolExecutionComponent>();
+	private lateJavaScriptSentAgentMessages = new Map<string, KernelSentAgentMessage[]>();
 	private pendingToolCreations = new Set<string>();
 	private startedToolCalls = new Set<string>();
 	private pendingToolGeneration = 0;
@@ -2815,8 +2815,8 @@ export class InteractiveMode {
 		this.resetPendingToolState();
 		this.agentRunFileChanges.clear();
 		this.renderRecap();
-		this.ipythonToolComponents.clear();
-		this.lateIpythonSentAgentMessages.clear();
+		this.javaScriptToolComponents.clear();
+		this.lateJavaScriptSentAgentMessages.clear();
 		this.resetSubagentSummary();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
 		this.syncGoalTray(this.getGoalState());
@@ -2911,12 +2911,16 @@ export class InteractiveMode {
 		);
 	}
 
-	private registerIpythonToolComponent(toolName: string, toolCallId: string, component: ToolExecutionComponent): void {
-		if (toolName !== "ipython") {
+	private registerJavaScriptToolComponent(
+		toolName: string,
+		toolCallId: string,
+		component: ToolExecutionComponent,
+	): void {
+		if (toolName !== "javascript") {
 			return;
 		}
-		this.ipythonToolComponents.set(toolCallId, component);
-		for (const lateMessage of this.lateIpythonSentAgentMessages.get(toolCallId) ?? []) {
+		this.javaScriptToolComponents.set(toolCallId, component);
+		for (const lateMessage of this.lateJavaScriptSentAgentMessages.get(toolCallId) ?? []) {
 			component.appendSentAgentMessage(lateMessage);
 		}
 	}
@@ -2966,7 +2970,7 @@ export class InteractiveMode {
 			selectLatestToolExpandHint(this.chatContainer.children, component);
 			this.chatContainer.addChild(component);
 			this.pendingTools.set(latestToolCall.id, component);
-			this.registerIpythonToolComponent(latestToolCall.name, latestToolCall.id, component);
+			this.registerJavaScriptToolComponent(latestToolCall.name, latestToolCall.id, component);
 			return component;
 		} finally {
 			this.pendingToolCreations.delete(toolCall.id);
@@ -5492,13 +5496,13 @@ export class InteractiveMode {
 				break;
 			}
 
-			case "ipython_sent_agent_message": {
-				const messages = this.lateIpythonSentAgentMessages.get(event.toolCallId) ?? [];
+			case "javascript_sent_agent_message": {
+				const messages = this.lateJavaScriptSentAgentMessages.get(event.toolCallId) ?? [];
 				if (!messages.some((message) => message.id === event.message.id)) {
 					messages.push(event.message);
-					this.lateIpythonSentAgentMessages.set(event.toolCallId, messages);
+					this.lateJavaScriptSentAgentMessages.set(event.toolCallId, messages);
 				}
-				this.ipythonToolComponents.get(event.toolCallId)?.appendSentAgentMessage(event.message);
+				this.javaScriptToolComponents.get(event.toolCallId)?.appendSentAgentMessage(event.message);
 				this.ui.requestRender();
 				break;
 			}
@@ -6351,8 +6355,8 @@ export class InteractiveMode {
 		this.resetPendingToolState();
 		const transcriptMessages = this.orderMessagesForTranscript(sessionContext.messages);
 		const messagesToRender = options.limitTranscript ? initialRenderMessages(transcriptMessages) : transcriptMessages;
-		this.ipythonToolComponents.clear();
-		this.lateIpythonSentAgentMessages.clear();
+		this.javaScriptToolComponents.clear();
+		this.lateJavaScriptSentAgentMessages.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		const toolNames: string[] = [];
 		for (const message of messagesToRender) {
@@ -6420,7 +6424,7 @@ export class InteractiveMode {
 						component.setExpanded(this.toolOutputExpanded);
 						selectLatestToolExpandHint(this.chatContainer.children, component);
 						this.chatContainer.addChild(component);
-						this.registerIpythonToolComponent(content.name, content.id, component);
+						this.registerJavaScriptToolComponent(content.name, content.id, component);
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
 							let errorMessage: string;

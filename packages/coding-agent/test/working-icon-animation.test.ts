@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { IPythonCellComponent } from "../src/modes/interactive/components/ipython-cell.js";
+import { JavaScriptCellComponent } from "../src/modes/interactive/components/javascript-cell.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import {
 	setWorkingPulseFrame,
@@ -21,13 +21,13 @@ describe("workingIconFrame", () => {
 	});
 });
 
-describe("IPythonCellComponent running marker", () => {
+describe("JavaScriptCellComponent running marker", () => {
 	beforeAll(() => {
 		initTheme("dark");
 	});
 
 	it("animates the marker while running and stays static once done", () => {
-		const running = new IPythonCellComponent({ code: "print(1)", executionStarted: true, isPartial: true });
+		const running = new JavaScriptCellComponent({ code: "console.log(1)", executionStarted: true, isPartial: true });
 		setWorkingPulseFrame(0);
 		const frame0 = stripAnsi(running.render(80).join("\n"));
 		setWorkingPulseFrame(1);
@@ -36,8 +36,8 @@ describe("IPythonCellComponent running marker", () => {
 		expect(frame1).toContain(workingIconFrame(1));
 		expect(frame0).not.toBe(frame1);
 
-		const done = new IPythonCellComponent({
-			code: "print(1)",
+		const done = new JavaScriptCellComponent({
+			code: "console.log(1)",
 			executionStarted: true,
 			isPartial: false,
 			details: { status: "ok", result: "1" },

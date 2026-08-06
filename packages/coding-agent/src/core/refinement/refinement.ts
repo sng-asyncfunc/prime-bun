@@ -129,13 +129,13 @@ The continual harness is the persistent, editable set of prompt notes, memories,
 skills, and subagent specs that lets Prime Agent improve reusable behavior
 outside the token history.
 Use "continual harness" for that persistent artifact layer; keep "RLM" for the
-runtime, IPython kernel, and native call interface that executes those artifacts.
+Bun notebook and native JavaScript call interface that executes those artifacts.
 
 Continual harness components:
 - prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.
 - memory: durable facts, decisions, failures, preferences, and outcomes.
-- skill: installed Python REPL skill. Skill create/update edits MUST include a \`reference\` object with \`{"type":"python"}\`, a Python import, and a callable or call pattern; they also MUST include an \`arguments\` object describing accepted inputs, required fields, defaults, and constraints. Use \`{}\` for \`arguments\` only when the Python callable truly needs no external inputs. Include the RLM-native call form \`await <skill_import>(...)\`.
-- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: compose a concise task prompt and spawn with \`handle = await rlm("sub-task")\`; admission returns immediately with \`rlm_child_id\`, \`name\`, \`session_dir\`, and \`model\`, never the child's answer. Results arrive only through explicit \`agent_message\` replies or files; children reply with \`await agent_message.send(message, receiver_role="parent")\`. Use \`await rlm.list_subagents()\` to recover direct child handles and \`await agent_message.send(..., receiver_role="child", receiver_name=handle.name)\` for follow-ups. Do not invent wrappers like \`run_subagent(...)\`.
+- skill: installed JavaScript notebook skill. Skill create/update edits MUST include a \`reference\` object with \`{"type":"javascript"}\`, its prepared global name, and a callable or call pattern; they also MUST include an \`arguments\` object describing accepted inputs, required fields, defaults, and constraints. Use \`{}\` for \`arguments\` only when the callable truly needs no external inputs. Include the native call form \`await <globalName>(...)\`.
+- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the native call form: compose a concise task prompt and spawn with \`const handle = await rlm("sub-task")\`; admission returns immediately with \`rlmChildId\`, \`name\`, \`sessionDir\`, and \`model\`, never the child's answer. Results arrive only through explicit \`agentMessage\` replies or files; children reply with \`await agentMessage.send(message, { receiverRole: "parent" })\`. Use \`await rlm.listSubagents()\` to recover direct child handles and \`await agentMessage.send(message, { receiverRole: "child", receiverName: handle.name })\` for follow-ups. Do not invent wrappers like \`runSubagent(...)\`.
 
 Scope and persistence policy:
 - The default editable continual harness store is local to the current Prime Agent session. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and project facts that should not affect other sessions.
@@ -143,7 +143,7 @@ Scope and persistence policy:
 - Entry ids in the harness overview may carry a display-only \`local:\` or \`global:\` prefix. Always use the bare id (no prefix) in edits.
 - All edits in one refinement apply only to the requested scope's store. During a local refinement, global entries are read-only context: never propose update or delete edits for them; create a local entry instead when a session-specific override is genuinely needed.
 - Project/workspace-specific lessons may be persisted globally only when the title, path, or content explicitly names the project/workspace and the lesson is likely to be reused in future sessions for that project. Prefer local edits when the lesson only belongs in the current conversation.
-- Use memory for declarative facts and preferences, skill for repeatable procedures exposed as Python calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.
+- Use memory for declarative facts and preferences, skill for repeatable procedures exposed as JavaScript calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.
 - Create or update the smallest relevant component: repeated delegation roles should become subagent specs, repeated procedures should become skills, durable facts/preferences should become memories, and narrow behavioral policies should become prompt addendums.
 - When an edit is persisted, include metadata such as \`{"scope":"local"}\` or \`{"scope":"global"}\` when that helps future review understand the intended blast radius.
 
@@ -164,7 +164,7 @@ JSON only with this exact shape:
       "title": "required for create/update except delete",
       "content": "required for create/update except delete",
       "path": "optional grouping path",
-      "reference": {"type": "python", "import": "package.module", "callable": "function_name", "call_pattern": "await function_name(...)"},
+      "reference": {"type": "javascript", "global": "skillName", "callable": "skillName", "call_pattern": "await skillName(...)"},
       "arguments": {"name": {"type": "string", "required": true, "description": "accepted input"}},
       "metadata": {},
       "reason": "why this edit is useful"
@@ -432,7 +432,7 @@ export function formatHarnessStateForPrompt(
 		maxEntriesPerKind?: number;
 		maxRefinements?: number;
 		maxContentLength?: number;
-		includeIpythonExamples?: boolean;
+		includeJavaScriptExamples?: boolean;
 		includeShellExamples?: boolean;
 		includeRefineExamples?: boolean;
 	} = {},
@@ -440,8 +440,8 @@ export function formatHarnessStateForPrompt(
 	const maxEntriesPerKind = options.maxEntriesPerKind ?? DEFAULT_OVERVIEW_ENTRY_LIMIT;
 	const maxRefinements = options.maxRefinements ?? DEFAULT_OVERVIEW_REFINEMENT_LIMIT;
 	const maxContentLength = options.maxContentLength ?? DEFAULT_OVERVIEW_CONTENT_LIMIT;
-	const includeIpythonExamples = options.includeIpythonExamples ?? true;
-	const includeRefineExamples = options.includeRefineExamples ?? includeIpythonExamples;
+	const includeJavaScriptExamples = options.includeJavaScriptExamples ?? true;
+	const includeRefineExamples = options.includeRefineExamples ?? includeJavaScriptExamples;
 	const lines = [
 		"# Continual Harness State",
 		"",
@@ -454,11 +454,11 @@ export function formatHarnessStateForPrompt(
 			? "When to call `await refine.run()`: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `await refine.run()` continual harness edits small and evidence-backed."
 			: "When to refine the continual harness: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep continual harness edits small and evidence-backed.",
 		"",
-		includeIpythonExamples
-			? "Call contract: read each installed Python skill's SKILL.md and call its documented module function in IPython; do not assume a `.run` entrypoint. Use `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a continual harness subagent spec by composing a concise task prompt and calling `handle = await rlm('sub-task')`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role='parent')`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role='child', receiver_name=handle.name)` for follow-ups. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries."
+		includeJavaScriptExamples
+			? "Call contract: read each installed JavaScript skill's SKILL.md and call its documented prepared global in the Bun notebook; do not assume a `.run` entrypoint. Continual harness skill entries use an explicit JavaScript `reference` and `arguments` contract. Spawn a continual harness subagent spec by composing a concise task prompt and calling `const handle = await rlm('sub-task')`; admission returns immediately with `rlmChildId`, `name`, `sessionDir`, and `model`, never the child's answer. Results arrive only through explicit `agentMessage` replies or files; children reply with `await agentMessage.send(message, { receiverRole: 'parent' })`. Use `await rlm.listSubagents()` to recover direct child handles and `await agentMessage.send(message, { receiverRole: 'child', receiverName: handle.name })` for follow-ups. Do not invent wrappers such as `callSkill(...)`, `runSubagent(...)`, or named subagent registries."
 			: options.includeShellExamples
-				? "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without IPython; do not use Python `await`, `asyncio`, or `rlm` examples unless the prompt also documents an IPython kernel."
-				: "Call contract: continual harness entries are routing/context hints only in sessions without IPython or shell access; do not use Python `await`, `asyncio`, `rlm`, or shell skill commands unless the prompt also documents those interfaces.",
+				? "Call contract: installed JavaScript skill globals are unavailable without the JavaScript notebook. Continual harness entries are routing/context hints only; do not use `await` or `rlm` examples unless the prompt also documents that runtime."
+				: "Call contract: continual harness entries are routing/context hints only in sessions without the JavaScript notebook or shell access; do not use `await`, `rlm`, or shell skill commands unless the prompt also documents those interfaces.",
 		"",
 	];
 
@@ -470,8 +470,8 @@ export function formatHarnessStateForPrompt(
 		totalEntries += entries.length;
 		// Render subagent specs as a task-shaped roster the model can match against — the
 		// analogue of Claude Code's agent-type menu — rather than a bare count. In
-		// IPython sessions, include the native `rlm` invocation hint.
-		if (kind === "subagent" && entries.length > 0 && includeIpythonExamples) {
+		// JavaScript notebook sessions include the native `rlm` invocation hint.
+		if (kind === "subagent" && entries.length > 0 && includeJavaScriptExamples) {
 			lines.push(
 				`${kind}: ${entries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
 			);
@@ -683,19 +683,17 @@ function validateEdit(edit: RefinementEdit, computedId?: string): string | undef
 	if (edit.action !== "delete" && edit.kind === "skill") {
 		const reference = edit.reference;
 		if (!reference) {
-			return `${edit.action} skill requires python reference`;
+			return `${edit.action} skill requires javascript reference`;
 		}
-		if (reference.type !== "python") {
-			return `${edit.action} skill reference.type must be python`;
+		if (reference.type !== "javascript") {
+			return `${edit.action} skill reference.type must be javascript`;
 		}
-		const hasImport =
-			(typeof reference.import === "string" && reference.import.length > 0) ||
-			(typeof reference.python_import === "string" && reference.python_import.length > 0);
+		const hasGlobal = typeof reference.global === "string" && reference.global.length > 0;
 		const hasCallable =
 			(typeof reference.callable === "string" && reference.callable.length > 0) ||
 			(typeof reference.call_pattern === "string" && reference.call_pattern.length > 0);
-		if (!hasImport) {
-			return `${edit.action} skill requires python import`;
+		if (!hasGlobal) {
+			return `${edit.action} skill requires javascript global`;
 		}
 		if (!hasCallable) {
 			return `${edit.action} skill requires callable or call_pattern`;

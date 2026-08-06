@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Replaced the Python notebook with a persistent Bun JavaScript and TypeScript notebook, including native JavaScript skills and RLM globals.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

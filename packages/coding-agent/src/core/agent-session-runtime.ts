@@ -60,7 +60,7 @@ export interface AgentSessionRuntimeMetadata {
 	/** Runtime restored from an already-persisted completed registry entry. */
 	rehydratedCompleted?: boolean;
 	prompt?: string;
-	/** Source of the IPython cell that spawned this subagent, for display. */
+	/** Source of the JavaScript cell that spawned this subagent, for display. */
 	spawnCode?: string;
 	sessionDir?: string;
 }

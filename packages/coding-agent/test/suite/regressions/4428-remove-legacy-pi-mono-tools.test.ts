@@ -27,15 +27,15 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		}
 	});
 
-	it("registers only ipython as a built-in tool", () => {
-		expect([...allToolNames]).toEqual(["ipython"]);
-		expect(Object.keys(createAllToolDefinitions(process.cwd()))).toEqual(["ipython"]);
+	it("registers only javascript as a built-in tool", () => {
+		expect([...allToolNames]).toEqual(["javascript"]);
+		expect(Object.keys(createAllToolDefinitions(process.cwd()))).toEqual(["javascript"]);
 	});
 
 	it("keeps legacy names available for extension and custom tool allowlists", () => {
-		const result = parseArgs(["--tools", "bash,edit,ipython"]);
+		const result = parseArgs(["--tools", "bash,edit,javascript"]);
 
-		expect(result.tools).toEqual(["bash", "edit", "ipython"]);
+		expect(result.tools).toEqual(["bash", "edit", "javascript"]);
 		expect(result.diagnostics).toEqual([]);
 	});
 
@@ -108,7 +108,7 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		session.dispose();
 	});
 
-	it("applies shell settings to ipython bash cells", async () => {
+	it("applies configured shell settings from Bun cells", async () => {
 		const shellPath = join(tempDir, "custom-shell.sh");
 		writeFileSync(shellPath, "#!/bin/sh\nprintf 'custom-shell\\n'\nexec /bin/sh \"$@\"\n");
 		chmodSync(shellPath, 0o755);
@@ -131,15 +131,17 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 			settingsManager,
 			sessionManager,
 			resourceLoader,
-			tools: ["ipython"],
+			tools: ["javascript"],
 		});
 
 		try {
-			expect(session.getActiveToolNames()).toEqual(["ipython"]);
-			const ipythonTool = session.agent.state.tools.find((tool) => tool.name === "ipython");
-			expect(ipythonTool).toBeTruthy();
+			expect(session.getActiveToolNames()).toEqual(["javascript"]);
+			const javascriptTool = session.agent.state.tools.find((tool) => tool.name === "javascript");
+			expect(javascriptTool).toBeTruthy();
 
-			const result = await ipythonTool!.execute("tool-1", { code: "%%bash\necho body" });
+			const result = await javascriptTool!.execute("tool-1", {
+				code: 'const shellResult = await sh("echo body"); console.log(shellResult.stdout.trimEnd())',
+			});
 			const output = result.content
 				.filter((item): item is { type: "text"; text: string } => item.type === "text")
 				.map((item) => item.text)

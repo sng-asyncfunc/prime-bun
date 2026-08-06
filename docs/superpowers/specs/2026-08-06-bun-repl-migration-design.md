@@ -49,24 +49,25 @@ Host-to-worker messages:
 Worker-to-host messages:
 
 - `ready` and `idle`: lifecycle state.
+- `stream`: stdout or stderr tagged with the originating cell ID.
 - `display`: typed diff, attachment, or sent-agent-message payload.
 - `host_request`: typed host bridge request, including the active or last cell source for RLM attribution.
 - `result`: inspected last expression, structured error, duration, and final status.
 - `snapshot_result`, `restore_result`, and `list_names_result`.
 
-The host streams worker stdout/stderr directly into the active execution. Output produced without an active cell is retained as a bounded worker diagnostic instead of being assigned to a later cell.
+The worker associates user output with the originating cell through asynchronous execution context and sends it over the framed protocol. The host accepts a stream record only while that exact cell is active, so delayed timers from a completed cell cannot leak into a later cell. Untagged process output is retained only as a bounded worker diagnostic.
 
 ## Persistent JavaScript Semantics
 
-Each cell runs inside an async function so top-level `await` works. Before evaluation, Acorn parses the complete program with current ECMAScript syntax and top-level-await support. An AST-guided source transform persists top-level declarations after their original statement:
+Each cell runs inside an async function so top-level `await` works. Bun's TypeScript transpiler first erases TypeScript syntax without type-checking, then Acorn parses the complete JavaScript program with current ECMAScript syntax and top-level-await support. An AST-guided source transform persists top-level declarations after their original statement:
 
 - `const`, `let`, and `var`, including array/object destructuring;
 - named function declarations;
 - named class declarations.
 
-Because transformations use parser ranges, strings, template literals, regular expressions, comments, defaults, aliases, and nested destructuring are not re-parsed with regular expressions. The original declaration still runs with normal same-cell scope and hoisting; generated statements then copy every bound identifier to `globalThis` and the private binding registry. The final top-level `ExpressionStatement` is changed to a return and formatted with `Bun.inspect({ colors: false })`, matching notebook-style result display. A cell may redefine a prior notebook binding because each cell has its own local async-function scope and then replaces the global value.
+Because transformations use parser ranges, strings, template literals, regular expressions, comments, defaults, aliases, and nested destructuring are not re-parsed with regular expressions. The original declaration still runs with normal same-cell scope and hoisting; generated statements then copy every bound identifier to `globalThis` and the private binding registry. The worker also reconciles new or deleted own properties on `globalThis` after every cell, so explicit global assignments participate in namespace inspection and recovery. The final top-level `ExpressionStatement` is changed to a return and formatted with `Bun.inspect({ colors: false })`, matching notebook-style result display. A cell may redefine a prior notebook binding because each cell has its own local async-function scope and then replaces the global value.
 
-The runtime exposes `$` from Bun Shell, `Bun`, `console`, `fetch`, and normal JavaScript globals. It also exposes `sh(command)`, which spawns the configured `shellPath` and prepends the existing `commandPrefix`; this preserves sandbox/wrapper behavior for shell commands that Bun Shell cannot express. Project commands should run through `sh`, Bun Shell, or the project's documented command interface. Working-directory and environment changes made with `process.chdir()` and `process.env` persist across cells.
+The runtime exposes `$` from Bun Shell, `Bun`, `console`, `fetch`, and normal JavaScript globals. It also exposes `sh(command)`, which spawns the configured `shellPath` and prepends the existing `commandPrefix`; this preserves sandbox/wrapper behavior for shell commands that Bun Shell cannot express. Awaiting it returns `{ exitCode, stdout, stderr }`; `.text()` and `.json()` provide concise stdout consumers. Project commands should run through `sh`, Bun Shell, or the project's documented command interface. Working-directory and environment changes made with `process.chdir()` and `process.env` persist across cells and successful-state recovery.
 
 ## RLM JavaScript API
 
@@ -91,6 +92,8 @@ Executable skills are JavaScript packages, not Python packages.
 
 - A skill with `SKILL.md` plus `package.json` metadata under `primeAgent` is classified as `javascript`.
 - Metadata identifies a stable global name and a Bun-loadable entry file. Entries are loaded by the worker with Bun's synchronous module loader before the first cell.
+- Package dependencies are installed automatically into a per-skill managed cache; user skill directories are never mutated. Successful cache paths are exposed to Bun through `NODE_PATH`.
+- Runtime-reserved or duplicate globals disable only the conflicting executable form. The skill's Markdown instructions remain available and the worker continues starting with a diagnostic.
 - Markdown-only skills remain unchanged.
 - Built-in executable skills are ported to TypeScript/JavaScript and their Python packages and console scripts are removed.
 - Skill prompt metadata changes from `python_import` to `javascript_import`.
@@ -106,7 +109,7 @@ Built-in behavior to preserve:
 
 ## State Continuity
 
-The worker tracks user-defined global bindings. Snapshotting serializes each binding independently with `serialize` from `bun:jsc`, enforces the existing aggregate size cap, writes an atomic binary payload and JSON manifest, and reports skipped values. Before serialization, a cycle-safe cloneability walk rejects functions, promises, proxies that throw during inspection, symbol-keyed state, weak collections, and custom-prototype/class instances at any nesting depth. This prevents structured clone from silently restoring a class instance as a plain object without its methods.
+The worker tracks user-defined global bindings. Snapshotting serializes each binding independently with `serialize` from `bun:jsc`, enforces the existing aggregate size cap, writes an atomic binary payload and JSON manifest, and reports skipped values. Before serialization, a cycle-safe cloneability walk rejects promises, proxies that throw during inspection, symbol-keyed state, weak collections, and custom-prototype instances at any nesting depth. This prevents structured clone from silently restoring a class instance as a plain object without its methods. Plain function/class definitions and literal dynamic imports use explicit restore recipes instead of structured cloning.
 
 State fidelity is explicit:
 
@@ -114,7 +117,8 @@ State fidelity is explicit:
 | --- | --- |
 | Primitive, plain object, array | Preserved |
 | `Date`, `RegExp`, `Map`, `Set`, `ArrayBuffer`, typed array | Preserved after a runtime characterization test proves Bun round-trips its type |
-| Function or class definition | Skipped and reported |
+| Plain function or class definition | Restored best-effort from its source recipe; native/opaque functions are skipped and reported |
+| Literal dynamic import binding | Restored by importing the same specifier in the replacement worker |
 | Promise, weak collection, live handle, open resource | Skipped and reported |
 | Custom class instance or nested custom prototype | Skipped and reported rather than degraded |
 | Symbol-keyed object state | Skipped and reported |
@@ -126,9 +130,10 @@ Restore deserializes each entry independently and writes it back to `globalThis`
 Live probes against Bun 1.3.14 establish the cancellation contract: a SIGINT handler runs for an async-waiting cell, but cannot run while synchronous JavaScript blocks the event loop. Leaving an async cell alive after returning an aborted result would allow invisible later mutations. Prime Agent therefore does not simulate Python `KeyboardInterrupt`.
 
 - Executions remain sequential per worker.
-- Before starting a cell, the provisioner flushes any dirty snapshot from the previous successful cell. That snapshot is the recovery point.
+- Before starting a cell, the provisioner flushes any dirty private recovery snapshot from the previous successful cell. That snapshot is the recovery point and includes cwd plus an environment delta.
 - Abort terminates the Bun worker for both synchronous and asynchronous cells. The active result is `aborted`; no abandoned code keeps mutating state.
-- The provisioner immediately starts a fresh worker, restores the last successful snapshot, reloads runtime handles and skills, and reports restored/skipped names. Completed serializable state survives; non-serializable handles and changes made by the aborted cell do not.
+- The provisioner immediately starts a fresh worker, restores the last successful snapshot, reloads runtime handles and skills, and reports restored/skipped names. Completed serializable state, supported recipes, cwd, and environment changes survive; non-serializable handles and changes made by the aborted cell do not.
+- Session snapshots remain separate from private recovery snapshots and never include cwd or environment variables.
 - Unexpected exit follows the same restore path, rejects the active execution, captures a bounded stderr tail, and rejects every pending host request.
 - Worker-level `unhandledRejection` and `uncaughtException` handlers report diagnostics over the protocol while an execution is active; fatal conditions still exit so the host can restore instead of keeping an unknown state.
 - Dispose waits briefly for in-flight host requests and a final successful-state snapshot before terminating the worker.
@@ -147,19 +152,20 @@ The migration is complete only when every current notebook capability has a Java
 
 | Current capability | Bun replacement | Acceptance target |
 | --- | --- | --- |
-| Persistent variables and imports | AST-persisted globals and Bun module loading | A later cell reuses declarations, destructuring bindings, and a loaded module |
+| Persistent variables and imports | AST-persisted globals, explicit global reconciliation, and Bun module loading | A later cell reuses declarations, explicit globals, destructuring bindings, helper functions, and a loaded module |
+| TypeScript syntax | Bun-native syntax lowering before JavaScript parsing | Type annotations and other erasable syntax execute without advertising type-checking |
 | Top-level async execution | Async cell wrapper | `await` works and the final expression is rendered |
-| Incremental stdout/stderr | Worker stdout/stderr streams | Interleaved output appears before cell completion and obeys truncation limits |
-| `%%bash`, shell prefix, and shell path | `sh(command)` plus Bun Shell `$` | Configured `commandPrefix` and `shellPath` are used exactly once |
+| Incremental stdout/stderr | Cell-tagged worker stream messages | Interleaved output appears before cell completion, obeys truncation limits, and never crosses cells |
+| `%%bash`, shell prefix, and shell path | `sh(command)` plus Bun Shell `$` | Configured `commandPrefix` and `shellPath` are used exactly once; structured, `.text()`, and `.json()` forms work |
 | Working-directory and environment persistence | `process.chdir()` and `process.env` | Changes remain visible in a subsequent cell |
 | RLM spawn/find/list/delete | Callable `rlm` JavaScript API | Valid requests round-trip and invalid payloads fail locally |
 | Generic host bridge | `rlm.hostRequest()` | Agent messages, observation, compaction, goals, refinement, and heartbeat retain typed payloads |
-| Executable skills | Bun-loadable JavaScript skill packages | Every built-in Python skill has a JavaScript behavioral regression test |
+| Executable skills | Bun-loadable JavaScript skill packages with managed dependencies | Every built-in Python skill has a JavaScript behavioral regression test; a bad third-party skill cannot block the REPL |
 | MCP-backed skills | JavaScript MCP integration | Linear and Notion initialization, refresh, tool calls, and result normalization match current behavior |
 | Diffs, attachments, and sent-message displays | Existing structured display records | Terminal renderer receives unchanged MIME payloads from JavaScript skills |
 | Namespace inspection | Worker binding registry | Listing excludes runtime-private names and includes user bindings |
 | State snapshots and compaction continuity | Per-binding `bun:jsc` snapshots | Serializable values restore; unsupported values are skipped and reported |
-| Abort and crash recovery | Worker termination and last-successful restore | Infinite synchronous code aborts, delayed async mutations stop, and prior state returns |
+| Abort and crash recovery | Worker termination and private last-successful restore | Infinite synchronous code aborts, delayed async mutations stop, and prior values/cwd/environment return without entering session snapshots |
 | Session resume and daemon passivation | Bun provisioner lifecycle | Reattachment restores state and incompatible daemon versions reject cleanly |
 | Prewarm and boot gate | Bun validation/setup gate | Missing, old, concurrent, and successful setup paths report deterministic progress |
 | TUI, ACP, SDK, and transcript exposure | JavaScript/Bun public names | No Python/IPython public symbols, labels, events, or feature hints remain |

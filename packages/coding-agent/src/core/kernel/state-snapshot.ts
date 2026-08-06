@@ -1,297 +1,246 @@
-// Serialize the IPython kernel's user namespace so it can be revived when a
-// session resumes. The kernel is otherwise spawned fresh on resume, leaving the
-// model believing it still has access to variables/imports it defined earlier.
-//
-// Snapshotting is best-effort and per-variable: each top-level name is pickled
-// with `dill` independently, so a single unpicklable object (open file, socket,
-// GPU tensor, …) is skipped and reported rather than aborting the whole snapshot.
 import { join } from "node:path";
 
-/** Default ceiling on a snapshot payload. Over-cap variables are skipped + reported. */
 export const DEFAULT_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
 
-/** Base filename for the kernel snapshot within a session's artifact directory. */
 const KERNEL_STATE_BASENAME = "kernel-state";
-
-/** Marker the Python helpers print so the host can recover the JSON result line. */
-const RESULT_MARKER = "__PRIME_AGENT_KERNEL_STATE__";
+const SNAPSHOT_FORMAT_VERSION = 1;
+const HEADER_LENGTH_BYTES = 4;
+const MAX_HEADER_BYTES = 16 * 1024 * 1024;
 
 export interface SnapshotResult {
-	/** Top-level names successfully serialized into the payload. */
 	saved: string[];
-	/** Names that could not be serialized, with a short reason. */
 	skipped: { name: string; reason: string }[];
-	/** Payload size on disk, in bytes. */
 	bytes: number;
 	path: string;
 }
 
 export interface RestoreResult {
-	/** Names successfully revived into the kernel namespace. */
 	restored: string[];
-	/** Names present in the snapshot that failed to revive, with a short reason. */
 	failed: { name: string; reason: string }[];
 	path: string;
 }
 
-/** Absolute path to the dill payload within a session's artifact directory. */
-export function snapshotPathIn(artifactDir: string): string {
-	return join(artifactDir, `${KERNEL_STATE_BASENAME}.dill`);
+export interface SnapshotPayloadEntry {
+	name: string;
+	data: Uint8Array;
 }
 
-/** Absolute path to the JSON manifest within a session's artifact directory. */
+interface SnapshotHeaderEntry {
+	name: string;
+	offset: number;
+	length: number;
+}
+
+interface SnapshotHeader {
+	version: number;
+	entries: SnapshotHeaderEntry[];
+}
+
+export function snapshotPathIn(artifactDir: string): string {
+	return join(artifactDir, `${KERNEL_STATE_BASENAME}.bin`);
+}
+
 export function manifestPathIn(artifactDir: string): string {
 	return join(artifactDir, `${KERNEL_STATE_BASENAME}.json`);
 }
 
-/** Render a JS string as a Python string literal (JSON's escaping is a valid subset). */
-function pyStr(value: string): string {
-	return JSON.stringify(value);
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Python that serializes the user namespace to `outPath` (atomic write) and a
- * sibling `.json` manifest, then prints a single marker line with the result.
- */
-export function buildSnapshotCode(outPath: string, manifestPath: string, maxBytes: number): string {
-	// All builtins are sourced via the locally-imported _b alias so the helper keeps
-	// working even when the user namespace shadows names like list/open/print/len.
-	return `
-def _prime_agent_snapshot_state():
-    import builtins as _b, json, os, sys, datetime
-    try:
-        import dill
-    except _b.Exception as _err:
-        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"error": "dill unavailable: " + _b.str(_err)}))
-        return
-    dill.settings["recurse"] = True
-
-    ip = None
-    try:
-        ip = get_ipython()  # noqa: F821 (injected by IPython)
-    except _b.Exception:
-        ip = None
-    ns = ip.user_ns if ip is not None else _b.globals()
-    hidden = _b.set(_b.getattr(ip, "user_ns_hidden", {}) or {}) if ip is not None else _b.set()
-    # rlm and asyncio are re-created by the kernel bootstrap on every start;
-    # never snapshot them.
-    always_skip = {"rlm", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
-
-    payload = {}
-    skipped = []
-    total = 0
-    for name in _b.list(ns.keys()):
-        # Skip internals (dunder/underscore), IPython-injected names, and live
-        # handles. A name matching a builtin (e.g. "list") is a user shadow worth
-        # keeping — builtins themselves are not enumerated as user_ns keys.
-        if name.startswith("_") or name in hidden or name in always_skip:
-            continue
-        value = ns[name]
-        # Modules are pickled by reference and re-imported on restore.
-        try:
-            blob = dill.dumps(value)
-        except _b.Exception as _err:
-            skipped.append({"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]})
-            continue
-        if _b.len(blob) > ${maxBytes} or total + _b.len(blob) > ${maxBytes}:
-            skipped.append({"name": name, "reason": "exceeds snapshot size cap"})
-            continue
-        payload[name] = blob
-        total += _b.len(blob)
-
-    os.makedirs(os.path.dirname(${pyStr(outPath)}), exist_ok=True)
-    tmp = ${pyStr(outPath)} + ".tmp"
-    try:
-        with _b.open(tmp, "wb") as fh:
-            dill.dump(payload, fh)
-        os.replace(tmp, ${pyStr(outPath)})
-    except _b.Exception as _err:
-        try:
-            os.remove(tmp)
-        except _b.Exception:
-            pass
-        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"error": "write failed: " + _b.str(_err)}))
-        return
-
-    bytes_written = os.path.getsize(${pyStr(outPath)})
-    saved = _b.sorted(payload.keys())
-    manifest = {
-        "version": 1,
-        "savedNames": saved,
-        "skipped": skipped,
-        "bytes": bytes_written,
-        "pythonVersion": sys.version.split()[0],
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-    try:
-        with _b.open(${pyStr(manifestPath)}, "w") as fh:
-            json.dump(manifest, fh)
-    except _b.Exception:
-        pass
-    _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"saved": saved, "skipped": skipped, "bytes": bytes_written}))
-
-
-try:
-    _prime_agent_snapshot_state()
-finally:
-    del _prime_agent_snapshot_state
-`.trim();
+function corruptSnapshot(reason: string): Error {
+	return new Error(`Corrupt Bun snapshot: ${reason}`);
 }
 
-/**
- * Python that loads the payload at `inPath` (if present) into the user namespace,
- * reviving each name independently, then prints a single marker line with the result.
- * Tolerant of a missing or corrupt file: reports an empty restore, never raises.
- */
-export function buildRestoreCode(inPath: string): string {
-	// Builtins via the local _b alias so a shadowed name in the user namespace
-	// (list/open/print/…) can't break the restore path.
-	return `
-def _prime_agent_restore_state():
-    import builtins as _b, json, os, sys
-    if not os.path.exists(${pyStr(inPath)}):
-        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": []}))
-        return
-    try:
-        import dill
-    except _b.Exception as _err:
-        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "dill unavailable: " + _b.str(_err)}))
-        return
-
-    try:
-        with _b.open(${pyStr(inPath)}, "rb") as fh:
-            payload = dill.load(fh)
-    except _b.Exception as _err:
-        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "load failed: " + _b.str(_err)}))
-        return
-    if not _b.isinstance(payload, _b.dict):
-        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "corrupt snapshot: not a dict"}))
-        return
-
-    ip = None
-    try:
-        ip = get_ipython()  # noqa: F821
-    except _b.Exception:
-        ip = None
-    ns = ip.user_ns if ip is not None else _b.globals()
-
-    restored = []
-    failed = []
-    for name, blob in payload.items():
-        try:
-            ns[name] = dill.loads(blob)
-            restored.append(name)
-        except _b.Exception as _err:
-            failed.append({"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]})
-    _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": _b.sorted(restored), "failed": failed}))
-
-
-try:
-    _prime_agent_restore_state()
-finally:
-    del _prime_agent_restore_state
-`.trim();
-}
-
-/** Marker-line list of live user-defined names, filtered like the snapshot. Never raises. */
-export function buildListNamesCode(): string {
-	return `
-def _prime_agent_list_state_names():
-    import builtins as _b, json
-    ip = None
-    try:
-        ip = get_ipython()  # noqa: F821 (injected by IPython)
-    except _b.Exception:
-        ip = None
-    ns = ip.user_ns if ip is not None else _b.globals()
-    hidden = _b.set(_b.getattr(ip, "user_ns_hidden", {}) or {}) if ip is not None else _b.set()
-    always_skip = {"rlm", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
-    names = []
-    for name in _b.list(ns.keys()):
-        if name.startswith("_") or name in hidden or name in always_skip:
-            continue
-        names.append(name)
-    _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"names": _b.sorted(names)}))
-
-
-try:
-    _prime_agent_list_state_names()
-finally:
-    del _prime_agent_list_state_names
-`.trim();
-}
-
-interface RawListNames {
-	names?: unknown;
-	error?: unknown;
-}
-
-interface RawSnapshot {
-	saved?: unknown;
-	skipped?: unknown;
-	bytes?: unknown;
-	error?: unknown;
-}
-
-interface RawRestore {
-	restored?: unknown;
-	failed?: unknown;
-	error?: unknown;
-}
-
-function asStringArray(value: unknown): string[] {
-	return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
-}
-
-function asReasonArray(value: unknown): { name: string; reason: string }[] {
-	if (!Array.isArray(value)) return [];
-	return value.flatMap((entry) => {
-		if (entry && typeof entry === "object" && typeof (entry as { name?: unknown }).name === "string") {
-			const { name, reason } = entry as { name: string; reason?: unknown };
-			return [{ name, reason: typeof reason === "string" ? reason : "" }];
+function parseHeader(value: unknown): SnapshotHeader {
+	if (!isRecord(value) || value.version !== SNAPSHOT_FORMAT_VERSION || !Array.isArray(value.entries)) {
+		throw corruptSnapshot("invalid header");
+	}
+	const entries = value.entries.map((entry): SnapshotHeaderEntry => {
+		if (
+			!isRecord(entry) ||
+			typeof entry.name !== "string" ||
+			!Number.isSafeInteger(entry.offset) ||
+			!Number.isSafeInteger(entry.length) ||
+			(entry.offset as number) < 0 ||
+			(entry.length as number) < 0
+		) {
+			throw corruptSnapshot("invalid entry metadata");
 		}
-		return [];
+		return { name: entry.name, offset: entry.offset as number, length: entry.length as number };
+	});
+	return { version: SNAPSHOT_FORMAT_VERSION, entries };
+}
+
+export function encodeSnapshotPayload(entries: readonly SnapshotPayloadEntry[]): Buffer {
+	let offset = 0;
+	const headerEntries = entries.map((entry): SnapshotHeaderEntry => {
+		const metadata = { name: entry.name, offset, length: entry.data.byteLength };
+		offset += entry.data.byteLength;
+		return metadata;
+	});
+	const header = Buffer.from(
+		JSON.stringify({ version: SNAPSHOT_FORMAT_VERSION, entries: headerEntries } satisfies SnapshotHeader),
+		"utf8",
+	);
+	if (header.byteLength > MAX_HEADER_BYTES) throw new Error("Bun snapshot header exceeds the 16 MiB limit");
+	const prefix = Buffer.allocUnsafe(HEADER_LENGTH_BYTES);
+	prefix.writeUInt32BE(header.byteLength, 0);
+	return Buffer.concat([prefix, header, ...entries.map((entry) => Buffer.from(entry.data))]);
+}
+
+export function decodeSnapshotPayload(payload: Uint8Array): SnapshotPayloadEntry[] {
+	const buffer = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+	if (buffer.byteLength < HEADER_LENGTH_BYTES) throw corruptSnapshot("missing header length");
+	const headerLength = buffer.readUInt32BE(0);
+	if (headerLength > MAX_HEADER_BYTES || HEADER_LENGTH_BYTES + headerLength > buffer.byteLength) {
+		throw corruptSnapshot("header length is out of range");
+	}
+
+	let rawHeader: unknown;
+	try {
+		rawHeader = JSON.parse(buffer.subarray(HEADER_LENGTH_BYTES, HEADER_LENGTH_BYTES + headerLength).toString("utf8"));
+	} catch (error) {
+		throw corruptSnapshot(`header JSON is invalid: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const header = parseHeader(rawHeader);
+	const dataStart = HEADER_LENGTH_BYTES + headerLength;
+	const dataLength = buffer.byteLength - dataStart;
+	const names = new Set<string>();
+	const ranges: Array<{ start: number; end: number }> = [];
+
+	return header.entries.map((entry) => {
+		if (names.has(entry.name)) throw new Error(`Duplicate snapshot binding: ${entry.name}`);
+		names.add(entry.name);
+		const end = entry.offset + entry.length;
+		if (!Number.isSafeInteger(end) || end > dataLength) throw corruptSnapshot(`entry ${entry.name} is out of range`);
+		const overlaps = ranges.some((range) => entry.offset < range.end && end > range.start);
+		if (overlaps) throw corruptSnapshot(`entry ${entry.name} overlaps another entry`);
+		ranges.push({ start: entry.offset, end });
+		return {
+			name: entry.name,
+			data: Uint8Array.from(buffer.subarray(dataStart + entry.offset, dataStart + end)),
+		};
 	});
 }
 
-/** Pull the marker line out of cell stdout and parse it, or null if absent/invalid. */
-function parseMarkerLine<T>(stdout: string): T | null {
-	const index = stdout.lastIndexOf(RESULT_MARKER);
-	if (index === -1) return null;
-	const rest = stdout.slice(index + RESULT_MARKER.length);
-	const line = rest.split("\n", 1)[0]?.trim();
-	if (!line) return null;
+const TYPED_ARRAY_PROTOTYPES = new Set<object>([
+	Int8Array.prototype,
+	Uint8Array.prototype,
+	Uint8ClampedArray.prototype,
+	Int16Array.prototype,
+	Uint16Array.prototype,
+	Int32Array.prototype,
+	Uint32Array.prototype,
+	Float32Array.prototype,
+	Float64Array.prototype,
+	BigInt64Array.prototype,
+	BigUint64Array.prototype,
+]);
+
+function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: string): string | undefined {
+	if (value === null) return undefined;
+	const valueType = typeof value;
+	if (valueType === "undefined" || valueType === "string" || valueType === "number" || valueType === "boolean") {
+		return undefined;
+	}
+	if (valueType === "bigint") return undefined;
+	if (valueType === "symbol") return `${path}: symbol values are not snapshot-safe`;
+	if (valueType === "function") return `${path}: function values are not snapshot-safe`;
+	if (valueType !== "object") return `${path}: unsupported value type ${valueType}`;
+
+	const object = value as object;
+	if (seen.has(object)) return undefined;
+	seen.add(object);
+
 	try {
-		return JSON.parse(line) as T;
-	} catch {
-		return null;
+		if (Object.getOwnPropertySymbols(object).length > 0) {
+			return `${path}: symbol-keyed state is not snapshot-safe`;
+		}
+		if (object instanceof Promise) return `${path}: promises are not snapshot-safe`;
+		if (object instanceof WeakMap || object instanceof WeakSet) {
+			return `${path}: weak collections are not snapshot-safe`;
+		}
+		if (typeof WeakRef !== "undefined" && object instanceof WeakRef) {
+			return `${path}: weak references are not snapshot-safe`;
+		}
+
+		const prototype = Object.getPrototypeOf(object);
+		if (object instanceof Date) {
+			if (prototype !== Date.prototype) return `${path}: custom prototype is not snapshot-safe`;
+			return Object.keys(object).length === 0 ? undefined : `${path}: custom Date properties are not snapshot-safe`;
+		}
+		if (object instanceof RegExp) {
+			if (prototype !== RegExp.prototype) return `${path}: custom prototype is not snapshot-safe`;
+			return Object.keys(object).length === 0
+				? undefined
+				: `${path}: custom RegExp properties are not snapshot-safe`;
+		}
+		if (object instanceof ArrayBuffer) {
+			if (prototype !== ArrayBuffer.prototype) return `${path}: custom prototype is not snapshot-safe`;
+			return Object.keys(object).length === 0
+				? undefined
+				: `${path}: custom ArrayBuffer properties are not snapshot-safe`;
+		}
+		if (ArrayBuffer.isView(object)) {
+			if (object instanceof DataView || !TYPED_ARRAY_PROTOTYPES.has(prototype)) {
+				return `${path}: custom prototype or unsupported view is not snapshot-safe`;
+			}
+			if (Object.keys(object).some((key) => !/^(0|[1-9]\d*)$/.test(key))) {
+				return `${path}: custom typed-array properties are not snapshot-safe`;
+			}
+			return undefined;
+		}
+		if (object instanceof Map) {
+			if (prototype !== Map.prototype) return `${path}: custom prototype is not snapshot-safe`;
+			if (Object.keys(object).length > 0) return `${path}: custom Map properties are not snapshot-safe`;
+			let index = 0;
+			for (const [key, entryValue] of object) {
+				const keyReason = inspectSnapshotValue(key, seen, `${path}.mapKey${index}`);
+				if (keyReason) return keyReason;
+				const valueReason = inspectSnapshotValue(entryValue, seen, `${path}.mapValue${index}`);
+				if (valueReason) return valueReason;
+				index += 1;
+			}
+			return undefined;
+		}
+		if (object instanceof Set) {
+			if (prototype !== Set.prototype) return `${path}: custom prototype is not snapshot-safe`;
+			if (Object.keys(object).length > 0) return `${path}: custom Set properties are not snapshot-safe`;
+			let index = 0;
+			for (const entryValue of object) {
+				const reason = inspectSnapshotValue(entryValue, seen, `${path}.setValue${index}`);
+				if (reason) return reason;
+				index += 1;
+			}
+			return undefined;
+		}
+		if (Array.isArray(object)) {
+			if (prototype !== Array.prototype) return `${path}: custom prototype is not snapshot-safe`;
+			for (const key of Object.keys(object)) {
+				if (!/^(0|[1-9]\d*)$/.test(key)) return `${path}: custom array properties are not snapshot-safe`;
+				const reason = inspectSnapshotValue(
+					(object as unknown as Record<string, unknown>)[key],
+					seen,
+					`${path}[${key}]`,
+				);
+				if (reason) return reason;
+			}
+			return undefined;
+		}
+		if (prototype !== Object.prototype && prototype !== null) {
+			return `${path}: custom prototype is not snapshot-safe`;
+		}
+		for (const [key, entryValue] of Object.entries(object)) {
+			const reason = inspectSnapshotValue(entryValue, seen, `${path}.${key}`);
+			if (reason) return reason;
+		}
+		return undefined;
+	} catch (error) {
+		return `${path}: inspection failed: ${error instanceof Error ? error.message : String(error)}`;
 	}
 }
 
-export function parseSnapshotResult(stdout: string, path: string): SnapshotResult | null {
-	const raw = parseMarkerLine<RawSnapshot>(stdout);
-	if (!raw || raw.error) return null;
-	return {
-		saved: asStringArray(raw.saved),
-		skipped: asReasonArray(raw.skipped),
-		bytes: typeof raw.bytes === "number" ? raw.bytes : 0,
-		path,
-	};
-}
-
-export function parseRestoreResult(stdout: string, path: string): RestoreResult | null {
-	const raw = parseMarkerLine<RawRestore>(stdout);
-	if (!raw || raw.error) return null;
-	return {
-		restored: asStringArray(raw.restored),
-		failed: asReasonArray(raw.failed),
-		path,
-	};
-}
-
-/** Sorted list of live user-defined names, or null if the marker was absent/invalid. */
-export function parseListNamesResult(stdout: string): string[] | null {
-	const raw = parseMarkerLine<RawListNames>(stdout);
-	if (!raw || raw.error) return null;
-	return asStringArray(raw.names);
+export function snapshotValueSkipReason(value: unknown): string | undefined {
+	return inspectSnapshotValue(value, new WeakSet(), "$binding");
 }

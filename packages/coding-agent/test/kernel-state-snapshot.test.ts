@@ -1,112 +1,91 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-	buildRestoreCode,
-	buildSnapshotCode,
 	DEFAULT_SNAPSHOT_MAX_BYTES,
+	decodeSnapshotPayload,
+	encodeSnapshotPayload,
 	manifestPathIn,
-	parseRestoreResult,
-	parseSnapshotResult,
 	snapshotPathIn,
+	snapshotValueSkipReason,
 } from "../src/core/kernel/state-snapshot.js";
 
-// Kept in sync with the marker the Python helpers print.
-const MARKER = "__PRIME_AGENT_KERNEL_STATE__";
-
-describe("kernel state snapshot paths", () => {
-	it("places snapshot + manifest inside the session artifact directory", () => {
+describe("Bun kernel state snapshot paths", () => {
+	it("places the binary payload and manifest in the session artifact directory", () => {
 		const artifactDir = "/home/u/.prime/agent/session-artifacts/abc-123";
-		expect(snapshotPathIn(artifactDir)).toBe(join(artifactDir, "kernel-state.dill"));
+		expect(snapshotPathIn(artifactDir)).toBe(join(artifactDir, "kernel-state.bin"));
 		expect(manifestPathIn(artifactDir)).toBe(join(artifactDir, "kernel-state.json"));
+		expect(DEFAULT_SNAPSHOT_MAX_BYTES).toBe(256 * 1024 * 1024);
 	});
 });
 
-describe("parseSnapshotResult", () => {
-	it("parses a valid marker line", () => {
-		const stdout = `${MARKER}${JSON.stringify({
-			saved: ["x", "y"],
-			skipped: [{ name: "sock", reason: "TypeError: cannot pickle" }],
-			bytes: 1234,
-		})}\n`;
-		const result = parseSnapshotResult(stdout, "/tmp/s.dill");
-		expect(result).toEqual({
-			saved: ["x", "y"],
-			skipped: [{ name: "sock", reason: "TypeError: cannot pickle" }],
-			bytes: 1234,
-			path: "/tmp/s.dill",
-		});
+describe("Bun snapshot binary format", () => {
+	it("round-trips independently serialized binding blobs", () => {
+		const payload = encodeSnapshotPayload([
+			{ name: "alpha", data: Uint8Array.from([1, 2, 3]) },
+			{ name: "unicode_变量", data: Uint8Array.from([5, 8, 13, 21]) },
+		]);
+
+		expect(decodeSnapshotPayload(payload)).toEqual([
+			{ name: "alpha", data: Uint8Array.from([1, 2, 3]) },
+			{ name: "unicode_变量", data: Uint8Array.from([5, 8, 13, 21]) },
+		]);
 	});
 
-	it("ignores stdout printed before the marker line", () => {
-		const stdout = `some earlier print output\n${MARKER}${JSON.stringify({ saved: ["a"], skipped: [], bytes: 7 })}`;
-		expect(parseSnapshotResult(stdout, "/tmp/s.dill")?.saved).toEqual(["a"]);
-	});
+	it("rejects corrupt headers, entry ranges, and duplicate names", () => {
+		expect(() => decodeSnapshotPayload(Buffer.from([0, 0, 0, 9, 1]))).toThrow(/corrupt Bun snapshot/i);
 
-	it("returns null when the marker is absent", () => {
-		expect(parseSnapshotResult("no marker here", "/tmp/s.dill")).toBeNull();
-	});
-
-	it("returns null when the payload reports an error", () => {
-		const stdout = `${MARKER}${JSON.stringify({ error: "dill unavailable" })}`;
-		expect(parseSnapshotResult(stdout, "/tmp/s.dill")).toBeNull();
-	});
-
-	it("returns null on malformed JSON", () => {
-		expect(parseSnapshotResult(`${MARKER}{not json`, "/tmp/s.dill")).toBeNull();
-	});
-
-	it("tolerates missing fields", () => {
-		const result = parseSnapshotResult(`${MARKER}{}`, "/tmp/s.dill");
-		expect(result).toEqual({ saved: [], skipped: [], bytes: 0, path: "/tmp/s.dill" });
+		const duplicate = encodeSnapshotPayload([
+			{ name: "same", data: Uint8Array.from([1]) },
+			{ name: "same", data: Uint8Array.from([2]) },
+		]);
+		expect(() => decodeSnapshotPayload(duplicate)).toThrow(/duplicate snapshot binding/i);
 	});
 });
 
-describe("parseRestoreResult", () => {
-	it("parses restored and failed names", () => {
-		const stdout = `${MARKER}${JSON.stringify({
-			restored: ["df", "model"],
-			failed: [{ name: "conn", reason: "TypeError" }],
-		})}`;
-		expect(parseRestoreResult(stdout, "/tmp/s.dill")).toEqual({
-			restored: ["df", "model"],
-			failed: [{ name: "conn", reason: "TypeError" }],
-			path: "/tmp/s.dill",
-		});
+describe("snapshotValueSkipReason", () => {
+	it("accepts the characterized structured-clone allowlist, including cycles", () => {
+		const cycle: { self?: unknown; values: Map<string, Set<number>> } = {
+			values: new Map([["numbers", new Set([1, 2, 3])]]),
+		};
+		cycle.self = cycle;
+		const value = {
+			array: [cycle, new Date("2024-01-01T00:00:00.000Z")],
+			buffer: Uint8Array.from([3, 5, 8]).buffer,
+			nullPrototype: Object.assign(Object.create(null) as Record<string, unknown>, { ok: true }),
+			regexp: /prime/giu,
+			typed: Uint16Array.from([13, 21]),
+		};
+
+		expect(snapshotValueSkipReason(value)).toBeUndefined();
 	});
 
-	it("returns null when the marker is absent", () => {
-		expect(parseRestoreResult("", "/tmp/s.dill")).toBeNull();
+	it("rejects unsupported values at any nesting depth", () => {
+		class CustomValue {
+			value = 1;
+		}
+
+		expect(snapshotValueSkipReason(() => undefined)).toMatch(/function/i);
+		expect(snapshotValueSkipReason(Promise.resolve())).toMatch(/promise/i);
+		expect(snapshotValueSkipReason(new WeakMap())).toMatch(/weak collection/i);
+		expect(snapshotValueSkipReason(Symbol("state"))).toMatch(/symbol/i);
+		expect(snapshotValueSkipReason({ nested: [{ custom: new CustomValue() }] })).toMatch(/custom prototype/i);
+		expect(snapshotValueSkipReason({ [Symbol("hidden")]: true })).toMatch(/symbol-keyed/i);
+		const dateWithState = Object.assign(new Date(), { extra: new CustomValue() });
+		expect(snapshotValueSkipReason(dateWithState)).toMatch(/custom Date properties/i);
+		const arrayWithState = Object.assign([1, 2], { extra: () => undefined });
+		expect(snapshotValueSkipReason(arrayWithState)).toMatch(/custom array properties/i);
 	});
 
-	it("returns null when the payload reports an error", () => {
-		expect(parseRestoreResult(`${MARKER}${JSON.stringify({ error: "load failed" })}`, "/tmp/s.dill")).toBeNull();
-	});
-});
+	it("rejects proxies that throw during inspection", () => {
+		const value = new Proxy(
+			{},
+			{
+				getPrototypeOf() {
+					throw new Error("blocked");
+				},
+			},
+		);
 
-describe("buildSnapshotCode", () => {
-	const code = buildSnapshotCode("/state/sess.dill", "/state/sess.json", DEFAULT_SNAPSHOT_MAX_BYTES);
-
-	it("embeds the output, manifest paths, and the byte cap", () => {
-		expect(code).toContain('"/state/sess.dill"');
-		expect(code).toContain('"/state/sess.json"');
-		expect(code).toContain(String(DEFAULT_SNAPSHOT_MAX_BYTES));
-	});
-
-	it("uses dill, an atomic write, and skips internal handles", () => {
-		expect(code).toContain("import dill");
-		expect(code).toContain("os.replace");
-		// rlm and the IPython display names must never be serialized.
-		expect(code).toContain('"rlm"');
-		expect(code).toContain(`print(${JSON.stringify(MARKER)}`);
-	});
-});
-
-describe("buildRestoreCode", () => {
-	const code = buildRestoreCode("/state/sess.dill");
-
-	it("embeds the input path and no-ops when the file is missing", () => {
-		expect(code).toContain('"/state/sess.dill"');
-		expect(code).toContain("os.path.exists");
-		expect(code).toContain("dill.loads");
+		expect(snapshotValueSkipReason(value)).toMatch(/inspection failed.*blocked/i);
 	});
 });

@@ -1,316 +1,67 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { AGENT_MESSAGE_DISPLAY_MIME, KernelManager, type KernelSentAgentMessage } from "../src/core/kernel/index.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resolveBunRuntime } from "../src/core/kernel/bun-runtime.js";
+import { KernelManager } from "../src/core/kernel/index.js";
 
-async function waitForCalls(mock: { mock: { calls: unknown[][] } }, count: number): Promise<void> {
-	for (let i = 0; i < 20; i++) {
-		if (mock.mock.calls.length >= count) {
-			return;
-		}
-		await Promise.resolve();
-	}
-	expect(mock.mock.calls.length).toBeGreaterThanOrEqual(count);
-}
+describe("Bun KernelManager abort and crash recovery", () => {
+	let bunPath: string;
+	let directory: string;
+	let manager: KernelManager;
 
-describe("KernelManager abort handling", () => {
-	afterEach(() => {
-		vi.useRealTimers();
+	beforeEach(async () => {
+		bunPath = (await resolveBunRuntime()).path;
+		directory = await mkdtemp(join(tmpdir(), "prime-bun-abort-"));
+		manager = new KernelManager({ bun: bunPath, cwd: directory });
 	});
 
-	it("does not poison startup after a caller starts with an aborted signal", async () => {
-		const manager = new KernelManager({ cwd: process.cwd() });
-		let startCount = 0;
-		Object.assign(
-			manager as unknown as {
-				doStart: () => Promise<void>;
-			},
-			{
-				doStart: async () => {
-					startCount++;
-				},
-			},
+	afterEach(async () => {
+		await manager.dispose();
+		await rm(directory, { force: true, recursive: true });
+	});
+
+	it("kills synchronous infinite JavaScript and restores the last successful state", async () => {
+		await manager.execute("const stable = { value: 7 }; stable.value;");
+		const controller = new AbortController();
+		const execution = manager.execute("while (true) {}", { signal: controller.signal });
+		setTimeout(() => controller.abort(), 100);
+
+		await expect(execution).resolves.toMatchObject({ status: "aborted" });
+		await expect(manager.execute("stable.value;")).resolves.toMatchObject({ status: "ok", result: "7" });
+	}, 10_000);
+
+	it("prevents delayed mutations from an aborted async cell", async () => {
+		await manager.execute("const stable = { value: 11 }; stable.value;");
+		const controller = new AbortController();
+		const execution = manager.execute(
+			`setTimeout(() => { stable.value = 99; }, 250); await new Promise((resolve) => setTimeout(resolve, 10_000));`,
+			{ signal: controller.signal },
 		);
+		setTimeout(() => controller.abort(), 75);
+
+		await expect(execution).resolves.toMatchObject({ status: "aborted" });
+		await new Promise((resolve) => setTimeout(resolve, 350));
+		await expect(manager.execute("stable.value;")).resolves.toMatchObject({ status: "ok", result: "11" });
+	}, 10_000);
+
+	it("restores the last successful state after an unexpected worker exit", async () => {
+		await manager.execute("const stable = { value: 13 }; stable.value;");
+
+		await expect(manager.execute("process.exit(23);")).rejects.toThrow(/Bun worker exited unexpectedly/);
+		await expect(manager.execute("stable.value;")).resolves.toMatchObject({ status: "ok", result: "13" });
+	}, 10_000);
+
+	it("returns an aborted result without starting a worker for a pre-aborted signal", async () => {
 		const controller = new AbortController();
 		controller.abort();
 
-		await expect(manager.start({ signal: controller.signal })).rejects.toThrow("Kernel startup aborted");
-		await expect(manager.start()).resolves.toBeUndefined();
-		expect(startCount).toBe(1);
-	});
-
-	it("does not cancel shared startup when one waiting caller aborts", async () => {
-		const manager = new KernelManager({ cwd: process.cwd() });
-		let releaseStart: () => void = () => {};
-		let startCount = 0;
-		Object.assign(
-			manager as unknown as {
-				doStart: () => Promise<void>;
-			},
-			{
-				doStart: async () => {
-					startCount++;
-					await new Promise<void>((resolve) => {
-						releaseStart = resolve;
-					});
-				},
-			},
-		);
-		const controller = new AbortController();
-
-		const firstStart = manager.start({ signal: controller.signal });
-		const secondStart = manager.start();
-		controller.abort();
-
-		await expect(firstStart).rejects.toThrow("Kernel startup aborted");
-		releaseStart();
-		await expect(secondStart).resolves.toBeUndefined();
-		expect(startCount).toBe(1);
-	});
-
-	it("settles an aborted execution when the kernel never reports idle", async () => {
-		vi.useFakeTimers();
-		const manager = new KernelManager({ cwd: process.cwd() });
-		const shellSend = vi.fn(async (_frames: Buffer[]) => {});
-		const controlSend = vi.fn(async (_frames: Buffer[]) => {});
-		const kernelKill = vi.fn((_signal?: NodeJS.Signals | number) => true);
-		Object.assign(
-			manager as unknown as {
-				state: "running";
-				connection: {
-					ip: "127.0.0.1";
-					transport: "tcp";
-					shell_port: number;
-					iopub_port: number;
-					stdin_port: number;
-					control_port: number;
-					hb_port: number;
-					signature_scheme: "hmac-sha256";
-					key: string;
-					kernel_name: string;
-				};
-				shell: { send: (frames: Buffer[]) => Promise<void>; close: () => void };
-				control: { send: (frames: Buffer[]) => Promise<void>; close: () => void };
-				kernel: { kill: (signal?: NodeJS.Signals | number) => boolean };
-				start: () => Promise<void>;
-			},
-			{
-				state: "running",
-				connection: {
-					ip: "127.0.0.1",
-					transport: "tcp",
-					shell_port: 1,
-					iopub_port: 2,
-					stdin_port: 3,
-					control_port: 4,
-					hb_port: 5,
-					signature_scheme: "hmac-sha256",
-					key: "test-key",
-					kernel_name: "python3",
-				},
-				shell: { send: shellSend, close: vi.fn() },
-				control: { send: controlSend, close: vi.fn() },
-				kernel: { kill: kernelKill },
-				start: async () => {},
-			},
-		);
-		const controller = new AbortController();
-		const lateSentAgentMessages: KernelSentAgentMessage[] = [];
-
-		const executePromise = manager.execute("while True: pass", {
-			signal: controller.signal,
-			onLateSentAgentMessage: (message) => lateSentAgentMessages.push(message),
+		await expect(manager.execute("42;", { signal: controller.signal })).resolves.toEqual({
+			durationMs: 0,
+			status: "aborted",
+			stderr: "",
+			stdout: "",
 		});
-		await waitForCalls(shellSend, 1);
-		expect(shellSend).toHaveBeenCalledTimes(1);
-
-		controller.abort();
-		await vi.advanceTimersByTimeAsync(1000);
-
-		await expect(executePromise).resolves.toMatchObject({ status: "aborted" });
-		expect(controlSend).toHaveBeenCalled();
-		expect(kernelKill).not.toHaveBeenCalled();
-
-		const internals = manager as unknown as {
-			activeExecution?: { requestMsgId: string };
-			handleExecutionMessage: (incoming: {
-				header: { msg_type: string };
-				parent_header: Record<string, unknown>;
-				metadata: Record<string, unknown>;
-				content: Record<string, unknown>;
-			}) => void;
-		};
-		const activeExecution = internals.activeExecution;
-		expect(activeExecution).toBeDefined();
-		if (!activeExecution) {
-			throw new Error("Expected active execution to remain until kernel idle");
-		}
-		internals.handleExecutionMessage({
-			header: { msg_type: "display_data" },
-			parent_header: { msg_id: activeExecution.requestMsgId },
-			metadata: {},
-			content: {
-				data: {
-					[AGENT_MESSAGE_DISPLAY_MIME]: {
-						id: "agentmsg-after-abort",
-						message: "still sent",
-						deliveryStatus: "delivered",
-						target: { activeSessionId: "beta", sessionId: "session-beta" },
-					},
-				},
-			},
-		});
-		expect(lateSentAgentMessages).toEqual([
-			{
-				id: "agentmsg-after-abort",
-				message: "still sent",
-				deliveryStatus: "delivered",
-				target: { activeSessionId: "beta", sessionId: "session-beta" },
-			},
-		]);
-		const secondExecutePromise = manager.execute("x = 1");
-		await Promise.resolve();
-		expect(shellSend).toHaveBeenCalledTimes(1);
-
-		internals.handleExecutionMessage({
-			header: { msg_type: "status" },
-			parent_header: { msg_id: activeExecution.requestMsgId },
-			metadata: {},
-			content: { execution_state: "idle" },
-		});
-		await waitForCalls(shellSend, 2);
-		expect(shellSend).toHaveBeenCalledTimes(2);
-
-		const secondExecution = internals.activeExecution;
-		expect(secondExecution).toBeDefined();
-		if (!secondExecution) {
-			throw new Error("Expected second execution to start after previous cell went idle");
-		}
-		internals.handleExecutionMessage({
-			header: { msg_type: "status" },
-			parent_header: { msg_id: secondExecution.requestMsgId },
-			metadata: {},
-			content: { execution_state: "idle" },
-		});
-		await expect(secondExecutePromise).resolves.toMatchObject({ status: "ok" });
-
-		manager.disposeSync();
-		expect(kernelKill).toHaveBeenCalledWith("SIGTERM");
-	});
-
-	it("settles an aborted execution when shell send never resolves", async () => {
-		vi.useFakeTimers();
-		const manager = new KernelManager({ cwd: process.cwd() });
-		const shellSend = vi.fn((_frames: Buffer[]) => new Promise<void>(() => {}));
-		const controlSend = vi.fn(async (_frames: Buffer[]) => {});
-		Object.assign(
-			manager as unknown as {
-				state: "running";
-				connection: {
-					ip: "127.0.0.1";
-					transport: "tcp";
-					shell_port: number;
-					iopub_port: number;
-					stdin_port: number;
-					control_port: number;
-					hb_port: number;
-					signature_scheme: "hmac-sha256";
-					key: string;
-					kernel_name: string;
-				};
-				shell: { send: (frames: Buffer[]) => Promise<void>; close: () => void };
-				control: { send: (frames: Buffer[]) => Promise<void>; close: () => void };
-				start: () => Promise<void>;
-			},
-			{
-				state: "running",
-				connection: {
-					ip: "127.0.0.1",
-					transport: "tcp",
-					shell_port: 1,
-					iopub_port: 2,
-					stdin_port: 3,
-					control_port: 4,
-					hb_port: 5,
-					signature_scheme: "hmac-sha256",
-					key: "test-key",
-					kernel_name: "python3",
-				},
-				shell: { send: shellSend, close: vi.fn() },
-				control: { send: controlSend, close: vi.fn() },
-				start: async () => {},
-			},
-		);
-		const controller = new AbortController();
-
-		const executePromise = manager.execute("while True: pass", { signal: controller.signal });
-		await waitForCalls(shellSend, 1);
-		controller.abort();
-		await vi.advanceTimersByTimeAsync(1000);
-
-		await expect(executePromise).resolves.toMatchObject({ status: "aborted" });
-		expect(controlSend).toHaveBeenCalled();
-	});
-
-	it("fails a later execution fast when the interrupted cell never idles", async () => {
-		vi.useFakeTimers();
-		const manager = new KernelManager({ cwd: process.cwd() });
-		const shellSend = vi.fn(async (_frames: Buffer[]) => {});
-		const controlSend = vi.fn(async (_frames: Buffer[]) => {});
-		Object.assign(
-			manager as unknown as {
-				state: "running";
-				connection: {
-					ip: "127.0.0.1";
-					transport: "tcp";
-					shell_port: number;
-					iopub_port: number;
-					stdin_port: number;
-					control_port: number;
-					hb_port: number;
-					signature_scheme: "hmac-sha256";
-					key: string;
-					kernel_name: string;
-				};
-				shell: { send: (frames: Buffer[]) => Promise<void>; close: () => void };
-				control: { send: (frames: Buffer[]) => Promise<void>; close: () => void };
-				start: () => Promise<void>;
-			},
-			{
-				state: "running",
-				connection: {
-					ip: "127.0.0.1",
-					transport: "tcp",
-					shell_port: 1,
-					iopub_port: 2,
-					stdin_port: 3,
-					control_port: 4,
-					hb_port: 5,
-					signature_scheme: "hmac-sha256",
-					key: "test-key",
-					kernel_name: "python3",
-				},
-				shell: { send: shellSend, close: vi.fn() },
-				control: { send: controlSend, close: vi.fn() },
-				start: async () => {},
-			},
-		);
-		const controller = new AbortController();
-
-		const executePromise = manager.execute("while True: pass", { signal: controller.signal });
-		await waitForCalls(shellSend, 1);
-		controller.abort();
-		await vi.advanceTimersByTimeAsync(1000);
-		await expect(executePromise).resolves.toMatchObject({ status: "aborted" });
-
-		const secondExecutePromise = manager.execute("x = 1");
-		const secondExecuteExpectation = expect(secondExecutePromise).rejects.toThrow(
-			"IPython kernel is still running the previously interrupted cell",
-		);
-		await Promise.resolve();
-		await vi.advanceTimersByTimeAsync(5000);
-
-		await secondExecuteExpectation;
-		expect(shellSend).toHaveBeenCalledTimes(1);
-		expect(controlSend).toHaveBeenCalled();
-		manager.disposeSync();
+		expect(manager.isRunning).toBe(false);
 	});
 });

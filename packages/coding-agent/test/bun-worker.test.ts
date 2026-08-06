@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -356,6 +356,77 @@ response.answer;
 		});
 		const recovered = await client.waitForType("result", (message) => message.replyTo === "recovery-execute");
 		expect(recovered).toMatchObject({ status: "ok", value: "42" });
+	});
+
+	it("snapshots supported bindings independently and restores them", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-snapshot-"));
+		const path = join(directory, "state.bin");
+		const manifestPath = join(directory, "state.json");
+		try {
+			client.send({
+				cellId: "snapshot-source",
+				code: `
+const plain = { count: 1, nested: new Map([["key", new Set([2, 3])]]) };
+class Custom { constructor() { this.value = 4; } }
+const custom = new Custom();
+const callable = () => 5;
+plain.count;
+`,
+				id: "snapshot-source-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "snapshot-source-execute");
+
+			client.send({
+				id: "snapshot",
+				manifestPath,
+				maxBytes: 1024 * 1024,
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "snapshot",
+			});
+			const snapshot = await client.waitForType("snapshot_result");
+			expect(snapshot).toMatchObject({ replyTo: "snapshot", saved: ["plain"] });
+			expect(snapshot.skipped.map((entry) => entry.name)).toEqual(
+				expect.arrayContaining(["Custom", "callable", "custom"]),
+			);
+			const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+				bunVersion: string;
+				savedNames: string[];
+			};
+			expect(manifest.savedNames).toEqual(["plain"]);
+			expect(manifest.bunVersion).toMatch(/^1\.3\./);
+
+			client.send({
+				cellId: "snapshot-mutation",
+				code: "plain.count = 99; plain.count;",
+				id: "snapshot-mutation-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "snapshot-mutation-execute");
+			client.send({
+				id: "restore",
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "restore",
+			});
+			const restore = await client.waitForType("restore_result");
+			expect(restore).toMatchObject({ replyTo: "restore", restored: ["plain"], failed: [] });
+
+			client.send({
+				cellId: "snapshot-check",
+				code: "plain.count;",
+				id: "snapshot-check-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			const result = await client.waitForType("result", (message) => message.replyTo === "snapshot-check-execute");
+			expect(result).toMatchObject({ status: "ok", value: "1" });
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
 	});
 
 	it("rejects overlapping executions", async () => {

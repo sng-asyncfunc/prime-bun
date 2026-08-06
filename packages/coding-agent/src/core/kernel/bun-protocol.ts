@@ -23,6 +23,18 @@ export interface ListBunWorkerNamesMessage extends BunWorkerProtocolMessage {
 	type: "list_names";
 }
 
+export interface SnapshotBunWorkerMessage extends BunWorkerProtocolMessage {
+	type: "snapshot";
+	path: string;
+	manifestPath: string;
+	maxBytes: number;
+}
+
+export interface RestoreBunWorkerMessage extends BunWorkerProtocolMessage {
+	type: "restore";
+	path: string;
+}
+
 export interface BunWorkerHostResponseMessage extends BunWorkerProtocolMessage {
 	type: "host_response";
 	requestId: string;
@@ -41,6 +53,8 @@ export type HostToBunWorkerMessage =
 	| InitializeBunWorkerMessage
 	| ExecuteBunCellMessage
 	| ListBunWorkerNamesMessage
+	| SnapshotBunWorkerMessage
+	| RestoreBunWorkerMessage
 	| BunWorkerHostResponseMessage
 	| ShutdownBunWorkerMessage;
 
@@ -85,6 +99,25 @@ export interface BunWorkerListNamesResultMessage extends BunWorkerResponseMessag
 	names: string[];
 }
 
+export interface BunWorkerSnapshotResultMessage extends BunWorkerResponseMessage {
+	type: "snapshot_result";
+	replyTo: string;
+	saved: string[];
+	skipped: { name: string; reason: string }[];
+	bytes: number;
+	path: string;
+	error?: string;
+}
+
+export interface BunWorkerRestoreResultMessage extends BunWorkerResponseMessage {
+	type: "restore_result";
+	replyTo: string;
+	restored: string[];
+	failed: { name: string; reason: string }[];
+	path: string;
+	error?: string;
+}
+
 export interface BunWorkerHostRequestMessage extends BunWorkerResponseMessage {
 	type: "host_request";
 	requestId: string;
@@ -117,6 +150,8 @@ export type BunWorkerToHostMessage =
 	| BunWorkerSuccessResultMessage
 	| BunWorkerErrorResultMessage
 	| BunWorkerListNamesResultMessage
+	| BunWorkerSnapshotResultMessage
+	| BunWorkerRestoreResultMessage
 	| BunWorkerHostRequestMessage
 	| BunWorkerDisplayMessage
 	| BunWorkerProtocolErrorMessage

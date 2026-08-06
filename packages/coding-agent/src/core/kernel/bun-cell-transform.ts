@@ -10,6 +10,17 @@ import {
 export interface TransformedJavaScriptCell {
 	code: string;
 	bindingNames: string[];
+	bindingRecipes: Record<string, ImportBindingRecipe>;
+}
+
+export interface ImportBindingRecipe {
+	type: "import";
+	specifier: string;
+}
+
+interface BindingPersistence {
+	name: string;
+	recipe?: ImportBindingRecipe;
 }
 
 interface SourceEdit {
@@ -55,8 +66,25 @@ function declarationBindings(declaration: VariableDeclaration | FunctionDeclarat
 	return names;
 }
 
-function persistenceSource(names: readonly string[]): string {
-	return names.map((name) => `\n__primePersist(${JSON.stringify(name)}, ${name});`).join("");
+function literalImportRecipe(declaration: VariableDeclaration): Record<string, ImportBindingRecipe> {
+	const recipes: Record<string, ImportBindingRecipe> = {};
+	for (const declarator of declaration.declarations) {
+		if (declarator.id.type !== "Identifier" || declarator.init?.type !== "AwaitExpression") continue;
+		const imported = declarator.init.argument;
+		if (imported.type !== "ImportExpression" || imported.source.type !== "Literal") continue;
+		if (typeof imported.source.value !== "string") continue;
+		recipes[declarator.id.name] = { type: "import", specifier: imported.source.value };
+	}
+	return recipes;
+}
+
+function persistenceSource(bindings: readonly BindingPersistence[]): string {
+	return bindings
+		.map(({ name, recipe }) => {
+			const serializedRecipe = recipe ? `, ${JSON.stringify(recipe)}` : "";
+			return `\n__primePersist(${JSON.stringify(name)}, ${name}${serializedRecipe});`;
+		})
+		.join("");
 }
 
 function applyEdits(source: string, edits: SourceEdit[]): string {
@@ -79,6 +107,8 @@ export function transformJavaScriptCell(source: string): TransformedJavaScriptCe
 	const program = parseCell(source);
 	const edits: SourceEdit[] = [];
 	const bindingNames: string[] = [];
+	const bindingRecipes: Record<string, ImportBindingRecipe> = {};
+	const persistedBindings: BindingPersistence[] = [];
 
 	for (const statement of program.body) {
 		switch (statement.type) {
@@ -92,8 +122,12 @@ export function transformJavaScriptCell(source: string): TransformedJavaScriptCe
 			case "FunctionDeclaration":
 			case "ClassDeclaration": {
 				const names = declarationBindings(statement);
+				const recipes = statement.type === "VariableDeclaration" ? literalImportRecipe(statement) : {};
 				bindingNames.push(...names);
-				edits.push({ start: statement.end, end: statement.end, text: persistenceSource(names) });
+				Object.assign(bindingRecipes, recipes);
+				const statementBindings = names.map((name) => ({ name, recipe: recipes[name] }));
+				persistedBindings.push(...statementBindings);
+				edits.push({ start: statement.end, end: statement.end, text: persistenceSource(statementBindings) });
 				break;
 			}
 		}
@@ -102,7 +136,7 @@ export function transformJavaScriptCell(source: string): TransformedJavaScriptCe
 	const finalStatement = program.body.at(-1);
 	if (finalStatement?.type === "ExpressionStatement") {
 		const expression = source.slice(finalStatement.expression.start, finalStatement.expression.end);
-		const finalPersistence = persistenceSource(bindingNames);
+		const finalPersistence = persistenceSource(persistedBindings);
 		edits.push({
 			start: finalStatement.start,
 			end: finalStatement.end,
@@ -111,11 +145,12 @@ export function transformJavaScriptCell(source: string): TransformedJavaScriptCe
 				: `return (${expression});`,
 		});
 	} else if (bindingNames.length > 0) {
-		edits.push({ start: source.length, end: source.length, text: persistenceSource(bindingNames) });
+		edits.push({ start: source.length, end: source.length, text: persistenceSource(persistedBindings) });
 	}
 
 	return {
 		code: applyEdits(source, edits),
 		bindingNames,
+		bindingRecipes,
 	};
 }

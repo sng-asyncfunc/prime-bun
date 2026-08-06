@@ -65,6 +65,20 @@ describe("Bun KernelManager", () => {
 		expect(result.result).toBe('"res\n[... output truncated at 4 chars ...]');
 	});
 
+	it("does not attribute delayed output from a completed cell to the next cell", async () => {
+		const manager = createManager();
+		const first = await manager.execute(`setTimeout(() => console.log("late-first"), 100); "scheduled";`);
+		const streamed: Array<{ chunk: string; name: "stdout" | "stderr" }> = [];
+		const second = await manager.execute(`await Bun.sleep(250); console.log("second-cell"); "done";`, {
+			onStream: (chunk, name) => streamed.push({ chunk, name }),
+		});
+
+		expect(first).toMatchObject({ status: "ok", result: '"scheduled"' });
+		expect(second.stdout).toContain("second-cell");
+		expect(second.stdout).not.toContain("late-first");
+		expect(streamed.map(({ chunk }) => chunk).join("")).not.toContain("late-first");
+	});
+
 	it("round-trips host requests with cell-source attribution", async () => {
 		const handler = vi.fn(async (payload: Record<string, unknown>) => ({ answer: payload.value }));
 		const manager = createManager({ hostHandlers: { "test.echo": handler } });

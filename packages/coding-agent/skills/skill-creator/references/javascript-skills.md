@@ -9,7 +9,7 @@ All of these must hold or the skill degrades to markdown-only with a load warnin
 - `SKILL.md` exists as usual.
 - `package.json` exists at the skill root and contains `primeAgent.entry` and `primeAgent.global`.
 - `primeAgent.entry` is a relative path that stays inside the skill directory and names an existing module.
-- `primeAgent.global` is a valid JavaScript identifier and does not collide with another prepared skill.
+- `primeAgent.global` is a valid JavaScript identifier and does not collide with another prepared skill or a Bun/runtime global.
 - The entry module exports `createSkill(context)` or a default value.
 
 ## Minimal Template
@@ -78,13 +78,15 @@ Failures do not prevent the Bun worker from starting. The global is bound to a p
 
 ## Dependencies
 
-Use normal package imports. Dependencies bundled with `@prime-agent/coding-agent` are available to built-in skills. Project or personal skills should keep dependencies available from their containing project, or use Bun's prepared `installPackage()` helper to install an ad hoc package into the managed runtime.
+Use normal package imports and declare runtime packages in `dependencies` or `optionalDependencies`. Prime Agent installs them automatically with Bun into a content-addressed cache under its managed kernel directory and exposes that cache to the worker. It does not create or update `node_modules` in the skill directory. Relative `file:` dependencies resolve from the skill root.
+
+`installPackage()` is for ad hoc notebook helpers, not a substitute for a skill's declared dependencies.
 
 Do not shell out to Python or add a `pyproject.toml`. JavaScript-backed skills must run entirely in Bun.
 
 ## Verifying a JavaScript Skill
 
 1. Check the detection contract and confirm the global uses camelCase.
-2. Import the entry with Bun from the skill's containing project.
+2. Start from a clean skill directory and let Prime Agent provision declared dependencies.
 3. In a fresh agent session, verify the global is present and its common call path works.
 4. Confirm a bad import produces a skill diagnostic without preventing ordinary JavaScript cells from running.

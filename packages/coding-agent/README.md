@@ -68,7 +68,7 @@ prime-agent
 
 Then just talk to Prime Agent. By default, Prime Agent gives the model one tool: `javascript`. The model uses the persistent Bun notebook to read files, run commands, edit code, inspect data, and retain JavaScript state. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Prime Agent packages](#prime-agent-packages).
 
-The runtime is prepared automatically on first invocation and requires Bun 1.3.14 or newer. Set `PRIME_AGENT_KERNEL_BUN` to use a specific supported Bun executable.
+The runtime is prepared automatically on first invocation and requires Bun 1.3.14 or newer. TypeScript syntax is transpiled for execution but is not type-checked. Set `PRIME_AGENT_KERNEL_BUN` to use a specific supported Bun executable.
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
@@ -307,7 +307,7 @@ description: Use this skill when the user asks about X.
 2. Then that
 ```
 
-Skills can also be JavaScript-backed. A JavaScript skill is a normal skill directory with `SKILL.md`, a `package.json` declaring `primeAgent.entry` and `primeAgent.global`, and a JavaScript or TypeScript entry module. Prime Agent loads it into the persistent Bun notebook and exposes the prepared value as a global.
+Skills can also be JavaScript-backed. A JavaScript skill is a normal skill directory with `SKILL.md`, a `package.json` declaring `primeAgent.entry` and `primeAgent.global`, and a JavaScript or TypeScript entry module. Prime Agent installs its runtime dependencies into a managed per-skill cache, loads it into the persistent Bun notebook, and exposes the prepared value as a global without modifying the skill directory. Conflicting globals degrade to markdown-only guidance instead of preventing notebook startup.
 
 Place in `~/.prime/agent/skills/`, `~/.agents/skills/`, `.prime/agent/skills/`, or `.agents/skills/` (from `cwd` up through parent directories) or a [Prime Agent package](#prime-agent-packages) to share with others. See [docs/skills.md](docs/skills.md).
 

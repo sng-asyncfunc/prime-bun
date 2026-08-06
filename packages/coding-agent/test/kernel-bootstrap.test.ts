@@ -45,7 +45,14 @@ function installFakeBun(version = "1.3.14"): { bun: string; logPath: string } {
 function createRuntimeAssets(): string {
 	const sourceDirectory = join(tempDir, "runtime-assets");
 	mkdirSync(sourceDirectory, { recursive: true });
-	for (const name of ["bun-worker", "bun-protocol", "bun-cell-transform", "bun-rlm-runtime", "state-snapshot"]) {
+	for (const name of [
+		"bun-worker",
+		"bun-protocol",
+		"bun-cell-transform",
+		"bun-rlm-runtime",
+		"bun-runtime-globals",
+		"state-snapshot",
+	]) {
 		writeFileSync(join(sourceDirectory, `${name}.ts`), `export const ${name.replaceAll("-", "_")} = true;\n`);
 	}
 	return sourceDirectory;

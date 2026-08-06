@@ -11,13 +11,6 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
 
-  - package-ecosystem: uv
-    directory: /prime-agent-runtime
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
-
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -1,13 +1,16 @@
 import { deserialize, serialize } from "bun:jsc";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
+import { Console } from "node:console";
 import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
+import { Writable } from "node:stream";
 import { $ } from "bun";
-import { transformJavaScriptCell } from "./bun-cell-transform.js";
+import { type ImportBindingRecipe, transformJavaScriptCell } from "./bun-cell-transform.js";
 import {
 	BUN_WORKER_PROTOCOL_VERSION,
 	type BunWorkerError,
@@ -15,25 +18,32 @@ import {
 	type HostToBunWorkerMessage,
 } from "./bun-protocol.js";
 import { type BunRlmRuntime, createBunRlmRuntime } from "./bun-rlm-runtime.js";
+import { BUN_RUNTIME_GLOBAL_NAMES } from "./bun-runtime-globals.js";
 import {
 	decodeSnapshotPayload,
 	encodeSnapshotPayload,
+	SNAPSHOT_FORMAT_VERSION,
 	type SnapshotPayloadEntry,
 	snapshotValueSkipReason,
 } from "./state-snapshot.js";
 
-type PersistBinding = (name: string, value: unknown) => void;
-type CellExecutor = (persist: PersistBinding) => Promise<unknown>;
+type PersistBinding = (name: string, value: unknown, recipe?: ImportBindingRecipe) => void;
+type AsyncExecutable = (...args: unknown[]) => Promise<unknown>;
 
-interface ShellResult {
+export interface ShellResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
 }
 
+export interface ShellPromise extends Promise<ShellResult> {
+	text(): Promise<string>;
+	json<T = unknown>(): Promise<T>;
+}
+
 interface PrimeWorkerGlobals {
 	$: typeof $;
-	sh: (command: string) => Promise<ShellResult>;
+	sh: (command: string) => ShellPromise;
 	installPackage: (...names: string[]) => Promise<ShellResult>;
 	hostRequest: (requestType: string, payload?: unknown) => Promise<unknown>;
 	rlm: BunRlmRuntime;
@@ -51,29 +61,35 @@ interface PendingHostRequest {
 	reject: (error: Error) => void;
 }
 
+interface BindingRecipeState {
+	recipe: ImportBindingRecipe;
+	value: unknown;
+}
+
+interface RuntimeSnapshotState {
+	cwd: string;
+	environment: {
+		deleted: string[];
+		set: Record<string, string>;
+	};
+}
+
 const protocolInput = createReadStream("", { autoClose: false, fd: 3 });
 const protocolOutput = createWriteStream("", { autoClose: false, fd: 4 });
 const lineReader = createInterface({ input: protocolInput, crlfDelay: Number.POSITIVE_INFINITY });
 const bindings = new Set<string>();
-const runtimeBindingNames = new Set([
-	"$",
-	"Bun",
-	"console",
-	"fetch",
-	"process",
-	"sh",
-	"installPackage",
-	"hostRequest",
-	"rlm",
-	"__primeDisplay",
-	"__primeHostRequest",
-]);
+const bindingRecipes = new Map<string, BindingRecipeState>();
+const runtimeBindingNames = new Set(BUN_RUNTIME_GLOBAL_NAMES);
 const pendingHostRequests = new Map<string, PendingHostRequest>();
+const RUNTIME_STATE_ENTRY_NAME = "\0prime:runtime";
+const cellContext = new AsyncLocalStorage<ActiveCell>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
 const requireModule = createRequire(import.meta.url);
 const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
 	...args: string[]
-) => CellExecutor;
+) => AsyncExecutable;
+const restoreFunctionValue = new AsyncFunction("__primeSource", 'return (0, eval)("(" + __primeSource + "\\n)");');
+const restoreImportedValue = new AsyncFunction("__primeSpecifier", "return import(__primeSpecifier);");
 
 let activeCell: ActiveCell | undefined;
 let lastCell: ActiveCell | undefined;
@@ -84,10 +100,95 @@ let bunPath = "bun";
 let kernelDirectory = process.cwd();
 let initialized = false;
 let shuttingDown = false;
+let baselineGlobalNames = new Set<string>();
+let initialEnvironment: Record<string, string | undefined> = { ...process.env };
+
+type StreamWriteCallback = (error?: Error | null) => void;
+
+const rawStdoutWrite = process.stdout.write.bind(process.stdout) as (
+	chunk: string,
+	callback?: StreamWriteCallback,
+) => boolean;
+const rawStderrWrite = process.stderr.write.bind(process.stderr) as (
+	chunk: string,
+	callback?: StreamWriteCallback,
+) => boolean;
+const nativeBunWrite = Bun.write.bind(Bun);
 
 function send(message: BunWorkerToHostMessage): void {
 	if (protocolOutput.destroyed || protocolOutput.writableEnded) return;
 	protocolOutput.write(`${JSON.stringify(message)}\n`);
+}
+
+function emitCellStream(name: "stdout" | "stderr", text: string): boolean {
+	const sourceCell = cellContext.getStore();
+	if (!sourceCell) return false;
+	send({
+		cellId: sourceCell.cellId,
+		id: randomUUID(),
+		name,
+		protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+		text,
+		type: "stream",
+	});
+	return true;
+}
+
+function streamChunkText(chunk: string | Uint8Array, encoding?: BufferEncoding): string {
+	return typeof chunk === "string" ? chunk : Buffer.from(chunk).toString(encoding);
+}
+
+function createProcessStreamWrite(
+	name: "stdout" | "stderr",
+	rawWrite: (chunk: string, callback?: StreamWriteCallback) => boolean,
+): typeof process.stdout.write {
+	const write = (
+		chunk: string | Uint8Array,
+		encodingOrCallback?: BufferEncoding | StreamWriteCallback,
+		callback?: StreamWriteCallback,
+	): boolean => {
+		const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : undefined;
+		const completed = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+		const text = streamChunkText(chunk, encoding);
+		if (!emitCellStream(name, text)) return rawWrite(text, completed);
+		if (completed) queueMicrotask(() => completed());
+		return true;
+	};
+	return write as typeof process.stdout.write;
+}
+
+function createConsoleSink(
+	name: "stdout" | "stderr",
+	rawWrite: (chunk: string, callback?: StreamWriteCallback) => boolean,
+): Writable {
+	return new Writable({
+		write(chunk: Buffer, _encoding: BufferEncoding, callback: StreamWriteCallback): void {
+			const text = chunk.toString();
+			if (emitCellStream(name, text)) {
+				callback();
+				return;
+			}
+			rawWrite(text, callback);
+		},
+	});
+}
+
+async function bunWriteDataText(data: unknown): Promise<string> {
+	if (typeof data === "string") return data;
+	if (data instanceof Blob || data instanceof Response) return data.text();
+	if (data instanceof ArrayBuffer || data instanceof SharedArrayBuffer) return Buffer.from(data).toString();
+	if (ArrayBuffer.isView(data)) {
+		return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString();
+	}
+	return String(data);
+}
+
+async function taggedBunWrite(destination: unknown, data: unknown, options?: unknown): Promise<number> {
+	const name = destination === Bun.stdout ? "stdout" : destination === Bun.stderr ? "stderr" : undefined;
+	if (!name || !cellContext.getStore()) return nativeBunWrite(destination, data, options);
+	const text = await bunWriteDataText(data);
+	emitCellStream(name, text);
+	return Buffer.byteLength(text);
 }
 
 function normalizeError(error: unknown): BunWorkerError {
@@ -101,6 +202,48 @@ function normalizeError(error: unknown): BunWorkerError {
 	return { message: String(error), name: "Error" };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function captureRuntimeState(): RuntimeSnapshotState {
+	const environment: RuntimeSnapshotState["environment"] = { deleted: [], set: {} };
+	for (const name of new Set([...Object.keys(initialEnvironment), ...Object.keys(process.env)])) {
+		const initialValue = initialEnvironment[name];
+		const currentValue = process.env[name];
+		if (currentValue === undefined) {
+			if (initialValue !== undefined) environment.deleted.push(name);
+			continue;
+		}
+		if (currentValue !== initialValue) environment.set[name] = currentValue;
+	}
+	return { cwd: process.cwd(), environment };
+}
+
+function parseRuntimeState(data: Uint8Array): RuntimeSnapshotState {
+	const value: unknown = JSON.parse(Buffer.from(data).toString("utf8"));
+	if (!isRecord(value) || typeof value.cwd !== "string" || !isRecord(value.environment)) {
+		throw new Error("runtime snapshot state is invalid");
+	}
+	const { deleted, set } = value.environment;
+	if (!Array.isArray(deleted) || deleted.some((name) => typeof name !== "string") || !isRecord(set)) {
+		throw new Error("runtime snapshot environment is invalid");
+	}
+	const normalizedSet: Record<string, string> = {};
+	for (const [name, environmentValue] of Object.entries(set)) {
+		if (typeof environmentValue !== "string") throw new Error(`runtime environment value ${name} is invalid`);
+		normalizedSet[name] = environmentValue;
+	}
+	return { cwd: value.cwd, environment: { deleted: deleted as string[], set: normalizedSet } };
+}
+
+function restoreRuntimeState(data: Uint8Array): void {
+	const state = parseRuntimeState(data);
+	process.chdir(state.cwd);
+	for (const name of state.environment.deleted) delete process.env[name];
+	for (const [name, value] of Object.entries(state.environment.set)) process.env[name] = value;
+}
+
 function sendProtocolError(replyTo: string | undefined, error: unknown): void {
 	send({
 		error: normalizeError(error),
@@ -111,19 +254,38 @@ function sendProtocolError(replyTo: string | undefined, error: unknown): void {
 	});
 }
 
-function persistBinding(name: string, value: unknown): void {
+const persistBinding: PersistBinding = (name, value, recipe) => {
 	bindings.add(name);
+	if (recipe) bindingRecipes.set(name, { recipe, value });
+	else bindingRecipes.delete(name);
 	Object.defineProperty(globalThis, name, {
 		configurable: true,
 		enumerable: true,
 		value,
 		writable: true,
 	});
+};
+
+function reconcileBindings(): void {
+	for (const name of [...bindings]) {
+		if (Object.hasOwn(globalThis, name)) continue;
+		bindings.delete(name);
+		bindingRecipes.delete(name);
+	}
+	for (const name of Object.getOwnPropertyNames(globalThis)) {
+		if (baselineGlobalNames.has(name) || runtimeBindingNames.has(name) || name.startsWith("_")) continue;
+		bindings.add(name);
+	}
+	for (const [name, state] of bindingRecipes) {
+		if (!Object.hasOwn(globalThis, name) || Reflect.get(globalThis, name) !== state.value) {
+			bindingRecipes.delete(name);
+		}
+	}
 }
 
-function runShell(command: string): Promise<ShellResult> {
+function runShell(command: string): ShellPromise {
 	const source = commandPrefix ? `${commandPrefix}\n${command}` : command;
-	return new Promise((resolve) => {
+	const promise = new Promise<ShellResult>((resolve) => {
 		execFile(
 			shellPath,
 			["-lc", source],
@@ -134,6 +296,10 @@ function runShell(command: string): Promise<ShellResult> {
 			},
 		);
 	});
+	const shellPromise = promise as ShellPromise;
+	shellPromise.text = async () => (await promise).stdout;
+	shellPromise.json = async <T = unknown>() => JSON.parse((await promise).stdout) as T;
+	return shellPromise;
 }
 
 function installPackage(...names: string[]): Promise<ShellResult> {
@@ -166,7 +332,7 @@ function installPackage(...names: string[]): Promise<ShellResult> {
 }
 
 function hostRequest(requestType: string, payload: unknown): Promise<unknown> {
-	const sourceCell = activeCell ?? lastCell;
+	const sourceCell = cellContext.getStore() ?? activeCell ?? lastCell;
 	if (!sourceCell) throw new Error("Host requests require a previously started Bun cell");
 	const requestId = randomUUID();
 	send({
@@ -185,7 +351,7 @@ function hostRequest(requestType: string, payload: unknown): Promise<unknown> {
 }
 
 function display(mimeType: string, data: unknown): void {
-	const sourceCell = activeCell ?? lastCell;
+	const sourceCell = cellContext.getStore() ?? activeCell ?? lastCell;
 	if (!sourceCell) throw new Error("Displays require a previously started Bun cell");
 	send({
 		cellId: sourceCell.cellId,
@@ -213,6 +379,15 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 	const savedEntries: SnapshotPayloadEntry[] = [];
 	const skipped: { name: string; reason: string }[] = [];
 	let serializedBytes = 0;
+	const saveEntry = (entry: SnapshotPayloadEntry): boolean => {
+		if (entry.data.byteLength > message.maxBytes || serializedBytes + entry.data.byteLength > message.maxBytes) {
+			skipped.push({ name: entry.name, reason: "exceeds snapshot size cap" });
+			return false;
+		}
+		savedEntries.push(entry);
+		serializedBytes += entry.data.byteLength;
+		return true;
+	};
 	try {
 		if (activeExecutionId) throw new Error("Cannot snapshot while a Bun cell is executing");
 		for (const name of [...bindings].sort()) {
@@ -227,6 +402,24 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 				skipped.push({ name, reason: `binding read failed: ${normalizeError(error).message}` });
 				continue;
 			}
+			const importRecipe = bindingRecipes.get(name)?.recipe;
+			if (importRecipe) {
+				saveEntry({ data: Buffer.from(importRecipe.specifier, "utf8"), kind: "import", name });
+				continue;
+			}
+			if (typeof value === "function") {
+				try {
+					const source = Function.prototype.toString.call(value);
+					if (source.includes("[native code]")) {
+						skipped.push({ name, reason: "native function source is not restorable" });
+						continue;
+					}
+					saveEntry({ data: Buffer.from(source, "utf8"), kind: "function", name });
+				} catch (error) {
+					skipped.push({ name, reason: `function source read failed: ${normalizeError(error).message}` });
+				}
+				continue;
+			}
 			const skipReason = snapshotValueSkipReason(value);
 			if (skipReason) {
 				skipped.push({ name, reason: skipReason });
@@ -234,18 +427,21 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 			}
 			try {
 				const data = Uint8Array.from(new Uint8Array(serialize(value)));
-				if (data.byteLength > message.maxBytes || serializedBytes + data.byteLength > message.maxBytes) {
-					skipped.push({ name, reason: "exceeds snapshot size cap" });
-					continue;
-				}
-				savedEntries.push({ name, data });
-				serializedBytes += data.byteLength;
+				saveEntry({ name, data });
 			} catch (error) {
 				skipped.push({ name, reason: `serialization failed: ${normalizeError(error).message}` });
 			}
 		}
+		if (message.includeRuntimeState) {
+			saveEntry({
+				data: Buffer.from(JSON.stringify(captureRuntimeState()), "utf8"),
+				kind: "runtime",
+				name: RUNTIME_STATE_ENTRY_NAME,
+			});
+		}
 
 		const payload = encodeSnapshotPayload(savedEntries);
+		const savedNames = savedEntries.filter((entry) => entry.kind !== "runtime").map((entry) => entry.name);
 		await writeAtomic(message.path, payload);
 		await writeAtomic(
 			message.manifestPath,
@@ -253,10 +449,10 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 				{
 					bunVersion: Bun.version,
 					bytes: payload.byteLength,
-					savedNames: savedEntries.map((entry) => entry.name),
+					savedNames,
 					skipped,
 					timestamp: new Date().toISOString(),
-					version: 1,
+					version: SNAPSHOT_FORMAT_VERSION,
 				},
 				null,
 				2,
@@ -268,7 +464,7 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 			path: message.path,
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			replyTo: message.id,
-			saved: savedEntries.map((entry) => entry.name),
+			saved: savedNames,
 			skipped,
 			type: "snapshot_result",
 		});
@@ -311,13 +507,47 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 			throw error;
 		}
 
-		for (const entry of decodeSnapshotPayload(payload)) {
+		const entries = decodeSnapshotPayload(payload);
+		for (const entry of entries.filter((candidate) => candidate.kind === "runtime")) {
+			try {
+				restoreRuntimeState(entry.data);
+			} catch (error) {
+				failed.push({ name: RUNTIME_STATE_ENTRY_NAME, reason: normalizeError(error).message });
+			}
+		}
+		for (const entry of entries.filter((candidate) => candidate.kind === undefined)) {
 			if (runtimeBindingNames.has(entry.name)) {
 				failed.push({ name: entry.name, reason: "runtime binding was not restored" });
 				continue;
 			}
 			try {
 				persistBinding(entry.name, deserialize(entry.data));
+				restored.push(entry.name);
+			} catch (error) {
+				failed.push({ name: entry.name, reason: normalizeError(error).message });
+			}
+		}
+		for (const entry of entries.filter((candidate) => candidate.kind === "function" || candidate.kind === "import")) {
+			if (runtimeBindingNames.has(entry.name)) {
+				failed.push({ name: entry.name, reason: "runtime binding was not restored" });
+				continue;
+			}
+			try {
+				const source = Buffer.from(entry.data).toString("utf8");
+				switch (entry.kind) {
+					case "function": {
+						const value = await restoreFunctionValue(source);
+						if (typeof value !== "function") throw new Error("function recipe did not restore a function");
+						persistBinding(entry.name, value);
+						break;
+					}
+					case "import": {
+						if (!source) throw new Error("import recipe has an empty specifier");
+						const value = await restoreImportedValue(source);
+						persistBinding(entry.name, value, { specifier: source, type: "import" });
+						break;
+					}
+				}
 				restored.push(entry.name);
 			} catch (error) {
 				failed.push({ name: entry.name, reason: normalizeError(error).message });
@@ -353,6 +583,16 @@ workerGlobals.hostRequest = hostRequest;
 workerGlobals.rlm = createBunRlmRuntime(hostRequest);
 workerGlobals.__primeHostRequest = hostRequest;
 workerGlobals.__primeDisplay = display;
+process.stdout.write = createProcessStreamWrite("stdout", rawStdoutWrite);
+process.stderr.write = createProcessStreamWrite("stderr", rawStderrWrite);
+globalThis.console = new Console({
+	colorMode: false,
+	stderr: createConsoleSink("stderr", rawStderrWrite),
+	stdout: createConsoleSink("stdout", rawStdoutWrite),
+});
+Bun.write = taggedBunWrite;
+
+const cellTranspiler = new Bun.Transpiler({ deadCodeElimination: false, loader: "ts", target: "bun" });
 
 async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "execute" }>): Promise<void> {
 	if (!initialized) {
@@ -387,9 +627,9 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 	lastCell = activeCell;
 	const startedAt = performance.now();
 	try {
-		const transformed = transformJavaScriptCell(message.code);
+		const transformed = transformJavaScriptCell(cellTranspiler.transformSync(message.code));
 		const executor = new AsyncFunction("__primePersist", transformed.code);
-		const result = await executor(persistBinding);
+		const result = await cellContext.run(activeCell, () => executor(persistBinding));
 		send({
 			bindingNames: transformed.bindingNames,
 			cellId: message.cellId,
@@ -413,6 +653,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			type: "result",
 		});
 	} finally {
+		reconcileBindings();
 		activeCell = undefined;
 		activeExecutionId = undefined;
 	}
@@ -425,9 +666,18 @@ async function initialize(message: Extract<HostToBunWorkerMessage, { type: "init
 		commandPrefix = message.commandPrefix;
 		kernelDirectory = message.kernelDirectory;
 		shellPath = message.shellPath;
+		initialEnvironment = { ...process.env };
 		for (const skill of message.skills) {
 			if (runtimeBindingNames.has(skill.globalName)) {
-				throw new Error(`JavaScript skill ${skill.name} conflicts with runtime global ${skill.globalName}`);
+				send({
+					error: normalizeError(
+						new Error(`JavaScript skill ${skill.name} conflicts with runtime global ${skill.globalName}`),
+					),
+					id: randomUUID(),
+					protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+					type: "diagnostic",
+				});
+				continue;
 			}
 			try {
 				const loaded: unknown = requireModule(skill.entryPath);
@@ -468,6 +718,7 @@ async function initialize(message: Extract<HostToBunWorkerMessage, { type: "init
 			}
 			runtimeBindingNames.add(skill.globalName);
 		}
+		baselineGlobalNames = new Set(Object.getOwnPropertyNames(globalThis));
 		initialized = true;
 		send({
 			bunVersion: Bun.version,
@@ -549,7 +800,7 @@ function handleMessage(message: HostToBunWorkerMessage): void {
 	}
 }
 
-function reportFatal(error: unknown): void {
+function reportDiagnostic(error: unknown): void {
 	send({
 		...(activeCell ? { cellId: activeCell.cellId } : {}),
 		error: normalizeError(error),
@@ -557,10 +808,14 @@ function reportFatal(error: unknown): void {
 		protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 		type: "diagnostic",
 	});
+}
+
+function reportFatal(error: unknown): void {
+	reportDiagnostic(error);
 	setTimeout(() => process.exit(1), 0);
 }
 
-process.on("unhandledRejection", reportFatal);
+process.on("unhandledRejection", reportDiagnostic);
 process.on("uncaughtException", reportFatal);
 
 lineReader.on("line", (line) => {

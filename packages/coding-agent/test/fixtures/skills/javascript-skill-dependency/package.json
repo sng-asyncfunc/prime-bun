@@ -1,0 +1,12 @@
+{
+  "name": "javascript-skill-dependency",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "prime-agent-fixture-dependency": "file:./vendor/example-dependency"
+  },
+  "primeAgent": {
+    "entry": "src/index.js",
+    "global": "dependencySkill"
+  }
+}

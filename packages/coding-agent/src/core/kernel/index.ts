@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
@@ -13,6 +13,7 @@ import {
 	BUN_WORKER_PROTOCOL_VERSION,
 	type BunWorkerDisplayMessage,
 	type BunWorkerHostRequestMessage,
+	type BunWorkerStreamMessage,
 	type BunWorkerToHostMessage,
 	type HostToBunWorkerMessage,
 } from "./bun-protocol.js";
@@ -290,7 +291,8 @@ export class KernelManager {
 	private readonly harnessHostHandlers: HostRequestHandlers;
 	private kernelDiagnostics = "";
 	private snapshotTimer?: ReturnType<typeof globalThis.setTimeout>;
-	private snapshotDirty = false;
+	private recoverySnapshotDirty = false;
+	private persistentSnapshotDirty = false;
 	private recoverySnapshotAvailable = false;
 	private recoverySnapshotConfig?: KernelSnapshotConfig;
 	private recoveryTempDir?: string;
@@ -333,7 +335,10 @@ export class KernelManager {
 		installSignalHandlersOnce();
 		liveKernels.add(this);
 		onProgress?.("Resolving Bun runtime");
-		const bootstrappedRuntime = this.options.workerPath ? undefined : await ensureKernelBun({ onProgress });
+		const javascriptSkills = this.options.javascriptSkills ?? [];
+		const bootstrappedRuntime = this.options.workerPath
+			? undefined
+			: await ensureKernelBun({ javascriptSkills, onProgress });
 		const runtime =
 			bootstrappedRuntime ??
 			(await resolveBunRuntime({
@@ -343,9 +348,18 @@ export class KernelManager {
 		onProgress?.("Starting Bun worker");
 		const workerPath = this.options.workerPath ?? bootstrappedRuntime?.workerPath;
 		const kernelDirectory = this.options.kernelDirectory ?? bootstrappedRuntime?.kernelDirectory ?? process.cwd();
+		for (const diagnostic of bootstrappedRuntime?.skillDiagnostics ?? []) {
+			this.appendKernelDiagnostic(diagnostic.message);
+		}
+		const workerEnvironment: NodeJS.ProcessEnv = { ...process.env, ...this.options.env };
+		const skillNodePaths = bootstrappedRuntime?.skillNodePaths ?? [];
+		if (skillNodePaths.length > 0) {
+			workerEnvironment.NODE_PATH = [...skillNodePaths, workerEnvironment.NODE_PATH].filter(Boolean).join(delimiter);
+		}
 		const worker = spawn(runtime.path, [resolveWorkerPath(workerPath)], {
 			cwd: this.options.cwd,
-			env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
+			detached: process.platform !== "win32",
+			env: workerEnvironment,
 			stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
 		});
 		const protocolInput = worker.stdio[3] as Writable | null;
@@ -368,7 +382,7 @@ export class KernelManager {
 				kernelDirectory,
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				shellPath: this.options.shellPath ?? "/bin/sh",
-				skills: (this.options.javascriptSkills ?? []).map((skill) => ({
+				skills: javascriptSkills.map((skill) => ({
 					entryPath: skill.entryPath,
 					globalName: skill.globalName,
 					name: skill.name,
@@ -401,27 +415,28 @@ export class KernelManager {
 
 	private handleWorkerStream(worker: ChildProcess, chunk: string, name: "stdout" | "stderr"): void {
 		if (this.worker !== worker) return;
+		this.appendKernelDiagnostic(`${name}: ${chunk}`);
+	}
+
+	private handleCellStream(message: BunWorkerStreamMessage): void {
 		const execution = this.activeExecution;
-		if (!execution) {
-			this.appendKernelDiagnostic(`${name}: ${chunk}`);
-			return;
-		}
-		if (name === "stdout") {
+		if (!execution || execution.cellId !== message.cellId) return;
+		if (message.name === "stdout") {
 			if (execution.stdout.length < execution.maxChars) {
-				execution.stdout += chunk;
+				execution.stdout += message.text;
 				if (execution.stdout.length > execution.maxChars) {
 					execution.stdout = execution.stdout.slice(0, execution.maxChars);
 					execution.stdoutTruncated = true;
 				}
 			}
 		} else if (execution.stderr.length < execution.maxChars) {
-			execution.stderr += chunk;
+			execution.stderr += message.text;
 			if (execution.stderr.length > execution.maxChars) {
 				execution.stderr = execution.stderr.slice(0, execution.maxChars);
 				execution.stderrTruncated = true;
 			}
 		}
-		execution.opts.onStream?.(chunk, name);
+		execution.opts.onStream?.(message.text, message.name);
 	}
 
 	private handleProtocolChunk(worker: ChildProcess, chunk: string): void {
@@ -446,6 +461,10 @@ export class KernelManager {
 		}
 		if (message.type === "host_request") {
 			this.startHostRequest(message);
+			return;
+		}
+		if (message.type === "stream") {
+			this.handleCellStream(message);
 			return;
 		}
 		if (message.type === "display") {
@@ -503,10 +522,11 @@ export class KernelManager {
 		await this.start({ signal: opts.signal });
 		return this.withExecutionLock(async () => {
 			if (opts.signal?.aborted) return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
-			if (this.snapshotDirty) await this.flushRecoverySnapshot();
+			if (this.recoverySnapshotDirty) await this.flushRecoverySnapshot();
 			const result = await this.executeInner(code, opts);
 			if (result.status === "ok") {
-				this.snapshotDirty = true;
+				this.recoverySnapshotDirty = true;
+				if (this.options.snapshot) this.persistentSnapshotDirty = true;
 				this.scheduleSnapshot();
 			}
 			return result;
@@ -740,6 +760,12 @@ export class KernelManager {
 		this.protocolBuffer = "";
 		this.rejectPendingProtocolRequests(reason);
 		if (!worker) return;
+		if (process.platform !== "win32" && worker.pid !== undefined) {
+			try {
+				process.kill(-worker.pid, signal);
+				return;
+			} catch {}
+		}
 		try {
 			worker.kill(signal);
 		} catch {}
@@ -751,7 +777,6 @@ export class KernelManager {
 	}
 
 	private getRecoverySnapshotConfig(): KernelSnapshotConfig {
-		if (this.options.snapshot) return this.options.snapshot;
 		if (!this.recoverySnapshotConfig) {
 			this.recoveryTempDir = mkdtempSync(join(tmpdir(), "prime-agent-bun-recovery-"));
 			this.recoverySnapshotConfig = {
@@ -763,19 +788,30 @@ export class KernelManager {
 	}
 
 	private async flushRecoverySnapshot(): Promise<SnapshotResult | null> {
-		const result = await this.snapshotTo(this.getRecoverySnapshotConfig());
+		const result = await this.snapshotTo(this.getRecoverySnapshotConfig(), true);
 		if (result) {
-			this.snapshotDirty = false;
+			this.recoverySnapshotDirty = false;
 			this.recoverySnapshotAvailable = true;
 		}
 		return result;
 	}
 
-	private async snapshotTo(config: KernelSnapshotConfig): Promise<SnapshotResult | null> {
+	private async flushPersistentSnapshot(): Promise<SnapshotResult | null> {
+		if (!this.options.snapshot) return null;
+		const result = await this.snapshotTo(this.options.snapshot, false);
+		if (result) this.persistentSnapshotDirty = false;
+		return result;
+	}
+
+	private async snapshotTo(
+		config: KernelSnapshotConfig,
+		includeRuntimeState: boolean,
+	): Promise<SnapshotResult | null> {
 		if (this.state !== "running") return null;
 		const result = await this.sendRequest(
 			{
 				id: randomUUID(),
+				includeRuntimeState,
 				manifestPath: config.manifestPath,
 				maxBytes: config.maxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES,
 				path: config.path,
@@ -813,12 +849,7 @@ export class KernelManager {
 		if (!this.options.snapshot) return null;
 		await this.start();
 		return this.withExecutionLock(async () => {
-			const result = await this.snapshotTo(this.options.snapshot as KernelSnapshotConfig);
-			if (result) {
-				this.snapshotDirty = false;
-				this.recoverySnapshotAvailable = true;
-			}
-			return result;
+			return this.flushPersistentSnapshot();
 		});
 	}
 
@@ -827,7 +858,11 @@ export class KernelManager {
 		await this.start();
 		return this.withExecutionLock(async () => {
 			const result = await this.restoreFrom(this.options.snapshot as KernelSnapshotConfig);
-			if (result) this.recoverySnapshotAvailable = true;
+			if (result) {
+				this.recoverySnapshotDirty = true;
+				this.persistentSnapshotDirty = false;
+				await this.flushRecoverySnapshot();
+			}
 			return result;
 		});
 	}
@@ -853,7 +888,7 @@ export class KernelManager {
 		if (this.snapshotTimer) globalThis.clearTimeout(this.snapshotTimer);
 		this.snapshotTimer = globalThis.setTimeout(() => {
 			this.snapshotTimer = undefined;
-			void this.withExecutionLock(() => this.flushRecoverySnapshot());
+			void this.withExecutionLock(() => this.flushPersistentSnapshot());
 		}, this.options.snapshot.debounceMs ?? DEFAULT_SNAPSHOT_DEBOUNCE_MS);
 		this.snapshotTimer.unref?.();
 	}
@@ -873,9 +908,14 @@ export class KernelManager {
 		}
 	}
 
+	private async flushDirtySnapshots(): Promise<void> {
+		if (this.recoverySnapshotDirty) await this.flushRecoverySnapshot();
+		if (this.persistentSnapshotDirty) await this.flushPersistentSnapshot();
+	}
+
 	async restart(): Promise<void> {
 		await this.withExecutionLock(async () => {
-			if (this.snapshotDirty) await this.flushRecoverySnapshot();
+			if (this.recoverySnapshotDirty) await this.flushRecoverySnapshot();
 			await this.recoverWorker(new Error("Bun worker restarted"));
 		});
 	}
@@ -889,9 +929,9 @@ export class KernelManager {
 
 	async shutdown(options: { snapshot?: boolean } = {}): Promise<void> {
 		if (this.state === "shutdown") return;
-		if (options.snapshot && this.snapshotDirty && this.isRunning) {
+		if (options.snapshot && (this.recoverySnapshotDirty || this.persistentSnapshotDirty) && this.isRunning) {
 			await this.withTimeout(
-				this.withExecutionLock(() => this.flushRecoverySnapshot()),
+				this.withExecutionLock(() => this.flushDirtySnapshots()),
 				SNAPSHOT_DISPOSE_TIMEOUT_MS,
 			);
 		}
@@ -906,9 +946,9 @@ export class KernelManager {
 
 	dispose(): Promise<void> {
 		return (async () => {
-			if (this.snapshotDirty && this.isRunning) {
+			if ((this.recoverySnapshotDirty || this.persistentSnapshotDirty) && this.isRunning) {
 				await this.withTimeout(
-					this.withExecutionLock(() => this.flushRecoverySnapshot()),
+					this.withExecutionLock(() => this.flushDirtySnapshots()),
 					SNAPSHOT_DISPOSE_TIMEOUT_MS,
 				);
 			}

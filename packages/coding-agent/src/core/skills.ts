@@ -7,6 +7,7 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { parseFrontmatter } from "../utils/frontmatter.js";
 import { canonicalizePath } from "../utils/paths.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
+import { BUN_RUNTIME_GLOBAL_NAMES } from "./kernel/bun-runtime-globals.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 
 const log = getLogger("coding-agent.skills");
@@ -249,6 +250,14 @@ function detectJavaScriptSkill(skillDir: string, diagnostics: ResourceDiagnostic
 		});
 		return null;
 	}
+	if (BUN_RUNTIME_GLOBAL_NAMES.has(globalName)) {
+		diagnostics.push({
+			type: "warning",
+			message: `JavaScript skill requests reserved runtime global "${globalName}"; loading its instructions without executable code`,
+			path: packageJsonPath,
+		});
+		return null;
+	}
 	if (typeof entry !== "string" || !entry.trim() || isAbsolute(entry)) {
 		diagnostics.push({
 			type: "warning",
@@ -287,15 +296,30 @@ function detectJavaScriptSkill(skillDir: string, diagnostics: ResourceDiagnostic
 }
 
 export function getJavaScriptSkillRuntimeInfo(skills: readonly Skill[]): JavaScriptSkillRuntimeInfo[] {
-	return skills
-		.filter((skill): skill is JavaScriptSkill => skill.kind === "javascript")
-		.map((skill) => ({
+	const seenGlobals = new Set<string>();
+	const runtimeInfo: JavaScriptSkillRuntimeInfo[] = [];
+	for (const skill of skills) {
+		if (
+			skill.kind !== "javascript" ||
+			BUN_RUNTIME_GLOBAL_NAMES.has(skill.javascript.globalName) ||
+			seenGlobals.has(skill.javascript.globalName)
+		) {
+			continue;
+		}
+		seenGlobals.add(skill.javascript.globalName);
+		runtimeInfo.push({
 			name: skill.name,
 			entryPath: skill.javascript.entryPath,
 			globalName: skill.javascript.globalName,
 			packagePath: skill.javascript.packagePath,
 			packageJsonPath: skill.javascript.packageJsonPath,
-		}));
+		});
+	}
+	return runtimeInfo;
+}
+
+function asMarkdownSkill(skill: JavaScriptSkill): MarkdownSkill {
+	return { ...skill, javascript: undefined, kind: "markdown" };
 }
 
 /**
@@ -566,7 +590,8 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	function addSkills(result: LoadSkillsResult) {
 		allDiagnostics.push(...result.diagnostics);
-		for (const skill of result.skills) {
+		for (const discoveredSkill of result.skills) {
+			let skill = discoveredSkill;
 			// Resolve symlinks to detect duplicate files
 			const realPath = canonicalizePath(skill.filePath);
 
@@ -589,20 +614,21 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 					},
 				});
 			} else {
-				skillMap.set(skill.name, skill);
-				realPathSet.add(realPath);
 				if (skill.kind === "javascript") {
 					const existingJavaScriptSkill = javascriptGlobalMap.get(skill.javascript.globalName);
 					if (existingJavaScriptSkill) {
 						javascriptGlobalDiagnostics.push({
 							type: "warning",
-							message: `JavaScript global name "${skill.javascript.globalName}" is shared by skills "${existingJavaScriptSkill.name}" and "${skill.name}"`,
+							message: `JavaScript global name "${skill.javascript.globalName}" is shared by skills "${existingJavaScriptSkill.name}" and "${skill.name}"; loading "${skill.name}" as markdown only`,
 							path: skill.filePath,
 						});
+						skill = asMarkdownSkill(skill);
 					} else {
 						javascriptGlobalMap.set(skill.javascript.globalName, skill);
 					}
 				}
+				skillMap.set(skill.name, skill);
+				realPathSet.add(realPath);
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-export const BUN_WORKER_PROTOCOL_VERSION = 1;
+export const BUN_WORKER_PROTOCOL_VERSION = 2;
 
 interface BunWorkerProtocolMessage {
 	id: string;
@@ -35,6 +35,7 @@ export interface SnapshotBunWorkerMessage extends BunWorkerProtocolMessage {
 	path: string;
 	manifestPath: string;
 	maxBytes: number;
+	includeRuntimeState: boolean;
 }
 
 export interface RestoreBunWorkerMessage extends BunWorkerProtocolMessage {
@@ -141,6 +142,13 @@ export interface BunWorkerDisplayMessage extends BunWorkerResponseMessage {
 	data: unknown;
 }
 
+export interface BunWorkerStreamMessage extends BunWorkerResponseMessage {
+	type: "stream";
+	cellId: string;
+	name: "stdout" | "stderr";
+	text: string;
+}
+
 export interface BunWorkerProtocolErrorMessage extends BunWorkerResponseMessage {
 	type: "protocol_error";
 	error: BunWorkerError;
@@ -160,6 +168,7 @@ export type BunWorkerToHostMessage =
 	| BunWorkerSnapshotResultMessage
 	| BunWorkerRestoreResultMessage
 	| BunWorkerHostRequestMessage
+	| BunWorkerStreamMessage
 	| BunWorkerDisplayMessage
 	| BunWorkerProtocolErrorMessage
 	| BunWorkerDiagnosticMessage;

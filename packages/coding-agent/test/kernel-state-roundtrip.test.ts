@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -39,11 +39,14 @@ describe("Bun kernel state round-trip", { tags: ["kernel-heavy"] }, () => {
 const count = 42;
 const collection = new Map([["numbers", new Set([1, 2, 3])]]);
 const createdAt = new Date("2024-01-02T03:04:05.000Z");
-const callable = (value) => value * 2;
+const callable = (value) => value + count;
+const pathModule = await import("node:path");
+globalThis.explicitValue = 40;
 `);
 			const snapshot = await writer.snapshotState();
-			expect(snapshot?.saved).toEqual(expect.arrayContaining(["collection", "count", "createdAt"]));
-			expect(snapshot?.skipped.map((entry) => entry.name)).toContain("callable");
+			expect(snapshot?.saved).toEqual(
+				expect.arrayContaining(["callable", "collection", "count", "createdAt", "explicitValue", "pathModule"]),
+			);
 			expect(existsSync(snapshotPath)).toBe(true);
 			expect(existsSync(manifestPath)).toBe(true);
 		} finally {
@@ -53,13 +56,18 @@ const callable = (value) => value * 2;
 		const reader = createManager();
 		try {
 			const restore = await reader.restoreState();
-			expect(restore?.restored).toEqual(expect.arrayContaining(["collection", "count", "createdAt"]));
+			expect(restore?.restored).toEqual(
+				expect.arrayContaining(["callable", "collection", "count", "createdAt", "explicitValue", "pathModule"]),
+			);
 			const result = await reader.execute(
-				`({ count, values: [...collection.get("numbers")], date: createdAt.toISOString() });`,
+				`({ count, values: [...collection.get("numbers")], date: createdAt.toISOString(), doubled: callable(0), explicitValue, basename: pathModule.basename("/a/b") });`,
 			);
 			expect(result.result).toContain("count: 42");
 			expect(result.result).toContain("values: [ 1, 2, 3 ]");
 			expect(result.result).toContain('date: "2024-01-02T03:04:05.000Z"');
+			expect(result.result).toContain("doubled: 42");
+			expect(result.result).toContain("explicitValue: 40");
+			expect(result.result).toContain('basename: "b"');
 		} finally {
 			await reader.dispose();
 		}
@@ -93,11 +101,14 @@ const callable = (value) => value * 2;
 		const manager = createManager({ snapshot: undefined });
 		try {
 			expect(await manager.listNamespaceNames()).toBeNull();
-			await manager.execute("const alpha = 1; const _private = 2; const sh = 3;");
+			await manager.execute("const alpha = 1; const _private = 2; const sh = 3; globalThis.beta = 2;");
 			const names = await manager.listNamespaceNames();
 			expect(names).toContain("alpha");
+			expect(names).toContain("beta");
 			expect(names).not.toContain("_private");
 			expect(names).not.toContain("sh");
+			await manager.execute("delete globalThis.beta;");
+			expect(await manager.listNamespaceNames()).not.toContain("beta");
 		} finally {
 			await manager.dispose();
 		}
@@ -111,6 +122,20 @@ const callable = (value) => value * 2;
 		try {
 			await manager.execute('const autoValue = "persisted";');
 			await expect.poll(() => existsSync(autoPath), { timeout: 5_000 }).toBe(true);
+		} finally {
+			await manager.dispose();
+		}
+	});
+
+	it("does not persist cwd or environment values in the session snapshot", async () => {
+		const privateMarker = "prime-session-secret-marker";
+		const manager = createManager();
+		try {
+			await manager.execute(`process.env.PRIME_BUN_SESSION_SECRET = ${JSON.stringify(privateMarker)};`);
+			await manager.snapshotState();
+			const payload = await readFile(snapshotPath);
+			expect(payload.includes(privateMarker)).toBe(false);
+			expect(payload.includes("PRIME_BUN_SESSION_SECRET")).toBe(false);
 		} finally {
 			await manager.dispose();
 		}

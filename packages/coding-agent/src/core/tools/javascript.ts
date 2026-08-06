@@ -20,7 +20,7 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 const javascriptSchema = Type.Object({
 	code: Type.String({
 		description:
-			"JavaScript or TypeScript scratchpad code to execute in the persistent Bun notebook. Top-level await is supported. Run target-project commands through that project's own environment.",
+			"JavaScript or TypeScript scratchpad code to execute in the persistent Bun notebook. TypeScript syntax is transpiled without type-checking, and top-level await is supported. Run target-project commands through that project's own environment.",
 	}),
 });
 
@@ -282,7 +282,7 @@ export function createJavaScriptToolDefinition(
 		name: "javascript",
 		label: "Bun",
 		description:
-			"Execute JavaScript or TypeScript in a persistent Bun notebook. Variables and loaded data persist across calls and are restored on a best-effort basis when a session resumes. Top-level await, Bun APIs, `sh`, Bun Shell, RLM, and prepared JavaScript skills are available as globals. Run target-project commands through the target project's own environment.",
+			"Execute JavaScript or TypeScript in a persistent Bun notebook. TypeScript syntax is transpiled without type-checking. Variables and loaded data persist across calls and are restored on a best-effort basis when a session resumes. Top-level await, Bun APIs, `sh`, Bun Shell, RLM, and prepared JavaScript skills are available as globals. Run target-project commands through the target project's own environment.",
 		promptSnippet: "javascript - persistent Bun notebook for JavaScript, TypeScript, shell orchestration, and RLM",
 		executionMode: "sequential",
 		parameters: javascriptSchema,

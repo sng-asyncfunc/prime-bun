@@ -131,11 +131,11 @@ Live probes against Bun 1.3.14 establish the cancellation contract: a SIGINT han
 
 - Executions remain sequential per worker.
 - Before starting a cell, the provisioner flushes any dirty private recovery snapshot from the previous successful cell. That snapshot is the recovery point and includes cwd plus an environment delta.
-- Abort terminates the Bun worker for both synchronous and asynchronous cells. The active result is `aborted`; no abandoned code keeps mutating state.
+- Abort terminates the Bun worker process group for both synchronous and asynchronous cells. The active result is `aborted`; no abandoned JavaScript or shell descendant keeps mutating state.
 - The provisioner immediately starts a fresh worker, restores the last successful snapshot, reloads runtime handles and skills, and reports restored/skipped names. Completed serializable state, supported recipes, cwd, and environment changes survive; non-serializable handles and changes made by the aborted cell do not.
 - Session snapshots remain separate from private recovery snapshots and never include cwd or environment variables.
 - Unexpected exit follows the same restore path, rejects the active execution, captures a bounded stderr tail, and rejects every pending host request.
-- Worker-level `unhandledRejection` and `uncaughtException` handlers report diagnostics over the protocol while an execution is active; fatal conditions still exit so the host can restore instead of keeping an unknown state.
+- Worker-level `unhandledRejection` and `uncaughtException` handlers report diagnostics over the protocol while an execution is active. Detached promise rejections do not terminate an otherwise healthy worker; uncaught exceptions still exit so the host can restore instead of keeping an unknown state.
 - Dispose waits briefly for in-flight host requests and a final successful-state snapshot before terminating the worker.
 
 ## UI and Public Naming

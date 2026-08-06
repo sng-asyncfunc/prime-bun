@@ -1,18 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { transformJavaScriptCell } from "../src/core/kernel/bun-cell-transform.js";
 
-type CellFunction = (persist: (name: string, value: unknown) => void) => Promise<unknown>;
+type CellFunction = (
+	persist: (name: string, value: unknown, recipe?: { type: "import"; specifier: string }) => void,
+) => Promise<unknown>;
 
-function compileCell(source: string): { bindings: Map<string, unknown>; result: Promise<unknown> } {
+function compileCell(source: string): {
+	bindings: Map<string, unknown>;
+	recipes: Map<string, { type: "import"; specifier: string }>;
+	result: Promise<unknown>;
+} {
 	const transformed = transformJavaScriptCell(source);
 	const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
 		...args: string[]
 	) => CellFunction;
 	const execute = new AsyncFunction("__primePersist", transformed.code);
 	const bindings = new Map<string, unknown>();
+	const recipes = new Map<string, { type: "import"; specifier: string }>();
 	return {
 		bindings,
-		result: execute((name, value) => bindings.set(name, value)),
+		recipes,
+		result: execute((name, value, recipe) => {
+			bindings.set(name, value);
+			if (recipe) recipes.set(name, recipe);
+		}),
 	};
 }
 
@@ -77,6 +88,17 @@ value + 1;
 `);
 
 		expect(await execution.result).toBe(43);
+	});
+
+	it("records a restore recipe for a literal dynamic import", () => {
+		const transformed = transformJavaScriptCell(`
+const pathModule = await import("node:path");
+pathModule.basename("/a/b");
+`);
+
+		expect(transformed.bindingRecipes).toEqual({
+			pathModule: { type: "import", specifier: "node:path" },
+		});
 	});
 
 	it("persists the final value when a new binding is mutated later in the cell", async () => {

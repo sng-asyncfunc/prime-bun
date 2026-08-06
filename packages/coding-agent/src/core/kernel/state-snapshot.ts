@@ -3,7 +3,7 @@ import { join } from "node:path";
 export const DEFAULT_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
 
 const KERNEL_STATE_BASENAME = "kernel-state";
-const SNAPSHOT_FORMAT_VERSION = 1;
+export const SNAPSHOT_FORMAT_VERSION = 2;
 const HEADER_LENGTH_BYTES = 4;
 const MAX_HEADER_BYTES = 16 * 1024 * 1024;
 
@@ -23,12 +23,16 @@ export interface RestoreResult {
 export interface SnapshotPayloadEntry {
 	name: string;
 	data: Uint8Array;
+	kind?: SnapshotPayloadKind;
 }
+
+export type SnapshotPayloadKind = "function" | "import" | "runtime";
 
 interface SnapshotHeaderEntry {
 	name: string;
 	offset: number;
 	length: number;
+	kind?: SnapshotPayloadKind;
 }
 
 interface SnapshotHeader {
@@ -57,17 +61,24 @@ function parseHeader(value: unknown): SnapshotHeader {
 		throw corruptSnapshot("invalid header");
 	}
 	const entries = value.entries.map((entry): SnapshotHeaderEntry => {
+		if (!isRecord(entry)) throw corruptSnapshot("invalid entry metadata");
+		const kind = entry.kind;
 		if (
-			!isRecord(entry) ||
 			typeof entry.name !== "string" ||
 			!Number.isSafeInteger(entry.offset) ||
 			!Number.isSafeInteger(entry.length) ||
 			(entry.offset as number) < 0 ||
-			(entry.length as number) < 0
+			(entry.length as number) < 0 ||
+			(kind !== undefined && kind !== "function" && kind !== "import" && kind !== "runtime")
 		) {
 			throw corruptSnapshot("invalid entry metadata");
 		}
-		return { name: entry.name, offset: entry.offset as number, length: entry.length as number };
+		return {
+			name: entry.name,
+			offset: entry.offset as number,
+			length: entry.length as number,
+			...(kind ? { kind } : {}),
+		};
 	});
 	return { version: SNAPSHOT_FORMAT_VERSION, entries };
 }
@@ -75,7 +86,12 @@ function parseHeader(value: unknown): SnapshotHeader {
 export function encodeSnapshotPayload(entries: readonly SnapshotPayloadEntry[]): Buffer {
 	let offset = 0;
 	const headerEntries = entries.map((entry): SnapshotHeaderEntry => {
-		const metadata = { name: entry.name, offset, length: entry.data.byteLength };
+		const metadata: SnapshotHeaderEntry = {
+			name: entry.name,
+			offset,
+			length: entry.data.byteLength,
+			...(entry.kind ? { kind: entry.kind } : {}),
+		};
 		offset += entry.data.byteLength;
 		return metadata;
 	});
@@ -120,6 +136,7 @@ export function decodeSnapshotPayload(payload: Uint8Array): SnapshotPayloadEntry
 		return {
 			name: entry.name,
 			data: Uint8Array.from(buffer.subarray(dataStart + entry.offset, dataStart + end)),
+			...(entry.kind ? { kind: entry.kind } : {}),
 		};
 	});
 }

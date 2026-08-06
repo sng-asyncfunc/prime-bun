@@ -7,6 +7,7 @@ import { stderr, stdin } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import type { JavaScriptSkillRuntimeInfo } from "../skills.js";
 import { type ResolvedBunRuntime, resolveBunRuntime } from "./bun-runtime.js";
 
 const BOOTSTRAP_SCHEMA = 1;
@@ -14,12 +15,14 @@ const BOOTSTRAP_VERSION_FILE = ".bootstrap-version";
 const BOOTSTRAP_LOCK_NAME = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS = 100;
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
+const SKILL_DEPENDENCY_STATE_FILE = ".skill-dependencies.json";
 const BUN_INSTALL_COMMAND = "curl -fsSL https://bun.sh/install | bash";
 const RUNTIME_ASSET_NAMES = [
 	"bun-worker",
 	"bun-protocol",
 	"bun-cell-transform",
 	"bun-rlm-runtime",
+	"bun-runtime-globals",
 	"state-snapshot",
 ] as const;
 const KERNEL_DEPENDENCIES = {
@@ -34,12 +37,15 @@ export type KernelBootstrapProgressHandler = (message: string) => void;
 export interface KernelBunRuntime extends ResolvedBunRuntime {
 	kernelDirectory: string;
 	workerPath: string;
+	skillNodePaths: string[];
+	skillDiagnostics: Array<{ name: string; message: string }>;
 }
 
 export interface EnsureKernelBunOptions {
 	onProgress?: KernelBootstrapProgressHandler;
 	runtimeSourceDirectory?: string;
 	installRuntime?: () => Promise<void>;
+	javascriptSkills?: readonly JavaScriptSkillRuntimeInfo[];
 }
 
 interface BootstrapVersion {
@@ -56,6 +62,10 @@ interface RuntimeAssets {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNodeError(error: unknown, code: string): boolean {
@@ -349,6 +359,107 @@ async function provisionKernelRuntime(
 	}
 }
 
+function readDependencyRecord(value: unknown, label: string, packageJsonPath: string): Record<string, string> {
+	if (value === undefined) return {};
+	if (!isRecord(value)) throw new Error(`${label} in ${packageJsonPath} must be an object`);
+	const dependencies: Record<string, string> = {};
+	for (const [name, version] of Object.entries(value)) {
+		if (typeof version !== "string" || !version.trim()) {
+			throw new Error(`${label}.${name} in ${packageJsonPath} must be a non-empty string`);
+		}
+		dependencies[name] = version;
+	}
+	return dependencies;
+}
+
+function normalizeSkillDependencySpec(specifier: string, packagePath: string): string {
+	if (!specifier.startsWith("file:")) return specifier;
+	const target = specifier.slice("file:".length);
+	if (!target || path.isAbsolute(target) || target.startsWith("//")) return specifier;
+	return `file:${path.resolve(packagePath, target)}`;
+}
+
+async function readSkillDependencies(skill: JavaScriptSkillRuntimeInfo): Promise<Record<string, string>> {
+	const metadata: unknown = JSON.parse(await readFile(skill.packageJsonPath, "utf8"));
+	if (!isRecord(metadata)) throw new Error(`JavaScript skill package ${skill.packageJsonPath} must be an object`);
+	const dependencies = {
+		...readDependencyRecord(metadata.dependencies, "dependencies", skill.packageJsonPath),
+		...readDependencyRecord(metadata.optionalDependencies, "optionalDependencies", skill.packageJsonPath),
+	};
+	return Object.fromEntries(
+		Object.entries(dependencies).map(([name, specifier]) => [
+			name,
+			normalizeSkillDependencySpec(specifier, skill.packagePath),
+		]),
+	);
+}
+
+async function skillDependencyCacheCurrent(cacheDirectory: string, signature: string): Promise<boolean> {
+	try {
+		const state: unknown = JSON.parse(await readFile(path.join(cacheDirectory, SKILL_DEPENDENCY_STATE_FILE), "utf8"));
+		return (
+			isRecord(state) && state.signature === signature && (await exists(path.join(cacheDirectory, "node_modules")))
+		);
+	} catch {
+		return false;
+	}
+}
+
+async function provisionSkillDependencyCache(
+	runtime: ResolvedBunRuntime,
+	kernelDirectory: string,
+	skill: JavaScriptSkillRuntimeInfo,
+	dependencies: Record<string, string>,
+): Promise<string | undefined> {
+	if (Object.keys(dependencies).length === 0) return undefined;
+	const identity = JSON.stringify({ packageJsonPath: path.resolve(skill.packageJsonPath), dependencies });
+	const signature = `sha256:${createHash("sha256").update(identity).digest("hex")}`;
+	const cacheDirectory = path.join(kernelDirectory, "skill-deps", signature.slice("sha256:".length, 38));
+	if (await skillDependencyCacheCurrent(cacheDirectory, signature)) {
+		return path.join(cacheDirectory, "node_modules");
+	}
+	const releaseLock = await acquireBootstrapLock(cacheDirectory);
+	try {
+		if (await skillDependencyCacheCurrent(cacheDirectory, signature)) {
+			return path.join(cacheDirectory, "node_modules");
+		}
+		await mkdir(cacheDirectory, { recursive: true });
+		await writeAtomic(
+			path.join(cacheDirectory, "package.json"),
+			`${JSON.stringify({ private: true, dependencies }, null, 2)}\n`,
+		);
+		await run(runtime.path, ["install", "--production"], { cwd: cacheDirectory });
+		await writeAtomic(
+			path.join(cacheDirectory, SKILL_DEPENDENCY_STATE_FILE),
+			`${JSON.stringify({ signature, packageJsonPath: path.resolve(skill.packageJsonPath) })}\n`,
+		);
+		return path.join(cacheDirectory, "node_modules");
+	} finally {
+		await releaseLock().catch(() => undefined);
+	}
+}
+
+async function provisionSkillDependencies(
+	runtime: ResolvedBunRuntime,
+	kernelDirectory: string,
+	options: EnsureKernelBunOptions,
+): Promise<{ skillNodePaths: string[]; skillDiagnostics: Array<{ name: string; message: string }> }> {
+	const skillNodePaths: string[] = [];
+	const skillDiagnostics: Array<{ name: string; message: string }> = [];
+	for (const skill of options.javascriptSkills ?? []) {
+		try {
+			const dependencies = await readSkillDependencies(skill);
+			const nodePath = await provisionSkillDependencyCache(runtime, kernelDirectory, skill, dependencies);
+			if (nodePath) skillNodePaths.push(nodePath);
+		} catch (error) {
+			const message = `JavaScript skill ${skill.name} dependencies are unavailable: ${errorMessage(error)}`;
+			skillDiagnostics.push({ name: skill.name, message });
+			reportProgress(options, `! ${message}`);
+		}
+	}
+	return { skillDiagnostics, skillNodePaths };
+}
+
 function ensureKey(options: EnsureKernelBunOptions): string {
 	return [
 		process.env.PRIME_AGENT_KERNEL_BUN ?? "",
@@ -356,6 +467,9 @@ function ensureKey(options: EnsureKernelBunOptions): string {
 		process.env.PATH ?? "",
 		homeDirectory(),
 		options.runtimeSourceDirectory ?? "",
+		...(options.javascriptSkills ?? []).map(
+			(skill) => `${skill.name}:${skill.globalName}:${path.resolve(skill.packageJsonPath)}`,
+		),
 	].join("\0");
 }
 
@@ -371,9 +485,11 @@ async function ensureKernelBunUncached(options: EnsureKernelBunOptions): Promise
 			{ cause: error },
 		);
 	}
+	const preparedSkills = await provisionSkillDependencies(runtime, kernelDirectory, options);
 	return {
 		...runtime,
 		kernelDirectory,
+		...preparedSkills,
 		workerPath: path.join(kernelDirectory, `bun-worker${assets.extension}`),
 	};
 }

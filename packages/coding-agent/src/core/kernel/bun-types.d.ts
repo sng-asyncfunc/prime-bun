@@ -24,5 +24,15 @@ declare module "bun" {
 
 declare const Bun: {
 	readonly version: string;
+	stdout: unknown;
+	stderr: unknown;
+	write(destination: unknown, data: unknown, options?: unknown): Promise<number>;
+	Transpiler: new (options: {
+		loader: "ts";
+		target: "bun";
+		deadCodeElimination?: boolean;
+	}) => {
+		transformSync(source: string): string;
+	};
 	inspect(value: unknown, options?: { colors?: boolean; depth?: number }): string;
 };

@@ -32,10 +32,10 @@ The parent keeps its own context focused while the notebook holds working state 
 
 The default RLM runtime exposes one built-in model tool: `javascript`. Reading and editing files, running project commands, transforming results, invoking skills, and delegating work all begin from that persistent notebook instead of separate built-in tool calls.
 
-JavaScript state survives across tool calls and compaction. Variables, functions, parsed results, and task handles remain available on later turns:
+JavaScript state survives across tool calls and compaction. Variables, functions, parsed results, and task handles remain available on later turns. TypeScript syntax is erased before execution without running a type checker. Use dynamic imports because static imports are not valid notebook cells:
 
 ```javascript
-import { readdir } from "node:fs/promises";
+const { readdir } = await import("node:fs/promises");
 
 const sourceFiles = (await readdir("src", { recursive: true })).filter((path) => path.endsWith(".ts"));
 const largeFiles = await Promise.all(
@@ -48,6 +48,14 @@ Run project commands through their own environment with Bun Shell:
 ```javascript
 const check = await $`npm run check`.quiet();
 console.log(check.stdout.toString());
+```
+
+Use `sh` when the configured project shell or command prefix matters:
+
+```javascript
+const result = await sh("npm run check"); // { exitCode, stdout, stderr }
+const text = await sh("git status --short").text();
+const data = await sh("some-command --json").json();
 ```
 
 Each Bun Shell call is a child process, while JavaScript bindings and `process.chdir()` changes persist in the notebook. Prime Agent extensions may intentionally add custom tools, but the built-in RLM design does not require a separate model tool for every capability.
@@ -119,7 +127,7 @@ For a skill named `release-audit`, the model can call:
 const report = await releaseAudit({ repository: ".", targetVersion: "0.7.1" });
 ```
 
-JavaScript-backed skills can provide guidance, scripts, references, dependencies, typed callables, and objects. They may also use the provided `hostRequest` context for authoritative host operations. Only skill metadata is placed in the startup prompt; the agent loads the full `SKILL.md` when a task matches. See [Skills](skills.md) for discovery, packaging, and the built-in skill-creation workflow.
+JavaScript-backed skills can provide guidance, scripts, references, dependencies, typed callables, and objects. Prime Agent installs declared runtime dependencies into its managed Bun cache without writing `node_modules` into the skill. A dependency or module failure disables only that executable global; duplicate and runtime-reserved globals degrade to markdown-only instructions. Skills may also use the provided `hostRequest` context for authoritative host operations. Only skill metadata is placed in the startup prompt; the agent loads the full `SKILL.md` when a task matches. See [Skills](skills.md) for discovery, packaging, and the built-in skill-creation workflow.
 
 ### 4. State is designed to outlive one turn
 
@@ -131,6 +139,8 @@ The RLM programming model assumes useful work may take many turns or continue af
 - heartbeats and scheduled prompts re-enter a session later;
 - persistent goals continue until the objective is complete or the user changes their state; and
 - autonomous mode adds bounded continuations and optional quality gates.
+
+Aborting a cell terminates its Bun worker so delayed code cannot mutate state. Prime Agent restores the last successful bindings, working directory, and environment from a private recovery snapshot. Session snapshots remain separate and do not persist working-directory or environment values.
 
 See [Long-Running and Background Agents](long-running-agents.md) for these lifecycle features.
 

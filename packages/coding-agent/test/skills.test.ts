@@ -502,7 +502,7 @@ describe("skills", () => {
 			expect(withTilde.length).toBe(withoutTilde.length);
 		});
 
-		it("should warn when JavaScript skills share a global name", () => {
+		it("should keep only the first JavaScript skill when globals collide", () => {
 			const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-skills-"));
 			try {
 				writeJavaScriptSkill(tempDir, "web-search", "webSearch");
@@ -516,6 +516,9 @@ describe("skills", () => {
 				});
 
 				expect(skills.map((skill) => skill.name).sort()).toEqual(["web-search", "web_search"]);
+				expect(skills.filter((skill) => skill.kind === "javascript")).toHaveLength(1);
+				expect(skills.filter((skill) => skill.kind === "markdown")).toHaveLength(1);
+				expect(getJavaScriptSkillRuntimeInfo(skills).map((skill) => skill.globalName)).toEqual(["webSearch"]);
 				expect(
 					diagnostics.some((d: ResourceDiagnostic) =>
 						d.message.includes(
@@ -527,6 +530,33 @@ describe("skills", () => {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
 		});
+
+		it.each(["rlm", "HTMLRewriter"])(
+			"loads a skill that requests reserved runtime global %s as markdown only",
+			(globalName) => {
+				const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-skills-reserved-"));
+				try {
+					writeJavaScriptSkill(tempDir, "reserved-runtime", globalName);
+					const { skills, diagnostics } = loadSkills({
+						agentDir: emptyAgentDir,
+						cwd: emptyCwd,
+						skillPaths: [join(tempDir, "reserved-runtime")],
+						includeDefaults: false,
+					});
+
+					expect(skills).toHaveLength(1);
+					expect(skills[0].kind).toBe("markdown");
+					expect(getJavaScriptSkillRuntimeInfo(skills)).toEqual([]);
+					expect(
+						diagnostics.some((diagnostic) =>
+							diagnostic.message.includes(`reserved runtime global "${globalName}"`),
+						),
+					).toBe(true);
+				} finally {
+					rmSync(tempDir, { recursive: true, force: true });
+				}
+			},
+		);
 	});
 
 	describe("collision handling", () => {

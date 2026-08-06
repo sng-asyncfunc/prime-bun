@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Replaced the Python notebook with a persistent Bun JavaScript and TypeScript notebook, including native JavaScript skills and RLM globals.
+- Fixed Bun notebook parity for TypeScript syntax, cell-scoped streams, shell consumers, executable-state and abort recovery, and automatically provisioned JavaScript skill dependencies.
 
 ## [0.7.0] - 2026-08-05
 

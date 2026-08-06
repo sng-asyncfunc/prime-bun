@@ -38,7 +38,6 @@ todo.md
 plans/
 .prime/agent/
 collect.sh
-.kernel-venv/
 .worktrees/
 
 __pycache__/

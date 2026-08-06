@@ -25,8 +25,8 @@ interface MessageWaiter {
 }
 
 function requireSuccess(message: MessageOfType<"result">): asserts message is BunWorkerSuccessResultMessage {
+	if (message.status !== "ok") throw new Error(`${message.error.name}: ${message.error.message}`);
 	expect(message.status).toBe("ok");
-	if (message.status !== "ok") throw new Error(message.error.message);
 }
 
 class BunWorkerTestClient {
@@ -96,10 +96,21 @@ class BunWorkerTestClient {
 		}).then((message) => message as MessageOfType<T>);
 	}
 
-	async waitForOutput(stream: "stdout" | "stderr", text: string): Promise<void> {
+	async waitForCellStream(cellId: string, name: "stdout" | "stderr", text: string): Promise<void> {
 		const deadline = Date.now() + 5_000;
-		while (!this[stream].join("").includes(text)) {
-			if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${stream}: ${text}`);
+		while (
+			!this.messages.some((message) => {
+				const record = message as unknown as Record<string, unknown>;
+				return (
+					record.type === "stream" &&
+					record.cellId === cellId &&
+					record.name === name &&
+					typeof record.text === "string" &&
+					record.text.includes(text)
+				);
+			})
+		) {
+			if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${name} stream: ${text}`);
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
 	}
@@ -199,6 +210,19 @@ describe("Bun worker", () => {
 		expect(names.names).toEqual(["state"]);
 	});
 
+	it("executes erasable TypeScript syntax", async () => {
+		client.send({
+			cellId: "typescript-cell",
+			code: "const typedValue: number = 42; typedValue;",
+			id: "typescript-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const result = await client.waitForType("result", (message) => message.replyTo === "typescript-execute");
+		expect(result).toMatchObject({ status: "ok", value: "42" });
+	});
+
 	it("exposes the JavaScript RLM and package installation APIs", async () => {
 		client.send({
 			cellId: "runtime-api-cell",
@@ -233,13 +257,50 @@ describe("Bun worker", () => {
 		});
 	});
 
-	it("keeps protocol framing separate from direct stdout and stderr", async () => {
+	it("continues initialization when JavaScript skill globals collide", async () => {
+		await client.stop();
+		const runtime = await resolveBunRuntime();
+		client = BunWorkerTestClient.start(runtime.path);
+		const entryPath = fileURLToPath(new URL("./fixtures/skills/javascript-skill/src/index.ts", import.meta.url));
+		client.send({
+			bunPath: runtime.path,
+			commandPrefix: "",
+			cwd: process.cwd(),
+			id: "collision-initialize",
+			kernelDirectory: process.cwd(),
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			shellPath: "/bin/sh",
+			skills: [
+				{ entryPath, globalName: "duplicateSkill", name: "first-skill" },
+				{ entryPath, globalName: "duplicateSkill", name: "second-skill" },
+			],
+			type: "initialize",
+		});
+
+		const ready = await client.waitForType("ready", (message) => message.replyTo === "collision-initialize");
+		expect(ready.replyTo).toBe("collision-initialize");
+		const diagnostic = await client.waitForType("diagnostic");
+		expect(diagnostic.error.message).toMatch(/second-skill.*duplicateSkill/i);
+		client.send({
+			cellId: "collision-cell",
+			code: 'await duplicateSkill("still-available");',
+			id: "collision-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const result = await client.waitForType("result", (message) => message.replyTo === "collision-execute");
+		expect(result).toMatchObject({ status: "ok", value: '"still-available"' });
+	});
+
+	it("tags console and direct stdout/stderr with their originating cell", async () => {
 		client.send({
 			cellId: "output-cell",
 			code: `
 console.log('{"type":"ready","replyTo":"fake"}');
 process.stdout.write("direct-out\\n");
 process.stderr.write("direct-error\\n");
+await Bun.write(Bun.stdout, "bun-out\\n");
+await Bun.write(Bun.stderr, "bun-error\\n");
 42;
 `,
 			id: "output-execute",
@@ -247,11 +308,64 @@ process.stderr.write("direct-error\\n");
 			type: "execute",
 		});
 		const result = await client.waitForType("result", (message) => message.replyTo === "output-execute");
-		await Promise.all([client.waitForOutput("stdout", "direct-out"), client.waitForOutput("stderr", "direct-error")]);
+		await Promise.all([
+			client.waitForCellStream("output-cell", "stdout", "direct-out"),
+			client.waitForCellStream("output-cell", "stderr", "direct-error"),
+			client.waitForCellStream("output-cell", "stdout", "bun-out"),
+			client.waitForCellStream("output-cell", "stderr", "bun-error"),
+		]);
 
 		expect(result).toMatchObject({ status: "ok", value: "42" });
-		expect(client.stdout.join("")).toContain('{"type":"ready","replyTo":"fake"}');
+		expect(client.stdout.join("")).not.toContain('{"type":"ready","replyTo":"fake"}');
 		expect(client.messages.filter((message) => message.type === "ready")).toHaveLength(1);
+	});
+
+	it("forwards Bun.write createPath options for ordinary files", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-write-options-"));
+		const filePath = join(directory, "nested", "created.txt");
+		try {
+			client.send({
+				cellId: "bun-write-options-cell",
+				code: `await Bun.write(${JSON.stringify(filePath)}, "created", { createPath: false });`,
+				id: "bun-write-options-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			const result = await client.waitForType(
+				"result",
+				(message) => message.replyTo === "bun-write-options-execute",
+			);
+			expect(result).toMatchObject({ status: "error" });
+			await expect(readFile(filePath, "utf8")).rejects.toThrow();
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
+	it("reports an unhandled rejection without terminating the worker", async () => {
+		client.send({
+			cellId: "unhandled-rejection-cell",
+			code: `Promise.reject(new Error("detached rejection")); await Bun.sleep(20); 1;`,
+			id: "unhandled-rejection-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const diagnostic = await client.waitForType("diagnostic", (message) =>
+			message.error.message.includes("detached rejection"),
+		);
+		expect(diagnostic.cellId).toBe("unhandled-rejection-cell");
+		const first = await client.waitForType("result", (message) => message.replyTo === "unhandled-rejection-execute");
+		expect(first).toMatchObject({ status: "ok", value: "1" });
+
+		client.send({
+			cellId: "post-rejection-cell",
+			code: "6 * 7;",
+			id: "post-rejection-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const second = await client.waitForType("result", (message) => message.replyTo === "post-rejection-execute");
+		expect(second).toMatchObject({ status: "ok", value: "42" });
 	});
 
 	it("streams output before a cell completes", async () => {
@@ -268,13 +382,13 @@ console.log("after-wait");
 			type: "execute",
 		});
 
-		await client.waitForOutput("stdout", "before-wait");
+		await client.waitForCellStream("stream-cell", "stdout", "before-wait");
 		expect(client.messages.some((message) => message.type === "result" && message.replyTo === "stream-execute")).toBe(
 			false,
 		);
 		const result = await client.waitForType("result", (message) => message.replyTo === "stream-execute");
 		expect(result).toMatchObject({ status: "ok", value: "7" });
-		await client.waitForOutput("stdout", "after-wait");
+		await client.waitForCellStream("stream-cell", "stdout", "after-wait");
 	});
 
 	it("preserves cwd and environment across cells", async () => {
@@ -335,6 +449,25 @@ const native = await $\`printf %s bun-shell\`;
 		requireSuccess(result);
 		expect(result.value).toContain('configured: "applied"');
 		expect(result.value).toContain('native: "bun-shell"');
+	});
+
+	it("supports concise text and JSON shell consumers", async () => {
+		client.send({
+			cellId: "shell-consumer-cell",
+			code: `
+const text = await sh("printf shell-text").text();
+const data = await sh("printf '{\\"answer\\":42}'").json();
+({ text, answer: data.answer });
+`,
+			id: "shell-consumer-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const result = await client.waitForType("result", (message) => message.replyTo === "shell-consumer-execute");
+		requireSuccess(result);
+		expect(result.value).toContain('text: "shell-text"');
+		expect(result.value).toContain("answer: 42");
 	});
 
 	it("round-trips host requests and emits structured displays", async () => {
@@ -411,6 +544,8 @@ const plain = { count: 1, nested: new Map([["key", new Set([2, 3])]]) };
 class Custom { constructor() { this.value = 4; } }
 const custom = new Custom();
 const callable = () => 5;
+const pathModule = await import("node:path");
+globalThis.explicitValue = 40;
 plain.count;
 `,
 				id: "snapshot-source-execute",
@@ -421,6 +556,7 @@ plain.count;
 
 			client.send({
 				id: "snapshot",
+				includeRuntimeState: false,
 				manifestPath,
 				maxBytes: 1024 * 1024,
 				path,
@@ -428,20 +564,25 @@ plain.count;
 				type: "snapshot",
 			});
 			const snapshot = await client.waitForType("snapshot_result");
-			expect(snapshot).toMatchObject({ replyTo: "snapshot", saved: ["plain"] });
-			expect(snapshot.skipped.map((entry) => entry.name)).toEqual(
-				expect.arrayContaining(["Custom", "callable", "custom"]),
-			);
+			expect(snapshot).toMatchObject({
+				replyTo: "snapshot",
+				saved: expect.arrayContaining(["Custom", "callable", "explicitValue", "pathModule", "plain"]),
+			});
+			expect(snapshot.skipped.map((entry) => entry.name)).toContain("custom");
 			const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
 				bunVersion: string;
 				savedNames: string[];
+				version: number;
 			};
-			expect(manifest.savedNames).toEqual(["plain"]);
+			expect(manifest.savedNames).toEqual(
+				expect.arrayContaining(["Custom", "callable", "explicitValue", "pathModule", "plain"]),
+			);
 			expect(manifest.bunVersion).toMatch(/^1\.3\./);
+			expect(manifest.version).toBe(2);
 
 			client.send({
 				cellId: "snapshot-mutation",
-				code: "plain.count = 99; plain.count;",
+				code: "plain.count = 99; delete globalThis.explicitValue; plain.count;",
 				id: "snapshot-mutation-execute",
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				type: "execute",
@@ -454,17 +595,26 @@ plain.count;
 				type: "restore",
 			});
 			const restore = await client.waitForType("restore_result");
-			expect(restore).toMatchObject({ replyTo: "restore", restored: ["plain"], failed: [] });
+			expect(restore).toMatchObject({
+				failed: [],
+				replyTo: "restore",
+				restored: expect.arrayContaining(["Custom", "callable", "explicitValue", "pathModule", "plain"]),
+			});
 
 			client.send({
 				cellId: "snapshot-check",
-				code: "plain.count;",
+				code: `({ count: plain.count, called: callable(), custom: new Custom().value, explicitValue, basename: pathModule.basename("/a/b") });`,
 				id: "snapshot-check-execute",
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				type: "execute",
 			});
 			const result = await client.waitForType("result", (message) => message.replyTo === "snapshot-check-execute");
-			expect(result).toMatchObject({ status: "ok", value: "1" });
+			requireSuccess(result);
+			expect(result.value).toContain("count: 1");
+			expect(result.value).toContain("called: 5");
+			expect(result.value).toContain("custom: 4");
+			expect(result.value).toContain("explicitValue: 40");
+			expect(result.value).toContain('basename: "b"');
 		} finally {
 			await rm(directory, { force: true, recursive: true });
 		}

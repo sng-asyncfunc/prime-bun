@@ -203,9 +203,6 @@ function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: strin
 			if (object instanceof DataView || !TYPED_ARRAY_PROTOTYPES.has(prototype)) {
 				return `${path}: custom prototype or unsupported view is not snapshot-safe`;
 			}
-			if (Object.keys(object).some((key) => !/^(0|[1-9]\d*)$/.test(key))) {
-				return `${path}: custom typed-array properties are not snapshot-safe`;
-			}
 			return undefined;
 		}
 		if (object instanceof Map) {

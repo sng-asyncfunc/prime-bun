@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_SNAPSHOT_MAX_BYTES,
 	decodeSnapshotPayload,
@@ -57,6 +57,20 @@ describe("snapshotValueSkipReason", () => {
 		};
 
 		expect(snapshotValueSkipReason(value)).toBeUndefined();
+	});
+
+	it("accepts built-in typed arrays without enumerating their elements", () => {
+		const objectKeys = Object.keys;
+		const objectKeysSpy = vi.spyOn(Object, "keys").mockImplementation((value) => {
+			if (ArrayBuffer.isView(value)) throw new Error("typed-array enumeration is not allowed");
+			return objectKeys(value);
+		});
+
+		try {
+			expect(snapshotValueSkipReason(new Uint8Array(1_000_000))).toBeUndefined();
+		} finally {
+			objectKeysSpy.mockRestore();
+		}
 	});
 
 	it("rejects unsupported values at any nesting depth", () => {

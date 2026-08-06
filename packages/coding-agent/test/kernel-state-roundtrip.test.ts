@@ -73,6 +73,35 @@ globalThis.explicitValue = 40;
 		}
 	});
 
+	it("restores a multi-megabyte typed array after restart", async () => {
+		const snapshot = { path: snapshotPath, manifestPath, debounceMs: 60_000 };
+		const writer = createManager({ snapshot });
+		try {
+			await writer.execute(`
+const largeBytes = new Uint8Array(8 * 1024 * 1024);
+largeBytes[0] = 17;
+largeBytes[largeBytes.length - 1] = 251;
+`);
+			const snapshot = await writer.snapshotState();
+			expect(snapshot?.saved).toContain("largeBytes");
+		} finally {
+			await writer.dispose();
+		}
+
+		const reader = createManager({ snapshot });
+		try {
+			expect((await reader.restoreState())?.restored).toContain("largeBytes");
+			const result = await reader.execute(
+				`({ length: largeBytes.length, first: largeBytes[0], last: largeBytes.at(-1) })`,
+			);
+			expect(result.result).toContain("length: 8388608");
+			expect(result.result).toContain("first: 17");
+			expect(result.result).toContain("last: 251");
+		} finally {
+			await reader.dispose();
+		}
+	});
+
 	it("treats a missing snapshot as an empty restore", async () => {
 		const missingPath = join(directory, "missing.bin");
 		const manager = createManager({ snapshot: { path: missingPath, manifestPath: join(directory, "missing.json") } });

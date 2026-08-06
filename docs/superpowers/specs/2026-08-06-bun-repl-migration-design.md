@@ -42,7 +42,6 @@ Host-to-worker messages:
 
 - `initialize`: working directory, shell settings, JavaScript skill entries, snapshot paths, and runtime metadata.
 - `execute`: cell ID and JavaScript source.
-- `interrupt`: cell ID. The host terminates the worker and restores a fresh worker from the last successful-cell snapshot; it does not claim that an in-process JavaScript promise was cancelled.
 - `snapshot`, `restore`, and `list_names`: explicit state operations that do not consume model-visible cell history.
 - `host_response`: success/error reply for a worker-originated host request.
 - `shutdown`: bounded graceful termination.

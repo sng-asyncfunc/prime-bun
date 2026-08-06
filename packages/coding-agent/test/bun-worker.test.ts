@@ -320,6 +320,28 @@ await Bun.write(Bun.stderr, "bun-error\\n");
 		expect(client.messages.filter((message) => message.type === "ready")).toHaveLength(1);
 	});
 
+	it("batches synchronous stdout writes before the cell result", async () => {
+		client.send({
+			cellId: "batched-output-cell",
+			code: 'for (let index = 0; index < 10_000; index += 1) process.stdout.write("x");',
+			id: "batched-output-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const result = await client.waitForType("result", (message) => message.replyTo === "batched-output-execute");
+		const stdoutFrames = client.messages.filter(
+			(message): message is Extract<BunWorkerToHostMessage, { type: "stream" }> =>
+				message.type === "stream" && message.cellId === "batched-output-cell" && message.name === "stdout",
+		);
+
+		expect(stdoutFrames.map((message) => message.text).join("")).toBe("x".repeat(10_000));
+		expect(stdoutFrames.every((message) => client.messages.indexOf(message) < client.messages.indexOf(result))).toBe(
+			true,
+		);
+		expect(stdoutFrames.length).toBeLessThanOrEqual(4);
+	});
+
 	it("forwards Bun.write createPath options for ordinary files", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "prime-bun-write-options-"));
 		const filePath = join(directory, "nested", "created.txt");

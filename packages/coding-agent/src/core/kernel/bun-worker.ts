@@ -74,6 +74,15 @@ interface RuntimeSnapshotState {
 	};
 }
 
+interface CellStreamState {
+	stderr: string;
+	stderrBytes: number;
+	stderrScheduled: boolean;
+	stdout: string;
+	stdoutBytes: number;
+	stdoutScheduled: boolean;
+}
+
 const protocolInput = createReadStream("", { autoClose: false, fd: 3 });
 const protocolOutput = createWriteStream("", { autoClose: false, fd: 4 });
 const lineReader = createInterface({ input: protocolInput, crlfDelay: Number.POSITIVE_INFINITY });
@@ -81,7 +90,9 @@ const bindings = new Set<string>();
 const bindingRecipes = new Map<string, BindingRecipeState>();
 const runtimeBindingNames = new Set(BUN_RUNTIME_GLOBAL_NAMES);
 const pendingHostRequests = new Map<string, PendingHostRequest>();
+const cellStreams = new Map<string, CellStreamState>();
 const RUNTIME_STATE_ENTRY_NAME = "\0prime:runtime";
+const MAX_CELL_STREAM_BYTES = 32 * 1024;
 const cellContext = new AsyncLocalStorage<ActiveCell>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
 const requireModule = createRequire(import.meta.url);
@@ -120,17 +131,81 @@ function send(message: BunWorkerToHostMessage): void {
 	protocolOutput.write(`${JSON.stringify(message)}\n`);
 }
 
-function emitCellStream(name: "stdout" | "stderr", text: string): boolean {
-	const sourceCell = cellContext.getStore();
-	if (!sourceCell) return false;
+function cellStreamState(cellId: string): CellStreamState {
+	const existing = cellStreams.get(cellId);
+	if (existing) return existing;
+	const created: CellStreamState = {
+		stderr: "",
+		stderrBytes: 0,
+		stderrScheduled: false,
+		stdout: "",
+		stdoutBytes: 0,
+		stdoutScheduled: false,
+	};
+	cellStreams.set(cellId, created);
+	return created;
+}
+
+function streamByteCountKey(name: "stdout" | "stderr"): "stdoutBytes" | "stderrBytes" {
+	return name === "stdout" ? "stdoutBytes" : "stderrBytes";
+}
+
+function streamScheduledKey(name: "stdout" | "stderr"): "stdoutScheduled" | "stderrScheduled" {
+	return name === "stdout" ? "stdoutScheduled" : "stderrScheduled";
+}
+
+function removeEmptyCellStreamState(cellId: string, state: CellStreamState): void {
+	if (state.stdout || state.stderr || state.stdoutScheduled || state.stderrScheduled) return;
+	if (cellStreams.get(cellId) === state) cellStreams.delete(cellId);
+}
+
+function flushCellStream(cellId: string, name: "stdout" | "stderr"): void {
+	const state = cellStreams.get(cellId);
+	if (!state) return;
+	state[streamScheduledKey(name)] = false;
+	const text = state[name];
+	if (!text) {
+		removeEmptyCellStreamState(cellId, state);
+		return;
+	}
+	state[name] = "";
+	state[streamByteCountKey(name)] = 0;
 	send({
-		cellId: sourceCell.cellId,
+		cellId,
 		id: randomUUID(),
 		name,
 		protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 		text,
 		type: "stream",
 	});
+	removeEmptyCellStreamState(cellId, state);
+}
+
+function flushCellStreams(cellId: string): void {
+	flushCellStream(cellId, "stdout");
+	flushCellStream(cellId, "stderr");
+	const state = cellStreams.get(cellId);
+	if (state) removeEmptyCellStreamState(cellId, state);
+}
+
+function emitCellStream(name: "stdout" | "stderr", text: string): boolean {
+	const sourceCell = cellContext.getStore();
+	if (!sourceCell) return false;
+	const state = cellStreamState(sourceCell.cellId);
+	const byteCountKey = streamByteCountKey(name);
+	const scheduledKey = streamScheduledKey(name);
+	state[name] += text;
+	state[byteCountKey] += Buffer.byteLength(text);
+	if (state[byteCountKey] >= MAX_CELL_STREAM_BYTES) {
+		flushCellStream(sourceCell.cellId, name);
+		return true;
+	}
+	if (!state[scheduledKey]) {
+		state[scheduledKey] = true;
+		queueMicrotask(() => {
+			if (cellStreams.get(sourceCell.cellId) === state) flushCellStream(sourceCell.cellId, name);
+		});
+	}
 	return true;
 }
 
@@ -596,6 +671,7 @@ const cellTranspiler = new Bun.Transpiler({ deadCodeElimination: false, loader: 
 
 async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "execute" }>): Promise<void> {
 	if (!initialized) {
+		flushCellStreams(message.cellId);
 		send({
 			cellId: message.cellId,
 			durationMs: 0,
@@ -609,6 +685,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 		return;
 	}
 	if (activeExecutionId) {
+		flushCellStreams(message.cellId);
 		send({
 			cellId: message.cellId,
 			durationMs: 0,
@@ -630,6 +707,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 		const transformed = transformJavaScriptCell(cellTranspiler.transformSync(message.code));
 		const executor = new AsyncFunction("__primePersist", transformed.code);
 		const result = await cellContext.run(activeCell, () => executor(persistBinding));
+		flushCellStreams(message.cellId);
 		send({
 			bindingNames: transformed.bindingNames,
 			cellId: message.cellId,
@@ -642,6 +720,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			...(result === undefined ? {} : { value: Bun.inspect(result, { colors: false, depth: 8 }) }),
 		});
 	} catch (error) {
+		flushCellStreams(message.cellId);
 		send({
 			cellId: message.cellId,
 			durationMs: performance.now() - startedAt,

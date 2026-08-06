@@ -49,7 +49,6 @@ Host-to-worker messages:
 Worker-to-host messages:
 
 - `ready` and `idle`: lifecycle state.
-- `stream`: incremental stdout or stderr for one cell.
 - `display`: typed diff, attachment, or sent-agent-message payload.
 - `host_request`: typed host bridge request, including the active or last cell source for RLM attribution.
 - `result`: inspected last expression, structured error, duration, and final status.

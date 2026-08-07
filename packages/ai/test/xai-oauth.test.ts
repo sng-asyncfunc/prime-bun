@@ -246,6 +246,26 @@ describe("xAI OAuth", () => {
 		await assertion;
 	});
 
+	it("does not poll after the device code deadline", async () => {
+		vi.useFakeTimers();
+		let requests = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				requests += 1;
+				return requests === 1
+					? jsonResponse(deviceCodeResponse({ expires_in: 1, interval: 5 }))
+					: jsonResponse(tokenResponse());
+			}),
+		);
+
+		const loginPromise = login();
+		const assertion = expect(loginPromise).rejects.toThrow("xAI device code expired");
+		await vi.advanceTimersByTimeAsync(1_000);
+		await assertion;
+		expect(requests).toBe(1);
+	});
+
 	it("cancels before the first token poll", async () => {
 		vi.useFakeTimers();
 		const controller = new AbortController();

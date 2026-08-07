@@ -38,6 +38,28 @@ function writeOversizedPngHeader(path: string): void {
 	writeFileSync(path, bytes);
 }
 
+function writeOversizedJpegHeader(path: string): void {
+	const bytes = Buffer.alloc(21);
+	bytes.set([0xff, 0xd8, 0xff, 0xc0]);
+	bytes.writeUInt16BE(17, 4);
+	bytes[6] = 8;
+	bytes.writeUInt16BE(6001, 7);
+	bytes.writeUInt16BE(6001, 9);
+	writeFileSync(path, bytes);
+}
+
+function writeOversizedWebpHeader(path: string): void {
+	const bytes = Buffer.alloc(30);
+	bytes.write("RIFF", 0, "ascii");
+	bytes.writeUInt32LE(bytes.length - 8, 4);
+	bytes.write("WEBP", 8, "ascii");
+	bytes.write("VP8X", 12, "ascii");
+	bytes.writeUInt32LE(10, 16);
+	bytes.writeUIntLE(6000, 24, 3);
+	bytes.writeUIntLE(6000, 27, 3);
+	writeFileSync(path, bytes);
+}
+
 describe("attach-image skill over the Bun host bridge", () => {
 	let tempDir: string;
 	let provisioner: BunKernelProvisioner | undefined;
@@ -140,6 +162,29 @@ try {
 
 		expect(result.status).toBe("ok");
 		expect(result.stdout).toContain("images must be at most 36MP");
+		expect(result.attachments).toBeUndefined();
+	});
+
+	it.each([
+		["JPEG", "huge.jpg", writeOversizedJpegHeader],
+		["WebP", "huge.webp", writeOversizedWebpHeader],
+	] as const)("rejects oversized %s pixel counts before Photon decoding", async (_format, filename, writeHeader) => {
+		const imagePath = join(tempDir, filename);
+		writeHeader(imagePath);
+		provisioner = createProvisioner();
+
+		const manager = await provisioner.ensure();
+		const result = await manager.execute(`
+try {
+  await attachImage(${JSON.stringify(imagePath)});
+} catch (error) {
+  console.log(error instanceof Error ? error.message : String(error));
+}
+`);
+
+		expect(result.status).toBe("ok");
+		expect(result.stdout).toContain("images must be at most 36MP");
+		expect(result.stdout).not.toContain("is not a readable supported image");
 		expect(result.attachments).toBeUndefined();
 	});
 

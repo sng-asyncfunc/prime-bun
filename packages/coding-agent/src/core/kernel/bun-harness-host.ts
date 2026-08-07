@@ -5,6 +5,7 @@ import {
 	type HarnessScope,
 	type HarnessState,
 	loadHarnessState,
+	normalizeJavaScriptSkillReference,
 	type RefinementKind,
 	saveHarnessState,
 } from "../refinement/index.js";
@@ -113,10 +114,11 @@ function validateJavaScriptSkillReference(reference: Record<string, unknown> | u
 	if (typeof reference.global !== "string" || !reference.global) {
 		throw new Error("skill reference requires a JavaScript global");
 	}
-	if (typeof reference.callPattern !== "string" || !reference.callPattern) {
+	const normalized = normalizeJavaScriptSkillReference(reference);
+	if (typeof normalized.callPattern !== "string" || !normalized.callPattern) {
 		throw new Error("skill reference requires a callPattern");
 	}
-	return reference;
+	return normalized;
 }
 
 function mutateEntry(
@@ -133,10 +135,12 @@ function mutateEntry(
 	const existing = state.entries[kind][id];
 	if (operation === "create" && existing) throw new Error(`${kind} entry "${id}" already exists`);
 	if (operation === "update" && !existing) throw new Error(`${kind} entry "${id}" does not exist`);
-	const reference = optionalRecord(payload, "reference");
+	let reference = optionalRecord(payload, "reference");
 	const argumentsValue = optionalRecord(payload, "arguments");
 	const metadata = optionalRecord(payload, "metadata");
-	if (kind === "skill" && (reference !== undefined || !existing)) validateJavaScriptSkillReference(reference);
+	if (kind === "skill") {
+		reference = validateJavaScriptSkillReference(reference ?? existing?.reference);
+	}
 	const now = new Date().toISOString();
 	const entry: HarnessEntry = {
 		arguments: argumentsValue ?? existing?.arguments ?? {},

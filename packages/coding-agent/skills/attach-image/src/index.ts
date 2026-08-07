@@ -1,19 +1,28 @@
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { PhotonImage, SamplingFilter, resize } from "@silvia-odwyer/photon-node";
 import { asRecord, expandPath, requireString, type SkillContext } from "../../_shared/context.ts";
+import {
+	type ImagePreflight,
+	type ImageWithSource,
+	inspectImageDimensions,
+	loadPreflightSource,
+	processImageBatchAtomically,
+	readBoundedFile,
+	sourceDigest,
+} from "./image-validation.ts";
 
 const ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json";
 const MAX_SOURCE_IMAGE_BYTES = 20_000_000;
-const MAX_SOURCE_IMAGE_PIXELS = 36_000_000;
 const MAX_ATTACHMENT_DATA_CHARS = 350_000;
 const MAX_ATTACHMENT_DIMENSION = 1200;
 const JPEG_QUALITIES = [82, 72, 60, 48, 36] as const;
 
-interface ValidatedImage {
-	animated: boolean;
-	data: Uint8Array;
-	dimensions: readonly [number, number];
+type ValidatedImage = ImageWithSource;
+
+interface PreparedAttachment {
+	data: string;
 	mimeType: string;
+	note?: string;
 	path: string;
 }
 
@@ -48,27 +57,6 @@ function gifFrameCount(data: Uint8Array): number {
 		offset = skipSubBlocks(offset + 1);
 	}
 	return frames;
-}
-
-function declaredDimensions(data: Uint8Array, mimeType: string): readonly [number, number] | undefined {
-	if (mimeType === "image/png" && data.byteLength >= 24) {
-		const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-		return [view.getUint32(16), view.getUint32(20)];
-	}
-	if (mimeType === "image/gif" && data.byteLength >= 10) {
-		const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-		return [view.getUint16(6, true), view.getUint16(8, true)];
-	}
-	return undefined;
-}
-
-function assertPixelLimit(path: string, dimensions: readonly [number, number]): void {
-	const pixelCount = dimensions[0] * dimensions[1];
-	if (pixelCount <= MAX_SOURCE_IMAGE_PIXELS) return;
-	throw new Error(
-		`${path} is ${dimensions[0]}x${dimensions[1]} (${Math.floor(pixelCount / 1_000_000)}MP); ` +
-			`images must be at most ${Math.floor(MAX_SOURCE_IMAGE_PIXELS / 1_000_000)}MP. Resize it first.`,
-	);
 }
 
 function detectImageMime(data: Uint8Array): string | undefined {
@@ -181,25 +169,22 @@ async function validateImage(path: string, cwd: string): Promise<ValidatedImage>
 			`${path} is ${Math.floor(info.size / 1_000_000)}MB; images must be under ${Math.floor(MAX_SOURCE_IMAGE_BYTES / 1_000_000)}MB. Resize it first.`,
 		);
 	}
-	const data = await readFile(filepath);
+	const data = await readBoundedFile(filepath, MAX_SOURCE_IMAGE_BYTES);
 	const mimeType = detectImageMime(data);
 	if (!mimeType) {
 		throw new Error(
 			`${path} is not a supported image (PNG, JPEG, GIF, WebP). Only images can be loaded into context.`,
 		);
 	}
-	const encodedDimensions = declaredDimensions(data, mimeType);
-	if (encodedDimensions) assertPixelLimit(path, encodedDimensions);
-	let decoded: PhotonImage;
-	try {
-		decoded = PhotonImage.new_from_byteslice(data);
-	} catch {
-		throw new Error(`${path} is not a readable supported image (PNG, JPEG, GIF, WebP).`);
-	}
-	const dimensions = [decoded.get_width(), decoded.get_height()] as const;
-	decoded.free();
-	assertPixelLimit(path, dimensions);
-	return { animated: mimeType === "image/gif" && gifFrameCount(data) > 1, data, dimensions, mimeType, path: filepath };
+	const dimensions = inspectImageDimensions(data, mimeType, path, (input) => PhotonImage.new_from_byteslice(input));
+	return {
+		animated: mimeType === "image/gif" && gifFrameCount(data) > 1,
+		data,
+		digest: sourceDigest(data),
+		dimensions,
+		mimeType,
+		path: filepath,
+	};
 }
 
 export function createSkill(context: SkillContext) {
@@ -212,18 +197,29 @@ export function createSkill(context: SkillContext) {
 					"Tell the user to switch to a vision-capable model to load images into context.",
 			);
 		}
-		const validated = await Promise.all(paths.map((path) => validateImage(path, context.cwd)));
-		const notes: string[] = [];
-		for (const image of validated) {
-			const attached = resizeForAttachment(image);
-			context.display(ATTACHMENT_DISPLAY_MIME, {
-				mime_type: attached.mimeType,
-				data: attached.data,
-				path: image.path,
-			});
-			if (attached.note) notes.push(`${image.path}: ${attached.note}`);
-		}
-		let message = `Loaded ${validated.length} image(s) into context: ${paths.join(", ")}`;
+		const prepared = await processImageBatchAtomically(
+			paths,
+			(path) => validateImage(path, context.cwd),
+			async (preflight: ImagePreflight): Promise<PreparedAttachment> => {
+				const image = await loadPreflightSource(preflight, MAX_SOURCE_IMAGE_BYTES);
+				const attached = resizeForAttachment(image);
+				if (attached.data.length > MAX_ATTACHMENT_DATA_CHARS) {
+					throw new Error(`${image.path} produced an oversized attachment payload.`);
+				}
+				return { ...attached, path: image.path };
+			},
+			(attachment) => {
+				context.display(ATTACHMENT_DISPLAY_MIME, {
+					mime_type: attachment.mimeType,
+					data: attachment.data,
+					path: attachment.path,
+				});
+			},
+		);
+		const notes = prepared
+			.filter((attachment) => attachment.note)
+			.map((attachment) => `${attachment.path}: ${attachment.note}`);
+		let message = `Loaded ${prepared.length} image(s) into context: ${paths.join(", ")}`;
 		if (notes.length > 0) {
 			message += `\nResized for efficient inline rendering/replay:\n- ${notes.join("\n- ")}`;
 		}

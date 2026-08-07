@@ -117,6 +117,7 @@ export interface BunHarness {
 export interface BunRlmRuntime {
 	(prompt: string, options?: Record<string, unknown>): Promise<BunRlmSpawnHandle>;
 	run(prompt: string, options?: Record<string, unknown>): Promise<BunRlmSpawnHandle>;
+	hostRequest: BunHostRequest;
 	findModels(query?: string, limit?: number): Promise<BunRlmModel[]>;
 	listSubagents(): Promise<BunRlmSubagent[]>;
 	deleteSubagent(target: string | BunRlmSubagent): Promise<BunRlmSubagent>;
@@ -327,6 +328,7 @@ export function createBunRlmRuntime(hostRequest: BunHostRequest): BunRlmRuntime 
 		findModels,
 		getHarnessState: (options: { global?: boolean } = {}) => harness.snapshot(options),
 		harness,
+		hostRequest,
 		listSubagents,
 		run,
 	});

@@ -95,6 +95,16 @@ describe("Bun RLM runtime", () => {
 
 		await expect(rlm("go deeper")).rejects.toThrow("recursion depth exceeded");
 	});
+
+	it("exposes the raw host request bridge for advanced RLM operations", async () => {
+		const request = vi.fn<BunHostRequest>(async (_type, payload) => ({ payload }));
+		const rlm = createBunRlmRuntime(request);
+
+		await expect(rlm.hostRequest("model.info", { verbose: true })).resolves.toEqual({
+			payload: { verbose: true },
+		});
+		expect(request).toHaveBeenCalledWith("model.info", { verbose: true });
+	});
 });
 
 describe("Bun harness host", () => {
@@ -170,5 +180,36 @@ describe("Bun harness host", () => {
 				title: "Search",
 			}),
 		).resolves.toMatchObject({ entry: { kind: "skill", reference: { type: "javascript" } } });
+	});
+
+	it.each([
+		["callPattern", { callPattern: "await search(query)" }, "await search(query)"],
+		["call_pattern", { call_pattern: "await search(query)" }, "await search(query)"],
+		["callable", { callable: "search" }, "await search(...)"],
+	] as const)("normalizes %s skill references before persisting them", async (_name, boundary, callPattern) => {
+		const directory = makeTempDirectory();
+		const localDirectory = join(directory, "local");
+		const handlers = createHarnessHostHandlers({
+			globalDirectory: join(directory, "global"),
+			localDirectory,
+		});
+
+		const result = await handlers["harness.create"]!({
+			arguments: { query: { type: "string" } },
+			content: "call it",
+			kind: "skill",
+			reference: { type: "javascript", global: "search", ...boundary },
+			title: "Search",
+		});
+
+		expect(result).toMatchObject({
+			entry: { reference: { type: "javascript", global: "search", callPattern } },
+		});
+		const persisted = JSON.parse(readFileSync(join(localDirectory, "harness_state.json"), "utf8"));
+		expect(persisted.entries.skill.search.reference).toEqual({
+			type: "javascript",
+			global: "search",
+			callPattern,
+		});
 	});
 });

@@ -64,8 +64,7 @@ const kinds = ["prompt", "memory", "skill", "subagent"] as const satisfies reado
 const skillReference = {
 	type: "javascript",
 	global: "example",
-	callable: "example",
-	call_pattern: "await example(...)",
+	callPattern: "await example(...)",
 };
 
 function proposal(summary: string, edits: RefinementProposal["edits"]): RefinementProposal {
@@ -445,8 +444,7 @@ describe("harness refinement", () => {
 				reference: {
 					type: "javascript",
 					global: "nativeCheck",
-					callable: "nativeCheck",
-					call_pattern: "await nativeCheck(command)",
+					callPattern: "await nativeCheck(command)",
 				},
 				arguments: {
 					command: { type: "string", required: false, description: "Optional command override." },
@@ -544,6 +542,37 @@ describe("harness refinement", () => {
 		});
 		expect(state.entries.skill.unbacked_skill).toBeUndefined();
 		expect(state.entries.skill.shell_skill).toBeUndefined();
+	});
+
+	it.each([
+		["callPattern", { callPattern: "await nativeCheck(command)" }, "await nativeCheck(command)"],
+		["call_pattern", { call_pattern: "await nativeCheck(command)" }, "await nativeCheck(command)"],
+		["callable", { callable: "nativeCheck" }, "await nativeCheck(...)"],
+	] as const)("normalizes refinement %s references to the persisted schema", (_name, boundary, callPattern) => {
+		const state = loadHarnessState(makeTempDir());
+
+		const result = applyRefinementProposal(
+			state,
+			proposal("Create normalized skill", [
+				{
+					action: "create",
+					kind: "skill",
+					id: "native_check",
+					title: "Native check",
+					content: "Run the requested check.",
+					reference: { type: "javascript", global: "nativeCheck", ...boundary },
+					arguments: { command: { type: "string", required: true } },
+				},
+			]),
+			{ id: "refine_normalized_reference" },
+		);
+
+		expect(result.appliedEdits[0]).toMatchObject({ applied: true });
+		expect(state.entries.skill.native_check.reference).toEqual({
+			type: "javascript",
+			global: "nativeCheck",
+			callPattern,
+		});
 	});
 
 	it("uses a global harness state directory under the agent dir by default", () => {

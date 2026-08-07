@@ -134,7 +134,7 @@ Bun notebook and native JavaScript call interface that executes those artifacts.
 Continual harness components:
 - prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.
 - memory: durable facts, decisions, failures, preferences, and outcomes.
-- skill: installed JavaScript notebook skill. Skill create/update edits MUST include a \`reference\` object with \`{"type":"javascript"}\`, its prepared global name, and a callable or call pattern; they also MUST include an \`arguments\` object describing accepted inputs, required fields, defaults, and constraints. Use \`{}\` for \`arguments\` only when the callable truly needs no external inputs. Include the native call form \`await <globalName>(...)\`.
+- skill: installed JavaScript notebook skill. Skill create/update edits MUST include a \`reference\` object with \`{"type":"javascript"}\`, its prepared global name, and a \`callPattern\`; they also MUST include an \`arguments\` object describing accepted inputs, required fields, defaults, and constraints. Use \`{}\` for \`arguments\` only when the callable truly needs no external inputs. Include the native call form \`await <globalName>(...)\`.
 - subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the native call form: compose a concise task prompt and spawn with \`const handle = await rlm("sub-task")\`; admission returns immediately with \`rlmChildId\`, \`name\`, \`sessionDir\`, and \`model\`, never the child's answer. Results arrive only through explicit \`agentMessage\` replies or files; children reply with \`await agentMessage.send(message, { receiverRole: "parent" })\`. Use \`await rlm.listSubagents()\` to recover direct child handles and \`await agentMessage.send(message, { receiverRole: "child", receiverName: handle.name })\` for follow-ups. Do not invent wrappers like \`runSubagent(...)\`.
 
 Scope and persistence policy:
@@ -164,7 +164,7 @@ JSON only with this exact shape:
       "title": "required for create/update except delete",
       "content": "required for create/update except delete",
       "path": "optional grouping path",
-      "reference": {"type": "javascript", "global": "skillName", "callable": "skillName", "call_pattern": "await skillName(...)"},
+      "reference": {"type": "javascript", "global": "skillName", "callPattern": "await skillName(...)"},
       "arguments": {"name": {"type": "string", "required": true, "description": "accepted input"}},
       "metadata": {},
       "reason": "why this edit is useful"
@@ -242,6 +242,29 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value as Record<string, unknown>;
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function callPatternFromCallable(callable: string): string {
+	if (callable.startsWith("await ")) return callable;
+	return callable.includes("(") ? `await ${callable}` : `await ${callable}(...)`;
+}
+
+export function normalizeJavaScriptSkillReference(reference: Record<string, unknown>): Record<string, unknown> {
+	const callable = nonEmptyString(reference.callable);
+	const callPattern =
+		nonEmptyString(reference.callPattern) ??
+		nonEmptyString(reference.call_pattern) ??
+		(callable ? callPatternFromCallable(callable) : undefined);
+	const normalized = { ...reference };
+	delete normalized.call_pattern;
+	delete normalized.callable;
+	if (callPattern) normalized.callPattern = callPattern;
+	else delete normalized.callPattern;
+	return normalized;
+}
+
 function normalizeHarnessScope(value: unknown, fallback: HarnessScope): HarnessScope {
 	return value === "global" || value === "local" ? value : fallback;
 }
@@ -307,10 +330,11 @@ export function loadHarnessState(
 			for (const [id, rawEntry] of Object.entries(records)) {
 				const entry = objectRecord(rawEntry);
 				if (!entry) continue;
+				const reference = objectRecord(entry.reference) ?? {};
 				state.entries[kind][id] = {
 					...(entry as unknown as HarnessEntry),
 					scope: normalizeHarnessScope(entry.scope, scope),
-					reference: objectRecord(entry.reference) ?? {},
+					reference: kind === "skill" ? normalizeJavaScriptSkillReference(reference) : reference,
 					arguments: objectRecord(entry.arguments) ?? {},
 					metadata: objectRecord(entry.metadata) ?? {},
 				};
@@ -689,14 +713,12 @@ function validateEdit(edit: RefinementEdit, computedId?: string): string | undef
 			return `${edit.action} skill reference.type must be javascript`;
 		}
 		const hasGlobal = typeof reference.global === "string" && reference.global.length > 0;
-		const hasCallable =
-			(typeof reference.callable === "string" && reference.callable.length > 0) ||
-			(typeof reference.call_pattern === "string" && reference.call_pattern.length > 0);
+		const hasCallPattern = typeof reference.callPattern === "string" && reference.callPattern.length > 0;
 		if (!hasGlobal) {
 			return `${edit.action} skill requires javascript global`;
 		}
-		if (!hasCallable) {
-			return `${edit.action} skill requires callable or call_pattern`;
+		if (!hasCallPattern) {
+			return `${edit.action} skill requires callPattern`;
 		}
 	}
 	return undefined;
@@ -709,7 +731,11 @@ export function applyRefinementProposal(
 ): RefinementResult {
 	const appliedEdits: AppliedRefinementEdit[] = [];
 	const proposalModifiedKeys = new Set<string>();
-	for (const edit of proposal.edits) {
+	for (const rawEdit of proposal.edits) {
+		const edit: RefinementEdit =
+			rawEdit.kind === "skill" && rawEdit.reference
+				? { ...rawEdit, reference: normalizeJavaScriptSkillReference(rawEdit.reference) }
+				: rawEdit;
 		const computedId = edit.id ?? (edit.action === "create" ? slug(edit.title ?? edit.kind, edit.kind) : undefined);
 		const id = computedId ?? "";
 		const validationError = validateEdit(edit, id);

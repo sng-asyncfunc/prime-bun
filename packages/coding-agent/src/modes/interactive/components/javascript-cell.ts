@@ -262,6 +262,43 @@ function formatDuration(durationMs: number | undefined): string | undefined {
 	return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
+function compactJavaScriptIntent(text: string): string {
+	const compact = text.replace(/^await\s+/, "");
+	const call = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\(/.exec(compact);
+	if (!call) {
+		return compact;
+	}
+
+	let quote: "'" | '"' | "`" | undefined;
+	let escaped = false;
+	let depth = 0;
+	for (let index = call[0].length; index < compact.length; index++) {
+		const character = compact[index];
+		if (quote) {
+			if (escaped) {
+				escaped = false;
+			} else if (character === "\\") {
+				escaped = true;
+			} else if (character === quote) {
+				quote = undefined;
+			}
+			continue;
+		}
+
+		if (character === "'" || character === '"' || character === "`") {
+			quote = character;
+		} else if (character === "(" || character === "[" || character === "{") {
+			depth += 1;
+		} else if (character === ")" || character === "]" || character === "}") {
+			depth = Math.max(0, depth - 1);
+		} else if (character === "," && depth === 0) {
+			return `${compact.slice(0, index).trimEnd()}, …)`;
+		}
+	}
+
+	return compact;
+}
+
 // Relative to the session cwd when nested under it, else the absolute path.
 function displayEditPath(path: string, cwd: string | undefined): string {
 	if (cwd && isAbsolute(path)) {
@@ -354,11 +391,10 @@ export class JavaScriptCellComponent implements Component {
 			return cached;
 		}
 
-		// The top line is identical whether collapsed or expanded — same marker,
-		// counts, duration, and expand hint — so toggling never shifts the layout
-		// or indentation; expanding only attaches code and output below it.
+		// The summary is identical whether collapsed or expanded, so toggling never
+		// shifts its layout; expanding only attaches exact code and output below it.
 		// Cached by state version so unrelated repaints don't re-render (flicker).
-		const lines = [truncateToWidth(` ${this.collapsedLine(details)}`, safeWidth, "")];
+		const lines = this.collapsedLines(details, safeWidth);
 
 		const hasCode = this.state.expanded ? this.renderCode(lines, safeWidth) : false;
 		if ((details.diffs?.length ?? 0) > 0 && this.state.expanded) {
@@ -376,38 +412,51 @@ export class JavaScriptCellComponent implements Component {
 		return this.renderCache.set(safeWidth, cacheVersion, lines);
 	}
 
-	private collapsedLine(details: JavaScriptDetails): string {
+	private collapsedLines(details: JavaScriptDetails, width: number): string[] {
 		const code = this.state.code.trimEnd();
 		const preview = previewJavaScriptCode(code);
-		const parts = [`${this.marker(details)} ${theme.fg("muted", preview.language)}`];
-
-		if (preview.text) {
-			parts.push(
-				preview.language === "bash" ? theme.fg("bashMode", preview.text) : this.highlightInputLine(preview.text),
-			);
-		} else if (!this.state.executionStarted) {
-			parts.push(theme.fg("muted", "waiting for code"));
-		}
+		const label = preview.language === "javascript" ? "js" : preview.language;
+		const heading = `${this.marker(details)} ${theme.fg("muted", label)}`;
+		const intent = preview.text
+			? preview.language === "bash"
+				? theme.fg("bashMode", preview.text)
+				: this.highlightInputLine(compactJavaScriptIntent(preview.text))
+			: !this.state.executionStarted
+				? theme.fg("muted", "waiting for code")
+				: undefined;
+		const metadata: string[] = [];
 
 		const counts = this.lineCounts(details);
 		if (counts) {
-			parts.push(theme.fg("muted", counts));
+			metadata.push(theme.fg("muted", counts));
 		}
 
 		const duration = formatDuration(details.durationMs);
 		if (duration) {
-			parts.push(theme.fg("muted", duration));
+			metadata.push(theme.fg("muted", duration));
 		}
 
 		const errorName = !this.state.isPartial ? (details.error?.ename ?? details.errorEname) : undefined;
 		if (errorName) {
-			parts.push(theme.fg("error", errorName));
+			metadata.push(theme.fg("error", errorName));
 		}
 
 		if (this.state.showExpandHint !== false) {
-			parts.push(keyHint("app.tools.expand", this.state.expanded ? "to collapse" : "to expand"));
+			metadata.push(keyHint("app.tools.expand", this.state.expanded ? "to collapse" : "to expand"));
 		}
-		return parts.join(theme.fg("dim", " · "));
+
+		const separator = theme.fg("dim", " · ");
+		const inline = [heading, intent, ...metadata]
+			.filter((part): part is string => part !== undefined)
+			.join(separator);
+		if (preview.language !== "javascript" || !preview.text || visibleWidth(` ${inline}`) <= width) {
+			return [truncateToWidth(` ${inline}`, width, "")];
+		}
+
+		const status = [heading, ...metadata].join(separator);
+		const lines = [truncateToWidth(` ${status}`, width, "")];
+		this.addWrappedLimited(lines, OUTPUT_INDENT, intent ?? "", width, 2);
+		return lines;
 	}
 
 	/** Status marker — color carries running/done/error; ✓/✗ once finished. */
@@ -689,6 +738,20 @@ export class JavaScriptCellComponent implements Component {
 		for (const [index, line] of (wrapped.length > 0 ? wrapped : [""]).entries()) {
 			const linePrefix = index === 0 ? prefix : " ".repeat(visibleWidth(prefix));
 			// Truncate the composed line so a narrow pane can't exceed width (fatal in the renderer).
+			lines.push(truncateToWidth(` ${linePrefix}${closeOpenSgr(line)}`, width, ""));
+		}
+	}
+
+	private addWrappedLimited(lines: string[], prefix: string, text: string, width: number, maxLines: number): void {
+		const available = Math.max(1, width - 1 - visibleWidth(prefix));
+		const wrapped = wrapTextWithAnsi(text, available);
+		const visibleLines = (wrapped.length > 0 ? wrapped : [""]).slice(0, maxLines);
+		for (const [index, wrappedLine] of visibleLines.entries()) {
+			const linePrefix = index === 0 ? prefix : " ".repeat(visibleWidth(prefix));
+			const line =
+				index === maxLines - 1 && wrapped.length > maxLines
+					? truncateToWidth(`${wrappedLine}…`, available, "…")
+					: wrappedLine;
 			lines.push(truncateToWidth(` ${linePrefix}${closeOpenSgr(line)}`, width, ""));
 		}
 	}

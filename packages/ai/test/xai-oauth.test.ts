@@ -74,7 +74,7 @@ describe("xAI OAuth", () => {
 		vi.setSystemTime(startTime);
 		const replies = [
 			jsonResponse({ error: "authorization_pending" }, 400),
-			jsonResponse({ error: "slow_down", interval: 10 }, 400),
+			jsonResponse({ error: "slow_down", interval: 1 }, 400),
 			jsonResponse(tokenResponse()),
 		];
 		const pollTimes: number[] = [];
@@ -116,6 +116,11 @@ describe("xAI OAuth", () => {
 		await vi.advanceTimersByTimeAsync(5_000);
 		expect(pollTimes).toEqual([startTime.getTime() + 5_000, startTime.getTime() + 10_000]);
 		await vi.advanceTimersByTimeAsync(10_000);
+		expect(pollTimes).toEqual([
+			startTime.getTime() + 5_000,
+			startTime.getTime() + 10_000,
+			startTime.getTime() + 20_000,
+		]);
 
 		await expect(loginPromise).resolves.toEqual({
 			access: "access-token",
@@ -208,6 +213,37 @@ describe("xAI OAuth", () => {
 			vi.fn(async () => new Response("not-json", { status: 502 })),
 		);
 		await expect(login()).rejects.toThrow("xAI OAuth returned invalid JSON (HTTP 502)");
+	});
+
+	it("reports cancellation while decoding a response", async () => {
+		const controller = new AbortController();
+		let markJsonStarted: (() => void) | undefined;
+		const jsonStarted = new Promise<void>((resolve) => {
+			markJsonStarted = resolve;
+		});
+		const response = new Response(null, { status: 200 });
+		vi.spyOn(response, "json").mockImplementation(() => {
+			markJsonStarted?.();
+			return new Promise<never>((_resolve, reject) => {
+				controller.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+					once: true,
+				});
+			});
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => response),
+		);
+
+		const loginPromise = provider().login({
+			onAuth: () => {},
+			onPrompt: async () => "",
+			signal: controller.signal,
+		});
+		const assertion = expect(loginPromise).rejects.toThrow("Login cancelled");
+		await jsonStarted;
+		controller.abort();
+		await assertion;
 	});
 
 	it.each(["access_denied", "authorization_denied"])("surfaces device denial: %s", async (error) => {
@@ -332,13 +368,17 @@ describe("xAI OAuth", () => {
 		expect(credentials.expires).toBe(Date.now() + 21_600_000 - 300_000);
 	});
 
-	it("rejects malformed token responses", async () => {
+	it.each([
+		["access_token", { access_token: undefined }],
+		["expires_in", { expires_in: 0 }],
+		["refresh_token", { refresh_token: "" }],
+	])("rejects a malformed token response field: %s", async (field, overrides) => {
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => jsonResponse(tokenResponse({ access_token: undefined }))),
+			vi.fn(async () => jsonResponse(tokenResponse(overrides))),
 		);
 		await expect(provider().refreshToken({ access: "old", refresh: "keep", expires: 0 })).rejects.toThrow(
-			"Invalid xAI OAuth response field: access_token",
+			`Invalid xAI OAuth response field: ${field}`,
 		);
 	});
 

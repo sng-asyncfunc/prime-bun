@@ -88,6 +88,9 @@ async function postForm(url: string, fields: Record<string, string>, signal?: Ab
 	try {
 		value = await response.json();
 	} catch {
+		if (signal?.aborted) {
+			throw new Error("Login cancelled");
+		}
 		throw new Error(`xAI OAuth returned invalid JSON (HTTP ${response.status})`);
 	}
 
@@ -134,17 +137,12 @@ function parseDeviceCode(body: JsonObject): XaiDeviceCode {
 function credentialsFromTokenResponse(body: JsonObject, previousRefreshToken?: string): OAuthCredentials {
 	const access = requiredString(body, "access_token");
 	const refresh =
-		typeof body.refresh_token === "string" && body.refresh_token.length > 0
-			? body.refresh_token
-			: previousRefreshToken;
-	if (!refresh) {
-		throw new Error("Invalid xAI OAuth response field: refresh_token");
-	}
+		body.refresh_token === undefined && previousRefreshToken
+			? previousRefreshToken
+			: requiredString(body, "refresh_token");
 
 	const expiresIn =
-		typeof body.expires_in === "number" && Number.isFinite(body.expires_in) && body.expires_in > 0
-			? body.expires_in
-			: DEFAULT_TOKEN_LIFETIME_SECONDS;
+		body.expires_in === undefined ? DEFAULT_TOKEN_LIFETIME_SECONDS : requiredPositiveNumber(body, "expires_in");
 
 	return {
 		access,
@@ -218,10 +216,11 @@ async function pollForTokens(device: XaiDeviceCode, signal?: AbortSignal): Promi
 		}
 		if (error === "slow_down") {
 			const serverInterval = response.body.interval;
-			intervalMs =
+			const serverIntervalMs =
 				typeof serverInterval === "number" && Number.isFinite(serverInterval) && serverInterval > 0
 					? serverInterval * 1_000
-					: intervalMs + DEFAULT_POLL_INTERVAL_MS;
+					: 0;
+			intervalMs = Math.max(intervalMs + DEFAULT_POLL_INTERVAL_MS, serverIntervalMs);
 			continue;
 		}
 		if (error === "access_denied" || error === "authorization_denied") {

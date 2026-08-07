@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
+import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../src/core/provider-display-names.js";
 import { ProviderAuthFlows, type ProviderAuthFlowsHost } from "../src/modes/interactive/auth-flows.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -41,7 +42,10 @@ function createFakeTui(overlays: Component[] = []): TUI {
 	} as unknown as TUI;
 }
 
-function createHost(authStorage: AuthStorage): {
+function createHost(
+	authStorage: AuthStorage,
+	modelProviderIds: string[] = [],
+): {
 	host: ProviderAuthFlowsHost;
 	statusMessages: string[];
 	errorMessages: string[];
@@ -53,8 +57,8 @@ function createHost(authStorage: AuthStorage): {
 	const modelRegistry = {
 		authStorage,
 		refresh: vi.fn(),
-		getAll: () => [],
-		getProviderDisplayName: (providerId: string) => providerId,
+		getAll: () => modelProviderIds.map((provider) => ({ provider })),
+		getProviderDisplayName: (providerId: string) => BUILT_IN_PROVIDER_DISPLAY_NAMES[providerId] ?? providerId,
 		getProviderAuthStatus: (providerId: string) => authStorage.getAuthStatus(providerId),
 	} as unknown as ModelRegistry;
 
@@ -219,5 +223,17 @@ describe("ProviderAuthFlows", () => {
 		expect(output).not.toContain("Anthropic");
 		overlays[0]?.handleInput?.("\x1b");
 		await expect(loginResult).resolves.toEqual({ status: "cancelled" });
+	});
+
+	it("offers both subscription and API-key login for xAI", () => {
+		const authStorage = AuthStorage.create(authJsonPath, { usePrimeCliConfig: false });
+		const { host } = createHost(authStorage, ["xai"]);
+
+		const options = new ProviderAuthFlows(host).getLoginProviderOptions().filter((option) => option.id === "xai");
+
+		expect(options).toEqual([
+			{ id: "xai", name: "xAI (Grok/X subscription)", authType: "oauth" },
+			{ id: "xai", name: "xAI", authType: "api_key" },
+		]);
 	});
 });

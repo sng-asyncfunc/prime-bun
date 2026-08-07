@@ -7,11 +7,13 @@ import type { ExtensionContext, ToolDefinition } from "../extensions/types.js";
 import { withKernelBootPermit } from "../kernel/boot-gate.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
 import {
+	type ExecuteResult,
 	type HostRequestHandlers,
 	type KernelAttachment,
 	type KernelDiffDisplay,
 	type KernelExecutionTimings,
 	KernelManager,
+	type KernelManagerStatus,
 	type KernelSentAgentMessage,
 } from "../kernel/index.js";
 import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/state-snapshot.js";
@@ -82,6 +84,15 @@ function setWorkingMessage(ctx: ExtensionContext | undefined, message?: string):
 	} catch {}
 }
 
+function executionFailure(error: unknown): NonNullable<ExecuteResult["error"]> {
+	const ename = error instanceof Error ? error.name || "Error" : "Error";
+	const evalue = (error instanceof Error ? error.message : String(error)).slice(0, 4_096);
+	const traceback = (error instanceof Error && error.stack ? error.stack : `${ename}: ${evalue}`)
+		.slice(0, 16_384)
+		.split("\n");
+	return { ename, evalue, traceback };
+}
+
 export type JavaScriptToolInput = Static<typeof javascriptSchema>;
 
 export interface JavaScriptToolTimings extends KernelExecutionTimings {
@@ -93,6 +104,7 @@ export interface JavaScriptToolDetails {
 	timings?: JavaScriptToolTimings;
 	status?: "ok" | "error" | "aborted" | "starting";
 	errorEname?: string;
+	kernelStatus?: KernelManagerStatus;
 	stdout?: string;
 	stderr?: string;
 	result?: string;
@@ -307,15 +319,33 @@ export function createJavaScriptToolDefinition(
 				const provisioningStartedAt = performance.now();
 				const manager = await provisioner.ensure(reportStartupProgress, signal);
 				const rawProvisioningMs = Math.max(0, performance.now() - provisioningStartedAt);
-				const result = await manager.execute(params.code, {
-					onLateSentAgentMessage: options?.onLateSentAgentMessage
-						? (message) => options.onLateSentAgentMessage?.(toolCallId, message)
-						: undefined,
-					onStream: (chunk) => {
-						onUpdate?.({ content: [{ type: "text", text: chunk }], details: { status: "ok" } });
-					},
-					signal,
-				});
+				let result: ExecuteResult;
+				try {
+					result = await manager.execute(params.code, {
+						onLateSentAgentMessage: options?.onLateSentAgentMessage
+							? (message) => options.onLateSentAgentMessage?.(toolCallId, message)
+							: undefined,
+						onStream: (chunk) => {
+							onUpdate?.({ content: [{ type: "text", text: chunk }], details: { status: "ok" } });
+						},
+						signal,
+					});
+				} catch (error) {
+					const failure = executionFailure(error);
+					const status = signal?.aborted || failure.ename === "AbortError" ? "aborted" : "error";
+					const durationMs = Math.round(Math.max(0, performance.now() - toolStartedAt));
+					return {
+						content: [{ type: "text", text: failure.traceback.join("\n") }],
+						details: {
+							durationMs,
+							error: failure,
+							errorEname: failure.ename,
+							kernelStatus: manager.status,
+							status,
+						},
+						isError: true,
+					};
+				}
 				let text = result.stdout;
 				if (result.stderr) text += `${text ? "\n" : ""}${result.stderr}`;
 				if (result.result) text += `${text ? "\n" : ""}${result.result}`;
@@ -352,6 +382,7 @@ export function createJavaScriptToolDefinition(
 						durationMs,
 						error: result.error,
 						errorEname: result.error?.ename,
+						kernelStatus: manager.status,
 						result: result.result,
 						sentAgentMessages: result.sentAgentMessages,
 						status: result.status,

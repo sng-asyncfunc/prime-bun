@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -13,6 +13,7 @@ import {
 	type HostToBunWorkerMessage,
 } from "../src/core/kernel/bun-protocol.js";
 import { resolveBunRuntime } from "../src/core/kernel/bun-runtime.js";
+import { decodeSnapshotPayload } from "../src/core/kernel/state-snapshot.js";
 
 type MessageType = BunWorkerToHostMessage["type"];
 type MessageOfType<T extends MessageType> = Extract<BunWorkerToHostMessage, { type: T }>;
@@ -157,7 +158,8 @@ describe("Bun worker", () => {
 			id: "initialize",
 			kernelDirectory: process.cwd(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
-			shellPath: "/bin/sh",
+			shell: { args: ["-c"], executable: "/bin/sh" },
+			skillFactoryTimeoutMs: 1_000,
 			skills: [],
 			type: "initialize",
 		});
@@ -223,6 +225,57 @@ describe("Bun worker", () => {
 		expect(result).toMatchObject({ status: "ok", value: "42" });
 	});
 
+	it("bounds inspected cell results before writing the protocol frame", async () => {
+		client.send({
+			cellId: "bounded-result-cell",
+			code: '"x".repeat(1_000_000);',
+			id: "bounded-result-execute",
+			maxResultChars: 64,
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const result = await client.waitForType("result", (message) => message.replyTo === "bounded-result-execute");
+		requireSuccess(result);
+		expect(result.value?.length).toBeLessThanOrEqual(128);
+		expect(result.value).toContain("result truncated at 64 chars");
+	});
+
+	it("bounds nested strings and collections before inspecting cell results", async () => {
+		for (const [id, code] of [
+			["nested-string", '({ nested: { payload: "x".repeat(1_000_000) } });'],
+			[
+				"nested-collections",
+				'({ array: Array.from({ length: 100_000 }, (_, index) => index), map: new Map(Array.from({ length: 100_000 }, (_, index) => [index, "value-" + index])), object: Object.fromEntries(Array.from({ length: 100_000 }, (_, index) => ["key-" + index, index])) });',
+			],
+		] as const) {
+			client.send({
+				cellId: `${id}-cell`,
+				code,
+				id: `${id}-execute`,
+				maxResultChars: 512,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+
+			const result = await client.waitForType("result", (message) => message.replyTo === `${id}-execute`);
+			requireSuccess(result);
+			expect(result.value?.length).toBeLessThanOrEqual(576);
+			expect(result.value).toMatch(/truncated/i);
+		}
+
+		client.send({
+			cellId: "post-bounded-collection-cell",
+			code: "21 * 2;",
+			id: "post-bounded-collection-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		await expect(
+			client.waitForType("result", (message) => message.replyTo === "post-bounded-collection-execute"),
+		).resolves.toMatchObject({ status: "ok", value: "42" });
+	});
+
 	it("exposes the JavaScript RLM and package installation APIs", async () => {
 		client.send({
 			cellId: "runtime-api-cell",
@@ -269,7 +322,8 @@ describe("Bun worker", () => {
 			id: "collision-initialize",
 			kernelDirectory: process.cwd(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
-			shellPath: "/bin/sh",
+			shell: { args: ["-c"], executable: "/bin/sh" },
+			skillFactoryTimeoutMs: 1_000,
 			skills: [
 				{ entryPath, globalName: "duplicateSkill", name: "first-skill" },
 				{ entryPath, globalName: "duplicateSkill", name: "second-skill" },
@@ -290,6 +344,76 @@ describe("Bun worker", () => {
 		});
 		const result = await client.waitForType("result", (message) => message.replyTo === "collision-execute");
 		expect(result).toMatchObject({ status: "ok", value: '"still-available"' });
+	});
+
+	it("isolates explicitly unavailable skills without loading their source", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-unavailable-skill-"));
+		const unavailableEntryPath = join(directory, "unavailable.ts");
+		const loadedMarkerPath = join(directory, "loaded.txt");
+		const healthyEntryPath = fileURLToPath(
+			new URL("./fixtures/skills/javascript-skill/src/index.ts", import.meta.url),
+		);
+		try {
+			await writeFile(
+				unavailableEntryPath,
+				`void Bun.write(${JSON.stringify(loadedMarkerPath)}, "loaded"); export default () => "must-not-load";\n`,
+			);
+			const unavailableReason = `dependency install failed: ${"x".repeat(20_000)}`;
+			const runtime = await resolveBunRuntime();
+			client.send({
+				bunPath: runtime.path,
+				commandPrefix: "",
+				cwd: process.cwd(),
+				id: "unavailable-skill-initialize",
+				kernelDirectory: process.cwd(),
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				shell: { args: ["-c"], executable: "/bin/sh" },
+				skillFactoryTimeoutMs: 1_000,
+				skills: [
+					{
+						entryPath: unavailableEntryPath,
+						globalName: "unavailableSkill",
+						name: "unavailable-skill",
+						unavailableReason,
+					},
+					{ entryPath: healthyEntryPath, globalName: "healthySibling", name: "healthy-sibling" },
+				],
+				type: "initialize",
+			});
+
+			await client.waitForType("ready", (message) => message.replyTo === "unavailable-skill-initialize");
+			const diagnostic = await client.waitForType("diagnostic", (message) =>
+				message.error.message.includes("dependency install failed"),
+			);
+			expect(diagnostic.error.message.length).toBeLessThanOrEqual(1_024);
+			client.send({
+				cellId: "unavailable-skill-cell",
+				code: "await unavailableSkill();",
+				id: "unavailable-skill-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			const unavailable = await client.waitForType(
+				"result",
+				(message) => message.replyTo === "unavailable-skill-execute",
+			);
+			expect(unavailable).toMatchObject({
+				error: { message: expect.stringMatching(/dependency install failed/i) },
+				status: "error",
+			});
+			client.send({
+				cellId: "healthy-sibling-cell",
+				code: 'await healthySibling("available");',
+				id: "healthy-sibling-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			const healthy = await client.waitForType("result", (message) => message.replyTo === "healthy-sibling-execute");
+			expect(healthy).toMatchObject({ status: "ok", value: '"available"' });
+			await expect(readFile(loadedMarkerPath, "utf8")).rejects.toThrow();
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
 	});
 
 	it("tags console and direct stdout/stderr with their originating cell", async () => {
@@ -450,7 +574,8 @@ console.log("after-wait");
 			id: "shell-initialize",
 			kernelDirectory: process.cwd(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
-			shellPath: "/bin/sh",
+			shell: { args: ["-c"], executable: "/bin/sh" },
+			skillFactoryTimeoutMs: 1_000,
 			skills: [],
 			type: "initialize",
 		});
@@ -637,6 +762,100 @@ plain.count;
 			expect(result.value).toContain("custom: 4");
 			expect(result.value).toContain("explicitValue: 40");
 			expect(result.value).toContain('basename: "b"');
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
+	it("reserves the snapshot cap for cwd and environment recovery before user bindings", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-runtime-cap-"));
+		const probePath = join(directory, "probe.bin");
+		const probeManifestPath = join(directory, "probe.json");
+		const boundaryPath = join(directory, "boundary.bin");
+		const boundaryManifestPath = join(directory, "boundary.json");
+		try {
+			const canonicalDirectory = await realpath(directory);
+			client.send({
+				cellId: "runtime-cap-setup-cell",
+				code: `process.chdir(${JSON.stringify(directory)}); process.env.PRIME_RUNTIME_CAP = "retained";`,
+				id: "runtime-cap-setup-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "runtime-cap-setup-execute");
+			client.send({
+				id: "runtime-cap-probe",
+				includeRuntimeState: true,
+				manifestPath: probeManifestPath,
+				maxBytes: 1024 * 1024,
+				path: probePath,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "snapshot",
+			});
+			await client.waitForType("snapshot_result", (message) => message.replyTo === "runtime-cap-probe");
+			const runtimeEntry = decodeSnapshotPayload(await readFile(probePath)).find(
+				(entry) => entry.kind === "runtime",
+			);
+			expect(runtimeEntry).toBeDefined();
+			if (!runtimeEntry) return;
+
+			client.send({
+				cellId: "runtime-cap-binding-cell",
+				code: `const boundaryBinding = "x".repeat(${Math.max(1, Math.floor(runtimeEntry.data.byteLength / 2))});`,
+				id: "runtime-cap-binding-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "runtime-cap-binding-execute");
+			client.send({
+				id: "runtime-cap-boundary",
+				includeRuntimeState: true,
+				manifestPath: boundaryManifestPath,
+				maxBytes: runtimeEntry.data.byteLength,
+				path: boundaryPath,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "snapshot",
+			});
+			const boundary = await client.waitForType(
+				"snapshot_result",
+				(message) => message.replyTo === "runtime-cap-boundary",
+			);
+			expect(boundary.error).toBeUndefined();
+			expect(boundary.saved).not.toContain("boundaryBinding");
+			expect(boundary.skipped).toEqual(
+				expect.arrayContaining([expect.objectContaining({ name: "boundaryBinding" })]),
+			);
+			expect(boundary.skipped.map(({ name }) => name)).not.toContain("\0prime:runtime");
+
+			client.send({
+				cellId: "runtime-cap-mutate-cell",
+				code: `process.chdir(${JSON.stringify(process.cwd())}); delete process.env.PRIME_RUNTIME_CAP;`,
+				id: "runtime-cap-mutate-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "runtime-cap-mutate-execute");
+			client.send({
+				id: "runtime-cap-restore",
+				path: boundaryPath,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "restore",
+			});
+			await client.waitForType("restore_result", (message) => message.replyTo === "runtime-cap-restore");
+			client.send({
+				cellId: "runtime-cap-check-cell",
+				code: `({ cwd: process.cwd(), retained: process.env.PRIME_RUNTIME_CAP });`,
+				id: "runtime-cap-check-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			const restored = await client.waitForType(
+				"result",
+				(message) => message.replyTo === "runtime-cap-check-execute",
+			);
+			requireSuccess(restored);
+			expect(restored.value).toContain(`cwd: ${JSON.stringify(canonicalDirectory)}`);
+			expect(restored.value).toContain('retained: "retained"');
 		} finally {
 			await rm(directory, { force: true, recursive: true });
 		}

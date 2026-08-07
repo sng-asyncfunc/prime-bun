@@ -1,4 +1,4 @@
-export const BUN_WORKER_PROTOCOL_VERSION = 2;
+export const BUN_WORKER_PROTOCOL_VERSION = 3;
 
 interface BunWorkerProtocolMessage {
 	id: string;
@@ -11,12 +11,17 @@ export interface InitializeBunWorkerMessage extends BunWorkerProtocolMessage {
 	bunPath: string;
 	cwd: string;
 	kernelDirectory: string;
-	shellPath: string;
 	commandPrefix: string;
+	shell: {
+		executable: string;
+		args: string[];
+	};
+	skillFactoryTimeoutMs: number;
 	skills: Array<{
 		name: string;
 		globalName: string;
 		entryPath: string;
+		unavailableReason?: string;
 	}>;
 }
 
@@ -24,6 +29,7 @@ export interface ExecuteBunCellMessage extends BunWorkerProtocolMessage {
 	type: "execute";
 	cellId: string;
 	code: string;
+	maxResultChars?: number;
 }
 
 export interface ListBunWorkerNamesMessage extends BunWorkerProtocolMessage {
@@ -41,6 +47,7 @@ export interface SnapshotBunWorkerMessage extends BunWorkerProtocolMessage {
 export interface RestoreBunWorkerMessage extends BunWorkerProtocolMessage {
 	type: "restore";
 	path: string;
+	required?: boolean;
 }
 
 export interface BunWorkerHostResponseMessage extends BunWorkerProtocolMessage {
@@ -123,6 +130,7 @@ export interface BunWorkerRestoreResultMessage extends BunWorkerResponseMessage 
 	restored: string[];
 	failed: { name: string; reason: string }[];
 	path: string;
+	runtimeRestored: boolean;
 	error?: string;
 }
 

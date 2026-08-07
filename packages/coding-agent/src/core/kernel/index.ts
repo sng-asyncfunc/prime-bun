@@ -2,12 +2,17 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
+import { getShellConfig, killProcessTree } from "../../utils/shell.js";
 import type { JavaScriptSkillRuntimeInfo } from "../skills.js";
-import { ensureKernelBun, type KernelBootstrapProgressHandler } from "./bootstrap.js";
+import {
+	ensureKernelBun,
+	type KernelBootstrapProgressHandler,
+	type PreparedJavaScriptSkillRuntimeInfo,
+} from "./bootstrap.js";
 import { createHarnessHostHandlers } from "./bun-harness-host.js";
 import {
 	BUN_WORKER_PROTOCOL_VERSION,
@@ -30,7 +35,12 @@ const DEFAULT_MAX_OUTPUT_CHARS = 65_536;
 const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 1_500;
 const HOST_REQUEST_DISPOSE_TIMEOUT_MS = 5_000;
 const SNAPSHOT_DISPOSE_TIMEOUT_MS = 5_000;
+const DEFAULT_WORKER_READY_TIMEOUT_MS = 15_000;
+const DEFAULT_SKILL_FACTORY_TIMEOUT_MS = 10_000;
+const DEFAULT_CHECKPOINT_TIMEOUT_MS = 15_000;
 const MAX_KERNEL_DIAGNOSTIC_CHARS = 16_384;
+const MAX_KERNEL_STATUS_ENTRIES = 128;
+const MAX_KERNEL_STATUS_DETAIL_CHARS = 512;
 const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS = 256;
 const MAX_ATTACHMENT_DATA_CHARS = 10_000_000;
 
@@ -67,11 +77,15 @@ export interface KernelManagerOptions {
 	sessionId?: string;
 	hostHandlers?: HostRequestHandlers;
 	snapshot?: KernelSnapshotConfig;
+	recoverySnapshot?: KernelSnapshotConfig;
 	workerPath?: string;
 	kernelDirectory?: string;
 	commandPrefix?: string;
 	shellPath?: string;
 	javascriptSkills?: readonly JavaScriptSkillRuntimeInfo[];
+	readyTimeoutMs?: number;
+	skillFactoryTimeoutMs?: number;
+	checkpointTimeoutMs?: number;
 }
 
 export interface KernelStartOptions {
@@ -120,6 +134,19 @@ export interface KernelExecutionTimings {
 	totalMs: number;
 }
 
+export type KernelManagerState = "idle" | "starting" | "running" | "recovering" | "shutdown";
+
+export interface KernelManagerStatus {
+	state: KernelManagerState;
+	diagnostics: string;
+	recovery: {
+		available: boolean;
+		checkpoint: "clean" | "dirty" | "ready" | "failed";
+		lastCheckpoint?: SnapshotResult;
+		lastRestore?: RestoreResult;
+	};
+}
+
 export interface ExecuteResult {
 	stdout: string;
 	stderr: string;
@@ -165,6 +192,14 @@ interface Deferred<T> {
 	resolve: (value: T) => void;
 }
 
+interface KernelRestoreOutcome extends RestoreResult {
+	runtimeRestored: boolean;
+}
+
+function publicRestoreResult(result: KernelRestoreOutcome): RestoreResult {
+	return { failed: result.failed, path: result.path, restored: result.restored };
+}
+
 function createDeferred<T>(): Deferred<T> {
 	let resolve!: (value: T) => void;
 	const promise = new Promise<T>((promiseResolve) => {
@@ -190,8 +225,47 @@ function roundMilliseconds(value: number): number {
 	return Math.round(Number.isFinite(value) ? Math.max(0, value) : 0);
 }
 
+function positiveTimeout(value: number | undefined, fallback: number): number {
+	return value !== undefined && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function skillUnavailableReason(
+	skill: JavaScriptSkillRuntimeInfo | PreparedJavaScriptSkillRuntimeInfo,
+): string | undefined {
+	return "unavailableReason" in skill ? skill.unavailableReason : undefined;
+}
+
 function createKernelStartupAbortError(): Error {
 	return new Error("Kernel startup aborted");
+}
+
+function createRecoveryCheckpointAbortError(): Error {
+	const error = new Error("Bun recovery checkpoint aborted");
+	error.name = "AbortError";
+	return error;
+}
+
+function raceRecoveryCheckpointWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (!signal) return promise;
+	if (signal.aborted) return Promise.reject(createRecoveryCheckpointAbortError());
+	return new Promise<T>((resolve, reject) => {
+		const abort = () => {
+			cleanup();
+			reject(createRecoveryCheckpointAbortError());
+		};
+		const cleanup = () => signal.removeEventListener("abort", abort);
+		signal.addEventListener("abort", abort, { once: true });
+		promise.then(
+			(value) => {
+				cleanup();
+				resolve(value);
+			},
+			(error: unknown) => {
+				cleanup();
+				reject(error);
+			},
+		);
+	});
 }
 
 function raceStartupWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
@@ -298,9 +372,10 @@ export class KernelManager {
 	private worker?: ChildProcess;
 	private protocolInput?: Writable;
 	private protocolBuffer = "";
-	private state: "idle" | "starting" | "running" | "recovering" | "shutdown" = "idle";
+	private state: KernelManagerState = "idle";
 	private startPromise?: Promise<void>;
 	private recoveryPromise?: Promise<void>;
+	private recoveryFailure?: Error;
 	private executionQueue: Promise<void> = Promise.resolve();
 	private activeExecution?: ActiveExecution;
 	private readonly pendingProtocolRequests = new Map<string, PendingProtocolRequest>();
@@ -312,6 +387,9 @@ export class KernelManager {
 	private recoverySnapshotDirty = false;
 	private persistentSnapshotDirty = false;
 	private recoverySnapshotAvailable = false;
+	private recoveryCheckpointStatus: KernelManagerStatus["recovery"]["checkpoint"] = "clean";
+	private lastRecoveryCheckpoint?: SnapshotResult;
+	private lastRecoveryRestore?: RestoreResult;
 	private recoverySnapshotConfig?: KernelSnapshotConfig;
 	private recoveryTempDir?: string;
 
@@ -334,9 +412,59 @@ export class KernelManager {
 		return this.state === "running";
 	}
 
+	get status(): KernelManagerStatus {
+		return {
+			diagnostics: this.kernelDiagnostics,
+			recovery: {
+				available: this.recoverySnapshotAvailable,
+				checkpoint: this.recoveryCheckpointStatus,
+				...(this.lastRecoveryCheckpoint
+					? {
+							lastCheckpoint: {
+								...this.lastRecoveryCheckpoint,
+								path: this.lastRecoveryCheckpoint.path.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS),
+								saved: this.lastRecoveryCheckpoint.saved
+									.slice(0, MAX_KERNEL_STATUS_ENTRIES)
+									.map((name) => name.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS)),
+								skipped: this.lastRecoveryCheckpoint.skipped
+									.slice(0, MAX_KERNEL_STATUS_ENTRIES)
+									.map(({ name, reason }) => ({
+										name: name.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS),
+										reason: reason.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS),
+									})),
+							},
+						}
+					: {}),
+				...(this.lastRecoveryRestore
+					? {
+							lastRestore: {
+								...this.lastRecoveryRestore,
+								failed: this.lastRecoveryRestore.failed
+									.slice(0, MAX_KERNEL_STATUS_ENTRIES)
+									.map(({ name, reason }) => ({
+										name: name.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS),
+										reason: reason.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS),
+									})),
+								path: this.lastRecoveryRestore.path.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS),
+								restored: this.lastRecoveryRestore.restored
+									.slice(0, MAX_KERNEL_STATUS_ENTRIES)
+									.map((name) => name.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS)),
+							},
+						}
+					: {}),
+			},
+			state: this.state,
+		};
+	}
+
 	async start(options: KernelStartOptions = {}): Promise<void> {
 		if (options.signal?.aborted) throw createKernelStartupAbortError();
 		if (this.recoveryPromise) await raceStartupWithAbort(this.recoveryPromise, options.signal);
+		if (this.recoveryFailure) {
+			throw new Error(`Bun kernel recovery is blocked: ${this.recoveryFailure.message}`, {
+				cause: this.recoveryFailure,
+			});
+		}
 		if (!this.startPromise) {
 			this.startPromise = this.startWorker(options.onBootstrapProgress).catch((error) => {
 				this.startPromise = undefined;
@@ -352,67 +480,84 @@ export class KernelManager {
 		this.state = "starting";
 		installSignalHandlersOnce();
 		liveKernels.add(this);
-		onProgress?.("Resolving Bun runtime");
-		const javascriptSkills = this.options.javascriptSkills ?? [];
-		const bootstrappedRuntime = this.options.workerPath
-			? undefined
-			: await ensureKernelBun({ javascriptSkills, onProgress });
-		const runtime =
-			bootstrappedRuntime ??
-			(await resolveBunRuntime({
-				env: this.options.bun ? { ...process.env, PRIME_AGENT_KERNEL_BUN: this.options.bun } : process.env,
-			}));
-		if ((this.state as string) === "shutdown") throw new Error("Kernel was disposed during startup");
-		onProgress?.("Starting Bun worker");
-		const workerPath = this.options.workerPath ?? bootstrappedRuntime?.workerPath;
-		const kernelDirectory = this.options.kernelDirectory ?? bootstrappedRuntime?.kernelDirectory ?? process.cwd();
-		for (const diagnostic of bootstrappedRuntime?.skillDiagnostics ?? []) {
-			this.appendKernelDiagnostic(diagnostic.message);
-		}
-		const workerEnvironment: NodeJS.ProcessEnv = { ...process.env, ...this.options.env };
-		const skillNodePaths = bootstrappedRuntime?.skillNodePaths ?? [];
-		if (skillNodePaths.length > 0) {
-			workerEnvironment.NODE_PATH = [...skillNodePaths, workerEnvironment.NODE_PATH].filter(Boolean).join(delimiter);
-		}
-		const worker = spawn(runtime.path, [resolveWorkerPath(workerPath)], {
-			cwd: this.options.cwd,
-			detached: process.platform !== "win32",
-			env: workerEnvironment,
-			stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
-		});
-		const protocolInput = worker.stdio[3] as Writable | null;
-		const protocolOutput = worker.stdio[4] as Readable | null;
-		if (!protocolInput || !protocolOutput) {
-			worker.kill("SIGKILL");
-			this.state = "idle";
-			throw new Error("Bun worker protocol pipes were not created");
-		}
-		this.worker = worker;
-		this.protocolInput = protocolInput;
-		this.attachWorkerStreams(worker, protocolOutput);
+		let spawnedWorker: ChildProcess | undefined;
+		try {
+			onProgress?.("Resolving Bun runtime");
+			const javascriptSkills = this.options.javascriptSkills ?? [];
+			const bootstrappedRuntime = this.options.workerPath
+				? undefined
+				: await ensureKernelBun({ javascriptSkills, onProgress });
+			const runtime =
+				bootstrappedRuntime ??
+				(await resolveBunRuntime({
+					env: this.options.bun ? { ...process.env, PRIME_AGENT_KERNEL_BUN: this.options.bun } : process.env,
+				}));
+			if ((this.state as KernelManagerState) === "shutdown") throw new Error("Kernel was disposed during startup");
+			onProgress?.("Starting Bun worker");
+			const workerPath = this.options.workerPath ?? bootstrappedRuntime?.workerPath;
+			const kernelDirectory = this.options.kernelDirectory ?? bootstrappedRuntime?.kernelDirectory ?? process.cwd();
+			for (const diagnostic of bootstrappedRuntime?.skillDiagnostics ?? []) {
+				this.appendKernelDiagnostic(diagnostic.message);
+			}
+			const workerEnvironment: NodeJS.ProcessEnv = { ...process.env, ...this.options.env };
+			const preparedSkills = bootstrappedRuntime?.preparedSkills ?? javascriptSkills;
+			const shell = getShellConfig(this.options.shellPath);
+			const worker = spawn(runtime.path, [resolveWorkerPath(workerPath)], {
+				cwd: this.options.cwd,
+				detached: process.platform !== "win32",
+				env: workerEnvironment,
+				stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+			});
+			spawnedWorker = worker;
+			const protocolInput = worker.stdio[3] as Writable | null;
+			const protocolOutput = worker.stdio[4] as Readable | null;
+			if (!protocolInput || !protocolOutput) throw new Error("Bun worker protocol pipes were not created");
+			this.worker = worker;
+			this.protocolInput = protocolInput;
+			this.attachWorkerStreams(worker, protocolOutput);
 
-		const ready = await this.sendRequest(
-			{
-				bunPath: runtime.path,
-				commandPrefix: this.options.commandPrefix ?? "",
-				cwd: this.options.cwd ?? process.cwd(),
-				id: randomUUID(),
-				kernelDirectory,
-				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
-				shellPath: this.options.shellPath ?? "/bin/sh",
-				skills: javascriptSkills.map((skill) => ({
-					entryPath: skill.entryPath,
-					globalName: skill.globalName,
-					name: skill.name,
-				})),
-				type: "initialize",
-			},
-			"ready",
-		);
-		if (ready.bunVersion !== runtime.version) {
-			throw new Error(`Bun worker version mismatch: resolved ${runtime.version}, started ${ready.bunVersion}`);
+			const ready = await this.sendRequest(
+				{
+					bunPath: runtime.path,
+					commandPrefix: this.options.commandPrefix ?? "",
+					cwd: this.options.cwd ?? process.cwd(),
+					id: randomUUID(),
+					kernelDirectory,
+					protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+					shell: { args: [...shell.args], executable: shell.shell },
+					skillFactoryTimeoutMs: positiveTimeout(
+						this.options.skillFactoryTimeoutMs,
+						DEFAULT_SKILL_FACTORY_TIMEOUT_MS,
+					),
+					skills: preparedSkills.map((skill) => ({
+						entryPath: skill.entryPath,
+						globalName: skill.globalName,
+						name: skill.name,
+						...(skillUnavailableReason(skill) !== undefined
+							? { unavailableReason: skillUnavailableReason(skill) }
+							: {}),
+					})),
+					type: "initialize",
+				},
+				"ready",
+				positiveTimeout(this.options.readyTimeoutMs, DEFAULT_WORKER_READY_TIMEOUT_MS),
+				"Bun worker readiness",
+			);
+			if (ready.bunVersion !== runtime.version) {
+				throw new Error(`Bun worker version mismatch: resolved ${runtime.version}, started ${ready.bunVersion}`);
+			}
+			this.state = "running";
+		} catch (error) {
+			const failure = error instanceof Error ? error : new Error(String(error));
+			if (spawnedWorker && this.worker === spawnedWorker) {
+				this.stopCurrentWorker("SIGKILL", failure);
+			} else if (spawnedWorker) {
+				this.terminateWorkerProcess(spawnedWorker, "SIGKILL");
+			}
+			if ((this.state as string) !== "shutdown") this.state = "idle";
+			liveKernels.delete(this);
+			throw failure;
 		}
-		this.state = "running";
 	}
 
 	private attachWorkerStreams(worker: ChildProcess, protocolOutput: Readable): void {
@@ -474,7 +619,18 @@ export class KernelManager {
 
 	private handleProtocolMessage(message: BunWorkerToHostMessage): void {
 		if (message.protocolVersion !== BUN_WORKER_PROTOCOL_VERSION) {
-			this.appendKernelDiagnostic(`ignored worker protocol version ${message.protocolVersion}`);
+			const failure = new Error(
+				`Bun worker protocol version ${message.protocolVersion} does not match host version ${BUN_WORKER_PROTOCOL_VERSION}`,
+			);
+			if (message.replyTo) {
+				const pending = this.pendingProtocolRequests.get(message.replyTo);
+				if (pending) {
+					this.pendingProtocolRequests.delete(message.replyTo);
+					pending.reject(failure);
+					return;
+				}
+			}
+			this.appendKernelDiagnostic(failure.message);
 			return;
 		}
 		if (message.type === "host_request") {
@@ -523,14 +679,41 @@ export class KernelManager {
 	private sendRequest<T extends MessageType>(
 		message: HostToBunWorkerMessage,
 		expectedType: T,
+		timeoutMs?: number,
+		timeoutLabel = `Bun worker ${expectedType} response`,
 	): Promise<MessageOfType<T>> {
 		return new Promise<BunWorkerToHostMessage>((resolve, reject) => {
-			this.pendingProtocolRequests.set(message.id, { expectedType, reject, resolve });
+			let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+			const clearTimer = () => {
+				if (!timer) return;
+				globalThis.clearTimeout(timer);
+				timer = undefined;
+			};
+			const pending: PendingProtocolRequest = {
+				expectedType,
+				reject: (error) => {
+					clearTimer();
+					reject(error);
+				},
+				resolve: (response) => {
+					clearTimer();
+					resolve(response);
+				},
+			};
+			this.pendingProtocolRequests.set(message.id, pending);
+			if (timeoutMs !== undefined) {
+				timer = globalThis.setTimeout(() => {
+					if (this.pendingProtocolRequests.get(message.id) !== pending) return;
+					this.pendingProtocolRequests.delete(message.id);
+					pending.reject(new Error(`${timeoutLabel} timed out after ${timeoutMs} ms`));
+				}, timeoutMs);
+				timer.unref?.();
+			}
 			try {
 				this.send(message);
 			} catch (error) {
 				this.pendingProtocolRequests.delete(message.id);
-				reject(error instanceof Error ? error : new Error(String(error)));
+				pending.reject(error instanceof Error ? error : new Error(String(error)));
 			}
 		}).then((message) => message as MessageOfType<T>);
 	}
@@ -547,14 +730,21 @@ export class KernelManager {
 			async () => {
 				if (opts.signal?.aborted) return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
 				let checkpointMs = 0;
+				let result: ExecuteResult | undefined;
 				if (this.recoverySnapshotDirty) {
 					const checkpointStartedAt = performance.now();
-					await this.flushRecoverySnapshot();
+					try {
+						await this.requireRecoveryCheckpoint(opts.signal);
+					} catch (error) {
+						if (!opts.signal?.aborted) throw error;
+						result = { durationMs: 0, status: "aborted", stderr: "", stdout: "" };
+					}
 					checkpointMs = elapsedMilliseconds(checkpointStartedAt);
 				}
-				const result = await this.executeInner(code, opts);
+				result ??= await this.executeInner(code, opts);
 				if (result.status === "ok") {
 					this.recoverySnapshotDirty = true;
+					this.recoveryCheckpointStatus = "dirty";
 					if (this.options.snapshot) this.persistentSnapshotDirty = true;
 					this.scheduleSnapshot();
 				}
@@ -591,7 +781,7 @@ export class KernelManager {
 			cellId,
 			code,
 			diffs: [],
-			maxChars: opts.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS,
+			maxChars: Math.max(0, Math.floor(opts.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS)),
 			opts,
 			requestId,
 			sentAgentMessages: [],
@@ -618,6 +808,7 @@ export class KernelManager {
 				cellId,
 				code,
 				id: requestId,
+				maxResultChars: execution.maxChars,
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				type: "execute",
 			},
@@ -637,6 +828,10 @@ export class KernelManager {
 				throw outcome.error;
 			}
 			await new Promise<void>((resolve) => setImmediate(resolve));
+			if (execution.aborting) {
+				await aborted.promise;
+				return this.executionResult(execution, "aborted");
+			}
 			if (outcome.message.status === "error") {
 				return this.executionResult(
 					execution,
@@ -773,21 +968,32 @@ export class KernelManager {
 
 	private recoverWorker(reason: Error): Promise<void> {
 		if (this.recoveryPromise) return this.recoveryPromise;
+		this.recoveryFailure = undefined;
 		this.state = "recovering";
 		this.stopCurrentWorker("SIGKILL", reason);
 		this.recoveryPromise = (async () => {
 			this.state = "idle";
 			this.startPromise = undefined;
 			await this.startWorker();
-			if (this.recoverySnapshotAvailable) await this.restoreFrom(this.getRecoverySnapshotConfig());
-		})().finally(() => {
-			this.recoveryPromise = undefined;
-		});
+			if (this.recoverySnapshotAvailable) await this.restoreRecoveryCheckpoint();
+		})()
+			.catch((error) => {
+				const failure = error instanceof Error ? error : new Error(String(error));
+				this.recoveryFailure = failure;
+				this.recoveryCheckpointStatus = "failed";
+				this.stopCurrentWorker("SIGKILL", failure);
+				this.state = "idle";
+				throw failure;
+			})
+			.finally(() => {
+				this.recoveryPromise = undefined;
+			});
 		return this.recoveryPromise;
 	}
 
 	private handleWorkerFailure(worker: ChildProcess, reason: Error): void {
 		if (this.worker !== worker || this.state === "shutdown") return;
+		const failedDuringStartup = this.state === "starting";
 		this.worker = undefined;
 		this.protocolInput = undefined;
 		this.protocolBuffer = "";
@@ -795,14 +1001,26 @@ export class KernelManager {
 		this.rejectPendingProtocolRequests(reason);
 		this.appendKernelDiagnostic(reason.message);
 		this.activeExecution = undefined;
+		if (failedDuringStartup) {
+			this.state = "idle";
+			return;
+		}
 		if (!this.recoveryPromise) {
+			this.recoveryFailure = undefined;
 			this.state = "recovering";
 			this.recoveryPromise = (async () => {
 				this.state = "idle";
 				await this.startWorker();
-				if (this.recoverySnapshotAvailable) await this.restoreFrom(this.getRecoverySnapshotConfig());
+				if (this.recoverySnapshotAvailable) await this.restoreRecoveryCheckpoint();
 			})()
-				.catch((error) => this.appendKernelDiagnostic(`worker recovery failed: ${errorMessage(error)}`))
+				.catch((error) => {
+					const failure = error instanceof Error ? error : new Error(String(error));
+					this.recoveryFailure = failure;
+					this.recoveryCheckpointStatus = "failed";
+					this.stopCurrentWorker("SIGKILL", failure);
+					this.state = "idle";
+					this.appendKernelDiagnostic(`worker recovery failed: ${failure.message}`);
+				})
 				.finally(() => {
 					this.recoveryPromise = undefined;
 				});
@@ -816,11 +1034,13 @@ export class KernelManager {
 		this.protocolBuffer = "";
 		this.rejectPendingProtocolRequests(reason);
 		if (!worker) return;
-		if (process.platform !== "win32" && worker.pid !== undefined) {
-			try {
-				process.kill(-worker.pid, signal);
-				return;
-			} catch {}
+		this.terminateWorkerProcess(worker, signal);
+	}
+
+	private terminateWorkerProcess(worker: ChildProcess, signal: NodeJS.Signals): void {
+		if (worker.pid !== undefined) {
+			killProcessTree(worker.pid, signal);
+			return;
 		}
 		try {
 			worker.kill(signal);
@@ -833,6 +1053,7 @@ export class KernelManager {
 	}
 
 	private getRecoverySnapshotConfig(): KernelSnapshotConfig {
+		if (this.options.recoverySnapshot) return this.options.recoverySnapshot;
 		if (!this.recoverySnapshotConfig) {
 			this.recoveryTempDir = mkdtempSync(join(tmpdir(), "prime-agent-bun-recovery-"));
 			this.recoverySnapshotConfig = {
@@ -843,12 +1064,60 @@ export class KernelManager {
 		return this.recoverySnapshotConfig;
 	}
 
-	private async flushRecoverySnapshot(): Promise<SnapshotResult | null> {
-		const result = await this.snapshotTo(this.getRecoverySnapshotConfig(), true);
+	private async flushRecoverySnapshot(signal?: AbortSignal): Promise<SnapshotResult | null> {
+		const result = await this.snapshotTo(this.getRecoverySnapshotConfig(), true, signal);
 		if (result) {
 			this.recoverySnapshotDirty = false;
 			this.recoverySnapshotAvailable = true;
+			this.recoveryCheckpointStatus = "ready";
+			this.lastRecoveryCheckpoint = result;
 		}
+		return result;
+	}
+
+	private async requireRecoveryCheckpoint(signal?: AbortSignal): Promise<SnapshotResult> {
+		try {
+			const result = await this.flushRecoverySnapshot(signal);
+			if (!result) throw new Error("the worker did not produce a recovery snapshot");
+			return result;
+		} catch (error) {
+			const message = errorMessage(error);
+			const failure = new Error(`Bun recovery checkpoint failed; refusing to execute the next cell: ${message}`, {
+				cause: error,
+			});
+			this.recoveryCheckpointStatus = "failed";
+			this.recoveryFailure = failure;
+			this.appendKernelDiagnostic(`recovery checkpoint failed: ${message}`);
+			this.stopCurrentWorker("SIGKILL", failure);
+			if (this.state !== "shutdown") this.state = "idle";
+			throw failure;
+		}
+	}
+
+	private async restoreRecoveryCheckpoint(): Promise<RestoreResult> {
+		const outcome = await this.restoreFrom(this.getRecoverySnapshotConfig(), true);
+		if (!outcome) throw new Error("Bun recovery checkpoint could not be restored");
+		const result = publicRestoreResult(outcome);
+		this.lastRecoveryRestore = result;
+		const restoredNames = new Set(outcome.restored);
+		const missingNames = (this.lastRecoveryCheckpoint?.saved ?? []).filter((name) => !restoredNames.has(name));
+		if (!outcome.runtimeRestored || outcome.failed.length > 0 || missingNames.length > 0) {
+			const summary = [
+				...(!outcome.runtimeRestored ? ["runtime cwd/environment was not restored"] : []),
+				...(outcome.failed.length > 0 ? [`${outcome.failed.length} binding(s) failed`] : []),
+				...(missingNames.length > 0
+					? [
+							`missing saved binding(s): ${missingNames
+								.slice(0, MAX_KERNEL_STATUS_ENTRIES)
+								.map((name) => name.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS))
+								.join(", ")}`,
+						]
+					: []),
+			].join("; ");
+			this.appendKernelDiagnostic(`recovery checkpoint restore incomplete: ${summary}`);
+			throw new Error(`Bun recovery checkpoint restore failed: ${summary}`);
+		}
+		this.recoveryCheckpointStatus = "ready";
 		return result;
 	}
 
@@ -862,9 +1131,10 @@ export class KernelManager {
 	private async snapshotTo(
 		config: KernelSnapshotConfig,
 		includeRuntimeState: boolean,
+		signal?: AbortSignal,
 	): Promise<SnapshotResult | null> {
 		if (this.state !== "running") return null;
-		const result = await this.sendRequest(
+		const request = this.sendRequest(
 			{
 				id: randomUUID(),
 				includeRuntimeState,
@@ -875,21 +1145,39 @@ export class KernelManager {
 				type: "snapshot",
 			},
 			"snapshot_result",
+			includeRuntimeState
+				? positiveTimeout(this.options.checkpointTimeoutMs, DEFAULT_CHECKPOINT_TIMEOUT_MS)
+				: undefined,
+			"Bun recovery checkpoint",
 		);
+		const result = includeRuntimeState ? await raceRecoveryCheckpointWithAbort(request, signal) : await request;
 		if (result.error) {
 			this.appendKernelDiagnostic(`state snapshot failed: ${result.error}`);
 			return null;
 		}
-		return { bytes: result.bytes, path: result.path, saved: result.saved, skipped: result.skipped };
+		const snapshot = { bytes: result.bytes, path: result.path, saved: result.saved, skipped: result.skipped };
+		if (snapshot.skipped.length > 0) {
+			this.appendKernelDiagnostic(
+				`state snapshot skipped ${snapshot.skipped.length} binding(s): ${snapshot.skipped
+					.slice(0, MAX_KERNEL_STATUS_ENTRIES)
+					.map(
+						({ name, reason }) =>
+							`${name.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS)} (${reason.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS)})`,
+					)
+					.join("; ")}`,
+			);
+		}
+		return snapshot;
 	}
 
-	private async restoreFrom(config: KernelSnapshotConfig): Promise<RestoreResult | null> {
+	private async restoreFrom(config: KernelSnapshotConfig, required = false): Promise<KernelRestoreOutcome | null> {
 		if (this.state !== "running") return null;
 		const result = await this.sendRequest(
 			{
 				id: randomUUID(),
 				path: config.path,
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				required,
 				type: "restore",
 			},
 			"restore_result",
@@ -898,7 +1186,24 @@ export class KernelManager {
 			this.appendKernelDiagnostic(`state restore failed: ${result.error}`);
 			return null;
 		}
-		return { failed: result.failed, path: result.path, restored: result.restored };
+		const restore = {
+			failed: result.failed,
+			path: result.path,
+			restored: result.restored,
+			runtimeRestored: result.runtimeRestored,
+		};
+		if (restore.failed.length > 0) {
+			this.appendKernelDiagnostic(
+				`state restore failed for ${restore.failed.length} binding(s): ${restore.failed
+					.slice(0, MAX_KERNEL_STATUS_ENTRIES)
+					.map(
+						({ name, reason }) =>
+							`${name.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS)} (${reason.slice(0, MAX_KERNEL_STATUS_DETAIL_CHARS)})`,
+					)
+					.join("; ")}`,
+			);
+		}
+		return restore;
 	}
 
 	async snapshotState(): Promise<SnapshotResult | null> {
@@ -916,10 +1221,11 @@ export class KernelManager {
 			const result = await this.restoreFrom(this.options.snapshot as KernelSnapshotConfig);
 			if (result) {
 				this.recoverySnapshotDirty = true;
+				this.recoveryCheckpointStatus = "dirty";
 				this.persistentSnapshotDirty = false;
-				await this.flushRecoverySnapshot();
+				await this.requireRecoveryCheckpoint();
 			}
-			return result;
+			return result ? publicRestoreResult(result) : result;
 		});
 	}
 
@@ -966,13 +1272,13 @@ export class KernelManager {
 	}
 
 	private async flushDirtySnapshots(): Promise<void> {
-		if (this.recoverySnapshotDirty) await this.flushRecoverySnapshot();
+		if (this.recoverySnapshotDirty) await this.requireRecoveryCheckpoint();
 		if (this.persistentSnapshotDirty) await this.flushPersistentSnapshot();
 	}
 
 	async restart(): Promise<void> {
 		await this.withExecutionLock(async () => {
-			if (this.recoverySnapshotDirty) await this.flushRecoverySnapshot();
+			if (this.recoverySnapshotDirty) await this.requireRecoveryCheckpoint();
 			await this.recoverWorker(new Error("Bun worker restarted"));
 		});
 	}

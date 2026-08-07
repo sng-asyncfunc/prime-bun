@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { delimiter } from "node:path";
-import { spawn, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
 import { recordOrphanProcessState } from "../core/orphan-process-journal.js";
 
@@ -187,27 +187,30 @@ export function killTrackedDetachedChildren(): void {
 /**
  * Kill a process and all its children (cross-platform)
  */
-export function killProcessTree(pid: number): void {
+export function killProcessTree(pid: number, signal: NodeJS.Signals = "SIGKILL"): void {
 	if (process.platform === "win32") {
-		// Use taskkill on Windows to kill process tree
 		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+			const result = spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
-				detached: true,
+				windowsHide: true,
 			});
+			if (result.status === 0) return;
 		} catch {
-			// Ignore errors if taskkill fails
+			// The process may already be gone or taskkill may be unavailable.
+		}
+		try {
+			process.kill(pid, signal);
+		} catch {
+			// The process may already be fully reaped.
 		}
 	} else {
-		// Use SIGKILL on Unix/Linux/Mac
 		try {
-			process.kill(-pid, "SIGKILL");
+			process.kill(-pid, signal);
 		} catch {
-			// Fallback to killing just the child if process group kill fails
 			try {
-				process.kill(pid, "SIGKILL");
+				process.kill(pid, signal);
 			} catch {
-				// Process already dead
+				// The process may already be fully reaped.
 			}
 		}
 	}

@@ -93,6 +93,11 @@ const pendingHostRequests = new Map<string, PendingHostRequest>();
 const cellStreams = new Map<string, CellStreamState>();
 const RUNTIME_STATE_ENTRY_NAME = "\0prime:runtime";
 const MAX_CELL_STREAM_BYTES = 32 * 1024;
+const MAX_PROTOCOL_RESULT_CHARS = 1_000_000;
+const MAX_RESULT_PROJECTION_DEPTH = 8;
+const MAX_RESULT_PROJECTION_ENTRIES = 256;
+const MAX_RESULT_PROJECTION_KEY_CHARS = 256;
+const MAX_SKILL_UNAVAILABLE_REASON_CHARS = 512;
 const MAX_WRITEV_BUFFERS = 1024;
 const cellContext = new AsyncLocalStorage<ActiveCell>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
@@ -107,7 +112,8 @@ let activeCell: ActiveCell | undefined;
 let lastCell: ActiveCell | undefined;
 let activeExecutionId: string | undefined;
 let commandPrefix = "";
-let shellPath = "/bin/sh";
+let shellExecutable = "sh";
+let shellArgs = ["-c"];
 let bunPath = "bun";
 let kernelDirectory = process.cwd();
 let initialized = false;
@@ -116,6 +122,13 @@ let baselineGlobalNames = new Set<string>();
 let initialEnvironment: Record<string, string | undefined> = { ...process.env };
 
 type StreamWriteCallback = (error?: Error | null) => void;
+
+class SkillFactoryTimeoutError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "SkillFactoryTimeoutError";
+	}
+}
 
 const rawStdoutWrite = process.stdout.write.bind(process.stdout) as (
 	chunk: string,
@@ -278,6 +291,166 @@ function normalizeError(error: unknown): BunWorkerError {
 	return { message: String(error), name: "Error" };
 }
 
+interface InspectProjectionBudget {
+	charsRemaining: number;
+	entriesRemaining: number;
+	seen: WeakSet<object>;
+}
+
+function projectedString(value: string, budget: InspectProjectionBudget): string {
+	const retainedLength = Math.min(value.length, Math.max(0, budget.charsRemaining));
+	budget.charsRemaining -= retainedLength;
+	const retained = value.slice(0, retainedLength);
+	return retainedLength < value.length ? `${retained}[... string truncated ...]` : retained;
+}
+
+function defineProjectedProperty(target: Record<string, unknown>, key: string, value: unknown): void {
+	Object.defineProperty(target, key, { configurable: true, enumerable: true, value, writable: true });
+}
+
+function projectForInspect(value: unknown, budget: InspectProjectionBudget, depth: number): unknown {
+	if (typeof value === "string") return projectedString(value, budget);
+	if (
+		value === null ||
+		typeof value === "undefined" ||
+		typeof value === "boolean" ||
+		typeof value === "number" ||
+		typeof value === "bigint"
+	) {
+		return value;
+	}
+	if (typeof value === "symbol") return `[Symbol ${projectedString(value.description ?? "", budget)}]`;
+	if (typeof value === "function") return `[Function ${projectedString(value.name || "anonymous", budget)}]`;
+	if (typeof value !== "object") return projectedString(String(value), budget);
+	if (budget.seen.has(value)) return "[Circular]";
+	if (depth >= MAX_RESULT_PROJECTION_DEPTH) return "[Max depth reached]";
+	budget.seen.add(value);
+
+	if (value instanceof Date || value instanceof RegExp) return value;
+	if (value instanceof Error) {
+		return {
+			message: projectedString(value.message, budget),
+			name: projectedString(value.name, budget),
+			...(value.stack ? { stack: projectedString(value.stack, budget) } : {}),
+		};
+	}
+	if (value instanceof ArrayBuffer || value instanceof SharedArrayBuffer) {
+		return `[${value.constructor.name} ${value.byteLength} bytes]`;
+	}
+	if (ArrayBuffer.isView(value)) {
+		const constructorName = Object.getPrototypeOf(value)?.constructor?.name ?? "ArrayBufferView";
+		return `[${constructorName} ${value.byteLength} bytes]`;
+	}
+	if (Array.isArray(value)) {
+		const projected: unknown[] = [];
+		const entryCount = Math.min(value.length, Math.max(0, budget.entriesRemaining));
+		for (let index = 0; index < entryCount; index += 1) {
+			budget.entriesRemaining -= 1;
+			const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+			if (!descriptor) {
+				projected.push("[Empty]");
+			} else if ("value" in descriptor) {
+				projected.push(projectForInspect(descriptor.value, budget, depth + 1));
+			} else {
+				projected.push(descriptor.get ? "[Getter]" : "[Setter]");
+			}
+		}
+		if (entryCount < value.length) projected.push(`[... ${value.length - entryCount} entries truncated ...]`);
+		return projected;
+	}
+	if (value instanceof Map) {
+		const projected = new Map<unknown, unknown>();
+		let retained = 0;
+		for (const [key, entryValue] of value) {
+			if (budget.entriesRemaining <= 0) break;
+			budget.entriesRemaining -= 1;
+			retained += 1;
+			projected.set(projectForInspect(key, budget, depth + 1), projectForInspect(entryValue, budget, depth + 1));
+		}
+		if (retained < value.size) projected.set(`[... ${value.size - retained} entries truncated ...]`, "");
+		return projected;
+	}
+	if (value instanceof Set) {
+		const projected = new Set<unknown>();
+		let retained = 0;
+		for (const entryValue of value) {
+			if (budget.entriesRemaining <= 0) break;
+			budget.entriesRemaining -= 1;
+			retained += 1;
+			projected.add(projectForInspect(entryValue, budget, depth + 1));
+		}
+		if (retained < value.size) projected.add(`[... ${value.size - retained} entries truncated ...]`);
+		return projected;
+	}
+
+	const projected: Record<string, unknown> = {};
+	let truncated = false;
+	for (const key in value) {
+		if (!Object.hasOwn(value, key)) continue;
+		if (budget.entriesRemaining <= 0) {
+			truncated = true;
+			break;
+		}
+		budget.entriesRemaining -= 1;
+		const projectedKey = projectedString(key.slice(0, MAX_RESULT_PROJECTION_KEY_CHARS), budget);
+		let projectedValue: unknown;
+		try {
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!descriptor) continue;
+			projectedValue =
+				"value" in descriptor
+					? projectForInspect(descriptor.value, budget, depth + 1)
+					: descriptor.get
+						? "[Getter]"
+						: "[Setter]";
+		} catch (error) {
+			projectedValue = `[Property inspection failed: ${normalizeError(error).message.slice(0, 128)}]`;
+		}
+		defineProjectedProperty(projected, projectedKey, projectedValue);
+	}
+	if (truncated) defineProjectedProperty(projected, "[... properties truncated ...]", true);
+	return projected;
+}
+
+function boundedInspect(value: unknown, maxChars: number): string {
+	const boundedMaxChars = Math.min(
+		MAX_PROTOCOL_RESULT_CHARS,
+		Math.max(0, Math.floor(Number.isFinite(maxChars) ? maxChars : 0)),
+	);
+	const projected = projectForInspect(
+		value,
+		{
+			charsRemaining: boundedMaxChars,
+			entriesRemaining: MAX_RESULT_PROJECTION_ENTRIES,
+			seen: new WeakSet<object>(),
+		},
+		0,
+	);
+	const inspected = Bun.inspect(projected, { colors: false, depth: MAX_RESULT_PROJECTION_DEPTH });
+	if (inspected.length <= boundedMaxChars) return inspected;
+	return `${inspected.slice(0, boundedMaxChars)}\n[... result truncated at ${boundedMaxChars} chars ...]`;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(
+			() => reject(new SkillFactoryTimeoutError(`${label} timed out after ${timeoutMs} ms`)),
+			timeoutMs,
+		);
+		timer.unref?.();
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error: unknown) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -363,8 +536,8 @@ function runShell(command: string): ShellPromise {
 	const source = commandPrefix ? `${commandPrefix}\n${command}` : command;
 	const promise = new Promise<ShellResult>((resolve) => {
 		execFile(
-			shellPath,
-			["-lc", source],
+			shellExecutable,
+			[...shellArgs, source],
 			{ cwd: process.cwd(), encoding: "utf8", env: process.env, maxBuffer: 16 * 1024 * 1024 },
 			(error, stdout, stderr) => {
 				const exitCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
@@ -436,6 +609,25 @@ function display(mimeType: string, data: unknown): void {
 		mimeType,
 		protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 		type: "display",
+	});
+}
+
+function defineUnavailableSkill(name: string, globalName: string, error: unknown): void {
+	const failure = normalizeError(error);
+	const unavailable = async (): Promise<never> => {
+		throw new Error(`JavaScript skill ${name} is unavailable: ${failure.message}`);
+	};
+	Object.defineProperty(globalThis, globalName, {
+		configurable: true,
+		enumerable: true,
+		value: unavailable,
+		writable: false,
+	});
+	send({
+		error: failure,
+		id: randomUUID(),
+		protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+		type: "diagnostic",
 	});
 }
 
@@ -526,6 +718,16 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 	};
 	try {
 		if (activeExecutionId) throw new Error("Cannot snapshot while a Bun cell is executing");
+		if (message.includeRuntimeState) {
+			const runtimeEntry: SnapshotPayloadEntry = {
+				data: Buffer.from(JSON.stringify(captureRuntimeState()), "utf8"),
+				kind: "runtime",
+				name: RUNTIME_STATE_ENTRY_NAME,
+			};
+			if (!saveEntry(runtimeEntry)) {
+				throw new Error(`Runtime cwd and environment exceed the ${message.maxBytes}-byte snapshot cap`);
+			}
+		}
 		for (const name of [...bindings].sort()) {
 			if (name.startsWith("_") || runtimeBindingNames.has(name)) {
 				skipped.push({ name, reason: "runtime bindings are recreated instead of snapshotted" });
@@ -568,14 +770,6 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 				skipped.push({ name, reason: `serialization failed: ${normalizeError(error).message}` });
 			}
 		}
-		if (message.includeRuntimeState) {
-			saveEntry({
-				data: Buffer.from(JSON.stringify(captureRuntimeState()), "utf8"),
-				kind: "runtime",
-				name: RUNTIME_STATE_ENTRY_NAME,
-			});
-		}
-
 		const payload = encodeSnapshotPayloadParts(savedEntries);
 		const savedNames = savedEntries.filter((entry) => entry.kind !== "runtime").map((entry) => entry.name);
 		await writeBinaryAtomic(message.path, payload.parts);
@@ -622,6 +816,7 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "restore" }>): Promise<void> {
 	const restored: string[] = [];
 	const failed: { name: string; reason: string }[] = [];
+	let runtimeRestored = false;
 	try {
 		if (activeExecutionId) throw new Error("Cannot restore while a Bun cell is executing");
 		let payload: Buffer;
@@ -629,6 +824,7 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 			payload = await readFile(message.path);
 		} catch (error) {
 			if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+				if (message.required) throw new Error(`Required Bun recovery snapshot does not exist: ${message.path}`);
 				send({
 					failed,
 					id: randomUUID(),
@@ -636,6 +832,7 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 					protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 					replyTo: message.id,
 					restored,
+					runtimeRestored,
 					type: "restore_result",
 				});
 				return;
@@ -647,6 +844,7 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 		for (const entry of entries.filter((candidate) => candidate.kind === "runtime")) {
 			try {
 				restoreRuntimeState(entry.data);
+				runtimeRestored = true;
 			} catch (error) {
 				failed.push({ name: RUNTIME_STATE_ENTRY_NAME, reason: normalizeError(error).message });
 			}
@@ -696,6 +894,7 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			replyTo: message.id,
 			restored,
+			runtimeRestored,
 			type: "restore_result",
 		});
 	} catch (error) {
@@ -707,6 +906,7 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			replyTo: message.id,
 			restored,
+			runtimeRestored,
 			type: "restore_result",
 		});
 	}
@@ -778,7 +978,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			replyTo: message.id,
 			status: "ok",
 			type: "result",
-			...(result === undefined ? {} : { value: Bun.inspect(result, { colors: false, depth: 8 }) }),
+			...(result === undefined ? {} : { value: boundedInspect(result, message.maxResultChars ?? 65_536) }),
 		});
 	} catch (error) {
 		flushCellStreams(message.cellId);
@@ -801,11 +1001,13 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 
 async function initialize(message: Extract<HostToBunWorkerMessage, { type: "initialize" }>): Promise<void> {
 	try {
+		initialized = false;
 		process.chdir(message.cwd);
 		bunPath = message.bunPath;
 		commandPrefix = message.commandPrefix;
 		kernelDirectory = message.kernelDirectory;
-		shellPath = message.shellPath;
+		shellExecutable = message.shell.executable;
+		shellArgs = [...message.shell.args];
 		initialEnvironment = { ...process.env };
 		for (const skill of message.skills) {
 			if (runtimeBindingNames.has(skill.globalName)) {
@@ -819,43 +1021,66 @@ async function initialize(message: Extract<HostToBunWorkerMessage, { type: "init
 				});
 				continue;
 			}
-			try {
-				const loaded: unknown = requireModule(skill.entryPath);
-				const exports = typeof loaded === "object" && loaded !== null ? (loaded as Record<string, unknown>) : {};
-				const factory = exports.createSkill;
-				const context = {
-					get cwd(): string {
-						return process.cwd();
-					},
-					display,
-					hostRequest,
-				};
-				const value = typeof factory === "function" ? await factory(context) : (exports.default ?? loaded);
-				if (value === undefined) throw new Error("module exports neither createSkill nor default");
-				Object.defineProperty(globalThis, skill.globalName, {
-					configurable: true,
-					enumerable: true,
-					value,
-					writable: false,
-				});
-			} catch (error) {
-				const failure = normalizeError(error);
-				const unavailable = async (): Promise<never> => {
-					throw new Error(`JavaScript skill ${skill.name} is unavailable: ${failure.message}`);
-				};
-				Object.defineProperty(globalThis, skill.globalName, {
-					configurable: true,
-					enumerable: true,
-					value: unavailable,
-					writable: false,
-				});
-				send({
-					error: failure,
-					id: randomUUID(),
-					protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
-					type: "diagnostic",
-				});
+			if (skill.unavailableReason !== undefined) {
+				defineUnavailableSkill(
+					skill.name,
+					skill.globalName,
+					new Error(skill.unavailableReason.slice(0, MAX_SKILL_UNAVAILABLE_REASON_CHARS)),
+				);
+				runtimeBindingNames.add(skill.globalName);
+				continue;
 			}
+			let loaded: unknown;
+			try {
+				loaded = requireModule(skill.entryPath);
+			} catch (error) {
+				defineUnavailableSkill(skill.name, skill.globalName, error);
+				runtimeBindingNames.add(skill.globalName);
+				continue;
+			}
+			const exports = typeof loaded === "object" && loaded !== null ? (loaded as Record<string, unknown>) : {};
+			const factory = exports.createSkill;
+			const context = {
+				get cwd(): string {
+					return process.cwd();
+				},
+				display,
+				hostRequest,
+			};
+			let value: unknown;
+			if (typeof factory === "function") {
+				try {
+					value = await withTimeout(
+						Promise.resolve(factory(context)),
+						message.skillFactoryTimeoutMs,
+						`JavaScript skill ${skill.name} factory`,
+					);
+				} catch (error) {
+					if (error instanceof SkillFactoryTimeoutError) {
+						throw new Error(error.message, { cause: error });
+					}
+					defineUnavailableSkill(skill.name, skill.globalName, error);
+					runtimeBindingNames.add(skill.globalName);
+					continue;
+				}
+			} else {
+				value = exports.default ?? loaded;
+			}
+			if (value === undefined) {
+				defineUnavailableSkill(
+					skill.name,
+					skill.globalName,
+					new Error("module exports neither createSkill nor default"),
+				);
+				runtimeBindingNames.add(skill.globalName);
+				continue;
+			}
+			Object.defineProperty(globalThis, skill.globalName, {
+				configurable: true,
+				enumerable: true,
+				value,
+				writable: false,
+			});
 			runtimeBindingNames.add(skill.globalName);
 		}
 		baselineGlobalNames = new Set(Object.getOwnPropertyNames(globalThis));
@@ -868,6 +1093,7 @@ async function initialize(message: Extract<HostToBunWorkerMessage, { type: "init
 			type: "ready",
 		});
 	} catch (error) {
+		initialized = false;
 		sendProtocolError(message.id, error);
 	}
 }

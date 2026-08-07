@@ -6,7 +6,7 @@ import { getBundledSkillsDir } from "../src/config.js";
 import type { ExtensionContext } from "../src/core/extensions/types.js";
 import { ensureKernelBun } from "../src/core/kernel/bootstrap.js";
 import { resolveBunRuntime } from "../src/core/kernel/bun-runtime.js";
-import { type ExecuteResult, KernelManager } from "../src/core/kernel/index.js";
+import { type ExecuteResult, KernelManager, type KernelManagerStatus } from "../src/core/kernel/index.js";
 import type { JavaScriptSkillRuntimeInfo } from "../src/core/skills.js";
 import { BunKernelProvisioner, createJavaScriptToolDefinition } from "../src/core/tools/javascript.js";
 
@@ -208,7 +208,21 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 				timings: { checkpointMs: 1, executionMs: 2, queueMs: 1, startupMs: 1, totalMs: 2 },
 			}),
 		);
-		const manager = { execute } as unknown as KernelManager;
+		const kernelStatus: KernelManagerStatus = {
+			diagnostics: "state snapshot skipped 1 binding(s): unsupportedRecoveryValue",
+			recovery: {
+				available: true,
+				checkpoint: "dirty",
+				lastCheckpoint: {
+					bytes: 64,
+					path: "/tmp/recovery.bin",
+					saved: ["answer"],
+					skipped: [{ name: "unsupportedRecoveryValue", reason: "unsupported" }],
+				},
+			},
+			state: "running",
+		};
+		const manager = { execute, status: kernelStatus } as unknown as KernelManager;
 		let releaseProvisioning = (): void => {};
 		const provisioningGate = new Promise<void>((resolve) => {
 			releaseProvisioning = resolve;
@@ -246,6 +260,7 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 				startupMs: 1,
 				totalMs: expect.any(Number),
 			},
+			kernelStatus,
 		});
 		expect(result.details.timings?.provisioningMs).toBeGreaterThan(0);
 		expect(result.details.durationMs).toBe(result.details.timings?.totalMs);
@@ -254,5 +269,36 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 			{ type: "text", text: "output\nwarning\n42" },
 			{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
 		]);
+	});
+
+	it("returns bounded kernel status when execution is blocked by recovery", async () => {
+		const execute = vi.fn<KernelManager["execute"]>().mockRejectedValue(new Error("Bun recovery checkpoint failed"));
+		const kernelStatus: KernelManagerStatus = {
+			diagnostics: "recovery checkpoint failed: snapshot timed out",
+			recovery: { available: true, checkpoint: "failed" },
+			state: "idle",
+		};
+		const manager = { execute, status: kernelStatus } as unknown as KernelManager;
+		const provisioner = { ensure: vi.fn(async () => manager) } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+
+		const result = await tool.execute("blocked-call", { code: "42;" }, undefined, undefined, {
+			ui: { setWorkingMessage: vi.fn() },
+		} as unknown as ExtensionContext);
+
+		expect(result).toMatchObject({
+			content: [{ text: expect.stringMatching(/recovery checkpoint failed/i), type: "text" }],
+			details: {
+				error: {
+					ename: "Error",
+					evalue: "Bun recovery checkpoint failed",
+					traceback: expect.any(Array),
+				},
+				errorEname: "Error",
+				kernelStatus,
+				status: "error",
+			},
+			isError: true,
+		});
 	});
 });

@@ -1,5 +1,5 @@
-import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +65,107 @@ describe("Bun KernelManager", () => {
 		expect(result.durationMs).toBe(result.timings.totalMs);
 		expect(result.timings.totalMs).toBeGreaterThanOrEqual(result.timings.executionMs);
 		expect(result.timings.totalMs).toBeGreaterThanOrEqual(result.timings.checkpointMs);
+	});
+
+	it("refuses to execute the next cell when its recovery checkpoint cannot be written", async () => {
+		const blockedParent = join(directory, "not-a-directory");
+		const sideEffectPath = join(directory, "must-not-run.txt");
+		await writeFile(blockedParent, "blocking file");
+		const manager = createManager({
+			recoverySnapshot: {
+				manifestPath: join(blockedParent, "recovery.json"),
+				path: join(blockedParent, "recovery.bin"),
+			},
+		});
+
+		await expect(manager.execute("const checkpointedValue = 41;")).resolves.toMatchObject({ status: "ok" });
+		expect(manager.status.recovery.checkpoint).toBe("dirty");
+		await expect(
+			manager.execute(`await Bun.write(${JSON.stringify(sideEffectPath)}, "ran"); checkpointedValue + 1;`),
+		).rejects.toThrow(/recovery checkpoint failed/i);
+
+		expect(existsSync(sideEffectPath)).toBe(false);
+		expect(manager.status.recovery.checkpoint).toBe("failed");
+		expect(manager.status.diagnostics).toMatch(/state snapshot failed/i);
+		expect(manager.status.diagnostics.length).toBeLessThanOrEqual(16_384);
+	});
+
+	it("times out a hanging recovery checkpoint, kills its worker tree, and blocks later cells", async () => {
+		const escapedChildPath = join(directory, "escaped-checkpoint-child.txt");
+		const sideEffectPath = join(directory, "must-not-run-after-checkpoint-timeout.txt");
+		const manager = createManager({ checkpointTimeoutMs: 100 });
+		await manager.execute(`
+const hangingCheckpointValue = {};
+Object.defineProperty(hangingCheckpointValue, "value", {
+  enumerable: true,
+  get() {
+    Bun.spawn([process.execPath, "-e", ${JSON.stringify(`await Bun.sleep(600); await Bun.write(${JSON.stringify(escapedChildPath)}, "escaped");`)}]);
+    while (true) {}
+  }
+});
+`);
+
+		const startedAt = performance.now();
+		await expect(manager.execute(`await Bun.write(${JSON.stringify(sideEffectPath)}, "ran");`)).rejects.toThrow(
+			/checkpoint.*timed out/i,
+		);
+		expect(performance.now() - startedAt).toBeLessThan(2_000);
+		await new Promise((resolve) => setTimeout(resolve, 750));
+		expect(existsSync(escapedChildPath)).toBe(false);
+		expect(existsSync(sideEffectPath)).toBe(false);
+		expect(manager.status).toMatchObject({
+			recovery: { checkpoint: "failed" },
+			state: "idle",
+		});
+		expect(manager.status.diagnostics).toMatch(/checkpoint.*timed out/i);
+		await expect(manager.execute("42;")).rejects.toThrow(/recovery is blocked/i);
+	}, 10_000);
+
+	it("honors abort while a recovery checkpoint is hung and blocks the wedged worker", async () => {
+		const manager = createManager({ checkpointTimeoutMs: 5_000 });
+		await manager.execute(`
+const abortableCheckpointValue = {};
+Object.defineProperty(abortableCheckpointValue, "value", {
+  enumerable: true,
+  get() { while (true) {} }
+});
+`);
+		const controller = new AbortController();
+		const execution = manager.execute("throw new Error('must not execute');", { signal: controller.signal });
+		setTimeout(() => controller.abort(), 100);
+
+		await expect(execution).resolves.toMatchObject({ status: "aborted" });
+		expect(manager.status).toMatchObject({ recovery: { checkpoint: "failed" }, state: "idle" });
+		expect(manager.status.diagnostics).toMatch(/checkpoint.*aborted/i);
+		await expect(manager.execute("42;")).rejects.toThrow(/recovery is blocked/i);
+	}, 10_000);
+
+	it("publishes bounded recovery checkpoint skip details", async () => {
+		const manager = createManager();
+		await manager.execute("const unsupportedRecoveryValue = new WeakMap();");
+
+		await expect(manager.execute("21 * 2;")).resolves.toMatchObject({ status: "ok", result: "42" });
+
+		expect(manager.status.recovery.checkpoint).toBe("dirty");
+		expect(manager.status.recovery.lastCheckpoint?.skipped).toEqual(
+			expect.arrayContaining([expect.objectContaining({ name: "unsupportedRecoveryValue" })]),
+		);
+		expect(manager.status.diagnostics).toMatch(/unsupportedRecoveryValue/);
+		expect(manager.status.diagnostics.length).toBeLessThanOrEqual(16_384);
+	});
+
+	it.runIf(process.platform !== "win32")("uses the resolved custom shell arguments", async () => {
+		const shellPath = join(directory, "recording-shell.sh");
+		const argumentPath = join(directory, "shell-argument.txt");
+		await writeFile(shellPath, `#!/bin/sh\nprintf %s "$1" > ${JSON.stringify(argumentPath)}\nexec /bin/sh "$@"\n`);
+		await chmod(shellPath, 0o755);
+		const manager = createManager({ shellPath });
+
+		await expect(manager.execute(`await sh("printf shell-ok").text();`)).resolves.toMatchObject({
+			result: '"shell-ok"',
+			status: "ok",
+		});
+		expect(await readFile(argumentPath, "utf8")).toBe("-c");
 	});
 
 	it("preserves the exact result shape for an already aborted execution", async () => {

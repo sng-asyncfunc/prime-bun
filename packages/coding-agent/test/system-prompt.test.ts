@@ -67,6 +67,9 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("await installPackage('pkg')");
 		expect(prompt).toContain("process.chdir(dir)");
 		expect(prompt).toContain("JavaScript state persists across cells");
+		expect(prompt).toContain("Preloaded globals: `fs`, `path`, `os`, `util`, and `require`");
+		expect(prompt).toContain("Static imports and literal `require()` bindings persist across cells");
+		expect(prompt).not.toContain("Static `import` declarations are not supported");
 		expect(prompt).toContain("Continual harness state is available as `rlm.harness`");
 		expect(prompt).toContain("installed JavaScript skills are prepared as globals");
 		expect(prompt).not.toMatch(/Python packages|Python REPL|%%bash|uv pip/);

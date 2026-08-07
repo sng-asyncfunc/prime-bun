@@ -71,6 +71,8 @@ Then just talk to Prime Agent. By default, Prime Agent gives the model one tool:
 
 The runtime is prepared automatically on first invocation and requires Bun 1.3.14 or newer. TypeScript syntax is transpiled for execution but is not type-checked. Set `PRIME_AGENT_KERNEL_BUN` to use a specific supported Bun executable.
 
+Common runtime modules are ready as `fs`, `path`, `os`, and `util`, alongside `require`, `fetch`, `Bun`, `$`, `process`, `Buffer`, and WebCrypto. Static imports, dynamic imports, and literal `require()` bindings remain available in later cells and recover after a worker restart.
+
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
 ## RLM Execution

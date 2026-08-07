@@ -62,6 +62,8 @@ const largeItems = report.items.filter((item) => item.size > 1000);
 largeItems.length;
 ```
 
+Static namespace, named, aliased, default, mixed, and side-effect imports are accepted. Bound static imports, literal dynamic imports, and literal `require()` calls are recorded as module recipes so selected exports can be restored after a worker restart.
+
 The final expression is inspected and returned separately from stdout and stderr. Bun Shell is preloaded as `$`, and `sh(command)` is available for dynamic command strings. Use the target project's own package manager or executable environment for project commands.
 
 ## Native globals and skills
@@ -71,7 +73,9 @@ The worker prepares these runtime globals before the first cell:
 - `rlm` for recursive child admission, listing, deletion, and typed host requests;
 - `agentMessage` for parent, child, and sibling messages;
 - `harness` for continual-harness reads and writes;
-- `$` and `sh` for project commands; and
+- `fs`, `path`, `os`, `util`, and kernel-relative `require` for common module operations;
+- `$` and `sh` for project commands;
+- Bun and web globals including `Bun`, `fetch`, `process`, `Buffer`, and WebCrypto; and
 - enabled JavaScript-backed skills.
 
 A JavaScript-backed skill declares its entry and global name in `package.json`:
@@ -125,6 +129,8 @@ Detached tasks may continue after a cell result. Their host requests remain rout
 ## State snapshots
 
 Prime Agent snapshots durable top-level bindings with Bun's JavaScriptCore serializer. Primitive values, plain objects, cycles, dates, regular expressions, maps, sets, array buffers, and typed arrays are preserved when the runtime serializer supports them. Functions, promises, weak collections, and custom class instances are not guaranteed to survive restart.
+
+Module bindings use versioned restore recipes rather than JavaScriptCore serialization. Snapshot version 3 retains the loader and selected export, while the decoder continues to accept version 2 namespace-import snapshots.
 
 Snapshot restore is best effort:
 

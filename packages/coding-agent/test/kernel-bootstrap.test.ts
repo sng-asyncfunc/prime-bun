@@ -254,7 +254,10 @@ describe("Bun kernel bootstrap", () => {
 		expect(runtime.skillDiagnostics).toEqual([
 			expect.objectContaining({ name: "broken-skill", message: expect.stringContaining("exit code 17") }),
 		]);
-		expect(runtime.preparedSkills[0]).toEqual(broken);
+		expect(runtime.preparedSkills[0]).toMatchObject({
+			...broken,
+			unavailableReason: expect.stringContaining("exit code 17"),
+		});
 		expect(runtime.preparedSkills[1]?.entryPath).not.toBe(healthy.entryPath);
 		expect(readFileSync(runtime.preparedSkills[1]?.entryPath ?? "", "utf8")).toContain("healthy-skill");
 	});

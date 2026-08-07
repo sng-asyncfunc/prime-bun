@@ -1,6 +1,18 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+	access,
+	copyFile,
+	cp,
+	mkdir,
+	readdir,
+	readFile,
+	realpath,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { stderr, stdin } from "node:process";
@@ -16,6 +28,7 @@ const BOOTSTRAP_LOCK_NAME = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS = 100;
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
 const SKILL_DEPENDENCY_STATE_FILE = ".skill-dependencies.json";
+const MAX_SKILL_UNAVAILABLE_REASON_CHARS = 512;
 const BUN_INSTALL_COMMAND = "curl -fsSL https://bun.sh/install | bash";
 const RUNTIME_ASSET_NAMES = [
 	"bun-worker",
@@ -34,9 +47,13 @@ let inFlightEnsureKernelBun: { key: string; promise: Promise<KernelBunRuntime> }
 
 export type KernelBootstrapProgressHandler = (message: string) => void;
 
+export interface PreparedJavaScriptSkillRuntimeInfo extends JavaScriptSkillRuntimeInfo {
+	unavailableReason?: string;
+}
+
 export interface KernelBunRuntime extends ResolvedBunRuntime {
 	kernelDirectory: string;
-	preparedSkills: JavaScriptSkillRuntimeInfo[];
+	preparedSkills: PreparedJavaScriptSkillRuntimeInfo[];
 	workerPath: string;
 	skillDiagnostics: Array<{ name: string; message: string }>;
 }
@@ -414,18 +431,47 @@ async function readSkillDependencies(skill: JavaScriptSkillRuntimeInfo): Promise
 	);
 }
 
-async function skillDependencyCacheCurrent(cacheDirectory: string, signature: string): Promise<boolean> {
-	try {
-		const state: unknown = JSON.parse(await readFile(path.join(cacheDirectory, SKILL_DEPENDENCY_STATE_FILE), "utf8"));
-		return (
-			isRecord(state) && state.signature === signature && (await exists(path.join(cacheDirectory, "node_modules")))
-		);
-	} catch {
-		return false;
+function assertPathInsidePackage(packagePath: string, filePath: string, label: string): void {
+	const relativePath = path.relative(packagePath, filePath);
+	if (
+		!relativePath ||
+		relativePath === ".." ||
+		relativePath.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relativePath)
+	) {
+		throw new Error(`JavaScript skill ${label} ${filePath} must stay inside ${packagePath}`);
 	}
 }
 
-function preparedSkillPaths(cacheDirectory: string, skill: JavaScriptSkillRuntimeInfo): JavaScriptSkillRuntimeInfo {
+async function canonicalizeSkill(skill: JavaScriptSkillRuntimeInfo): Promise<JavaScriptSkillRuntimeInfo> {
+	const [packagePath, entryPath, packageJsonPath] = await Promise.all([
+		realpath(skill.packagePath),
+		realpath(skill.entryPath),
+		realpath(skill.packageJsonPath),
+	]);
+	assertPathInsidePackage(packagePath, entryPath, "entry");
+	assertPathInsidePackage(packagePath, packageJsonPath, "package metadata");
+	return { ...skill, entryPath, packageJsonPath, packagePath };
+}
+
+async function currentSkillDependencyGeneration(
+	cacheDirectory: string,
+	signature: string,
+): Promise<string | undefined> {
+	try {
+		const state: unknown = JSON.parse(await readFile(path.join(cacheDirectory, SKILL_DEPENDENCY_STATE_FILE), "utf8"));
+		if (!isRecord(state) || state.signature !== signature) return undefined;
+		if (typeof state.generation === "string" && /^[0-9a-f-]+$/i.test(state.generation)) {
+			const generationDirectory = path.join(cacheDirectory, "generations", state.generation);
+			return (await exists(path.join(generationDirectory, "node_modules"))) ? generationDirectory : undefined;
+		}
+		return (await exists(path.join(cacheDirectory, "node_modules"))) ? cacheDirectory : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function preparedSkillPaths(sourceDirectory: string, skill: JavaScriptSkillRuntimeInfo): JavaScriptSkillRuntimeInfo {
 	const relativeEntryPath = path.relative(skill.packagePath, skill.entryPath);
 	if (
 		!relativeEntryPath ||
@@ -435,7 +481,7 @@ function preparedSkillPaths(cacheDirectory: string, skill: JavaScriptSkillRuntim
 	) {
 		throw new Error(`JavaScript skill entry ${skill.entryPath} must stay inside ${skill.packagePath}`);
 	}
-	const packagePath = path.join(cacheDirectory, "source", path.basename(skill.packagePath));
+	const packagePath = path.join(sourceDirectory, path.basename(skill.packagePath));
 	return {
 		...skill,
 		entryPath: path.join(packagePath, relativeEntryPath),
@@ -447,6 +493,7 @@ function preparedSkillPaths(cacheDirectory: string, skill: JavaScriptSkillRuntim
 async function copySkillSource(destinationRoot: string, skill: JavaScriptSkillRuntimeInfo): Promise<void> {
 	await mkdir(destinationRoot, { recursive: true });
 	await cp(skill.packagePath, path.join(destinationRoot, path.basename(skill.packagePath)), {
+		dereference: true,
 		filter: (source) => {
 			const name = path.basename(source);
 			return name !== "node_modules" && name !== ".git";
@@ -457,6 +504,7 @@ async function copySkillSource(destinationRoot: string, skill: JavaScriptSkillRu
 	const sharedSource = path.join(path.dirname(skill.packagePath), "_shared");
 	if (await exists(sharedSource)) {
 		await cp(sharedSource, path.join(destinationRoot, "_shared"), {
+			dereference: true,
 			filter: (source) => path.basename(source) !== "node_modules",
 			force: true,
 			recursive: true,
@@ -464,19 +512,48 @@ async function copySkillSource(destinationRoot: string, skill: JavaScriptSkillRu
 	}
 }
 
-async function refreshPreparedSkillSource(
+async function hashSkillSource(directory: string): Promise<string> {
+	const hash = createHash("sha256");
+	const visit = async (currentDirectory: string, relativeDirectory: string): Promise<void> => {
+		const entries = await readdir(currentDirectory, { withFileTypes: true });
+		entries.sort((left, right) => left.name.localeCompare(right.name));
+		for (const entry of entries) {
+			const relativePath = relativeDirectory ? path.join(relativeDirectory, entry.name) : entry.name;
+			const entryPath = path.join(currentDirectory, entry.name);
+			if (entry.isDirectory()) {
+				hash.update(`directory\0${relativePath}\0`);
+				await visit(entryPath, relativePath);
+				continue;
+			}
+			if (!entry.isFile()) {
+				throw new Error(`JavaScript skill source contains unsupported entry ${entryPath}`);
+			}
+			hash.update(`file\0${relativePath}\0`);
+			hash.update(await readFile(entryPath));
+			hash.update("\0");
+		}
+	};
+	await visit(directory, "");
+	return hash.digest("hex");
+}
+
+async function prepareImmutableSkillSource(
 	cacheDirectory: string,
 	skill: JavaScriptSkillRuntimeInfo,
 ): Promise<JavaScriptSkillRuntimeInfo> {
 	const temporarySource = path.join(cacheDirectory, `.source.${process.pid}.${randomUUID()}.tmp`);
 	try {
 		await copySkillSource(temporarySource, skill);
-		await rm(path.join(cacheDirectory, "source"), { force: true, recursive: true });
-		await rename(temporarySource, path.join(cacheDirectory, "source"));
+		const contentHash = await hashSkillSource(temporarySource);
+		const sourceDirectory = path.join(cacheDirectory, "sources", contentHash);
+		if (!(await exists(sourceDirectory))) {
+			await mkdir(path.dirname(sourceDirectory), { recursive: true });
+			await rename(temporarySource, sourceDirectory);
+		}
+		return preparedSkillPaths(sourceDirectory, skill);
 	} finally {
 		await rm(temporarySource, { force: true, recursive: true }).catch(() => undefined);
 	}
-	return preparedSkillPaths(cacheDirectory, skill);
 }
 
 async function provisionSkillDependencyCache(
@@ -491,27 +568,29 @@ async function provisionSkillDependencyCache(
 	const cacheDirectory = path.join(kernelDirectory, "skill-deps", signature.slice("sha256:".length, 38));
 	const releaseLock = await acquireBootstrapLock(cacheDirectory);
 	try {
-		if (await skillDependencyCacheCurrent(cacheDirectory, signature)) {
-			return await refreshPreparedSkillSource(cacheDirectory, skill);
+		const currentGeneration = await currentSkillDependencyGeneration(cacheDirectory, signature);
+		if (currentGeneration) {
+			return await prepareImmutableSkillSource(currentGeneration, skill);
 		}
-		const temporaryCache = `${cacheDirectory}.${process.pid}.${randomUUID()}.tmp`;
+		const generation = randomUUID();
+		const generationsDirectory = path.join(cacheDirectory, "generations");
+		const generationDirectory = path.join(generationsDirectory, generation);
+		const temporaryGeneration = path.join(generationsDirectory, `.${generation}.${process.pid}.tmp`);
 		try {
-			await mkdir(temporaryCache, { recursive: true });
-			await copySkillSource(path.join(temporaryCache, "source"), skill);
+			await mkdir(temporaryGeneration, { recursive: true });
 			await writeAtomic(
-				path.join(temporaryCache, "package.json"),
+				path.join(temporaryGeneration, "package.json"),
 				`${JSON.stringify({ private: true, dependencies }, null, 2)}\n`,
 			);
-			await run(runtime.path, ["install", "--production"], { cwd: temporaryCache });
+			await run(runtime.path, ["install", "--production"], { cwd: temporaryGeneration });
+			await rename(temporaryGeneration, generationDirectory);
 			await writeAtomic(
-				path.join(temporaryCache, SKILL_DEPENDENCY_STATE_FILE),
-				`${JSON.stringify({ signature, packageJsonPath: path.resolve(skill.packageJsonPath) })}\n`,
+				path.join(cacheDirectory, SKILL_DEPENDENCY_STATE_FILE),
+				`${JSON.stringify({ generation, signature, packageJsonPath: path.resolve(skill.packageJsonPath) })}\n`,
 			);
-			await rm(cacheDirectory, { force: true, recursive: true });
-			await rename(temporaryCache, cacheDirectory);
-			return preparedSkillPaths(cacheDirectory, skill);
+			return await prepareImmutableSkillSource(generationDirectory, skill);
 		} finally {
-			await rm(temporaryCache, { force: true, recursive: true }).catch(() => undefined);
+			await rm(temporaryGeneration, { force: true, recursive: true }).catch(() => undefined);
 		}
 	} finally {
 		await releaseLock().catch(() => undefined);
@@ -523,19 +602,25 @@ async function provisionSkillDependencies(
 	kernelDirectory: string,
 	options: EnsureKernelBunOptions,
 ): Promise<{
-	preparedSkills: JavaScriptSkillRuntimeInfo[];
+	preparedSkills: PreparedJavaScriptSkillRuntimeInfo[];
 	skillDiagnostics: Array<{ name: string; message: string }>;
 }> {
-	const preparedSkills: JavaScriptSkillRuntimeInfo[] = [];
+	const preparedSkills: PreparedJavaScriptSkillRuntimeInfo[] = [];
 	const skillDiagnostics: Array<{ name: string; message: string }> = [];
 	for (const skill of options.javascriptSkills ?? []) {
 		try {
-			const dependencies = await readSkillDependencies(skill);
-			preparedSkills.push(await provisionSkillDependencyCache(runtime, kernelDirectory, skill, dependencies));
+			const canonicalSkill = await canonicalizeSkill(skill);
+			const dependencies = await readSkillDependencies(canonicalSkill);
+			preparedSkills.push(
+				await provisionSkillDependencyCache(runtime, kernelDirectory, canonicalSkill, dependencies),
+			);
 		} catch (error) {
 			const message = `JavaScript skill ${skill.name} dependencies are unavailable: ${errorMessage(error)}`;
 			skillDiagnostics.push({ name: skill.name, message });
-			preparedSkills.push(skill);
+			preparedSkills.push({
+				...skill,
+				unavailableReason: message.slice(0, MAX_SKILL_UNAVAILABLE_REASON_CHARS),
+			});
 			reportProgress(options, `! ${message}`);
 		}
 	}

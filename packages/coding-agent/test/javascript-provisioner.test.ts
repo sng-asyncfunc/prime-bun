@@ -1,10 +1,13 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getBundledSkillsDir } from "../src/config.js";
 import type { ExtensionContext } from "../src/core/extensions/types.js";
+import { ensureKernelBun } from "../src/core/kernel/bootstrap.js";
 import { resolveBunRuntime } from "../src/core/kernel/bun-runtime.js";
 import { type ExecuteResult, KernelManager } from "../src/core/kernel/index.js";
+import type { JavaScriptSkillRuntimeInfo } from "../src/core/skills.js";
 import { BunKernelProvisioner, createJavaScriptToolDefinition } from "../src/core/tools/javascript.js";
 
 let tempDir = "";
@@ -12,6 +15,44 @@ let originalKernelDirectory: string | undefined;
 
 function executeResult(overrides: Partial<ExecuteResult> = {}): ExecuteResult {
 	return { durationMs: 2, status: "ok", stderr: "", stdout: "output", ...overrides };
+}
+
+function createVersionedSkill(name: string, version: string): JavaScriptSkillRuntimeInfo {
+	const packagePath = join(tempDir, "skills", name);
+	const dependencyPath = join(packagePath, "vendor", "shared-dependency");
+	mkdirSync(join(packagePath, "src"), { recursive: true });
+	mkdirSync(dependencyPath, { recursive: true });
+	writeFileSync(
+		join(packagePath, "package.json"),
+		`${JSON.stringify({ dependencies: { "shared-dependency": "file:./vendor/shared-dependency" }, private: true })}\n`,
+	);
+	writeFileSync(
+		join(dependencyPath, "package.json"),
+		`${JSON.stringify({ exports: "./index.js", name: "shared-dependency", type: "module", version })}\n`,
+	);
+	writeFileSync(join(dependencyPath, "index.js"), `export const version = ${JSON.stringify(version)};\n`);
+	writeFileSync(
+		join(packagePath, "src", "index.ts"),
+		'import { version } from "shared-dependency";\nexport default { value: () => version };\n',
+	);
+	return {
+		entryPath: join(packagePath, "src", "index.ts"),
+		globalName: name.replaceAll("-", "_"),
+		name,
+		packageJsonPath: join(packagePath, "package.json"),
+		packagePath,
+	};
+}
+
+function copiedBundledSkill(skillsDirectory: string, name: string, globalName: string): JavaScriptSkillRuntimeInfo {
+	const packagePath = join(skillsDirectory, name);
+	return {
+		entryPath: join(packagePath, "src", "index.ts"),
+		globalName,
+		name,
+		packageJsonPath: join(packagePath, "package.json"),
+		packagePath,
+	};
 }
 
 describe("BunKernelProvisioner", () => {
@@ -53,6 +94,74 @@ describe("BunKernelProvisioner", () => {
 			await manager.dispose();
 		}
 	}, 30_000);
+
+	it("resolves incompatible dependency versions from each skill's own cache", async () => {
+		const first = createVersionedSkill("first-version", "1.0.0");
+		const second = createVersionedSkill("second-version", "2.0.0");
+		const manager = new KernelManager({
+			cwd: tempDir,
+			env: { BUN_CONFIG_NO_INSTALL: "1" },
+			javascriptSkills: [first, second],
+		});
+		try {
+			const result = await manager.execute("[first_version.value(), second_version.value()];");
+
+			expect(result).toMatchObject({ status: "ok" });
+			expect(result.result).toContain('"1.0.0"');
+			expect(result.result).toContain('"2.0.0"');
+			expect(existsSync(join(first.packagePath, "node_modules"))).toBe(false);
+			expect(existsSync(join(second.packagePath, "node_modules"))).toBe(false);
+		} finally {
+			await manager.dispose();
+		}
+	}, 30_000);
+
+	it("loads copied built-in skill assets with Bun auto-install disabled", async () => {
+		const copiedSkillsDirectory = join(tempDir, "standalone-assets", "skills");
+		cpSync(getBundledSkillsDir(), copiedSkillsDirectory, { recursive: true });
+		const javascriptSkills = [
+			copiedBundledSkill(copiedSkillsDirectory, "attach-image", "attachImage"),
+			copiedBundledSkill(copiedSkillsDirectory, "linear", "linear"),
+			copiedBundledSkill(copiedSkillsDirectory, "notion", "notion"),
+		];
+		await ensureKernelBun({ javascriptSkills });
+		const savedEnvironment = {
+			cache: process.env.BUN_INSTALL_CACHE_DIR,
+			global: process.env.BUN_GLOBAL_DIR,
+			noInstall: process.env.BUN_CONFIG_NO_INSTALL,
+			registry: process.env.BUN_CONFIG_REGISTRY,
+		};
+		process.env.BUN_INSTALL_CACHE_DIR = join(tempDir, "empty-bun-cache");
+		process.env.BUN_GLOBAL_DIR = join(tempDir, "empty-bun-global");
+		process.env.BUN_CONFIG_NO_INSTALL = "1";
+		process.env.BUN_CONFIG_REGISTRY = "http://127.0.0.1:1";
+		const manager = new KernelManager({
+			cwd: tempDir,
+			javascriptSkills,
+		});
+		try {
+			const result = await manager.execute(`
+console.log(typeof linear.callTool, typeof notion.callTool);
+try { await attachImage(); } catch (error) { console.log(error instanceof Error ? error.message : String(error)); }
+`);
+
+			expect(result).toMatchObject({ status: "ok" });
+			expect(result.stdout).toContain("function function");
+			expect(result.stdout).toContain("attachImage requires at least one image path");
+			expect(result.stderr).toBe("");
+		} finally {
+			await manager.dispose();
+			for (const [name, value] of [
+				["BUN_INSTALL_CACHE_DIR", savedEnvironment.cache],
+				["BUN_GLOBAL_DIR", savedEnvironment.global],
+				["BUN_CONFIG_NO_INSTALL", savedEnvironment.noInstall],
+				["BUN_CONFIG_REGISTRY", savedEnvironment.registry],
+			] as const) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+	}, 60_000);
 
 	it("memoizes concurrent startup and exposes the same running manager", async () => {
 		const provisioner = new BunKernelProvisioner(tempDir);

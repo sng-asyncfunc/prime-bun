@@ -46,6 +46,24 @@ describe("Bun runtime contract", () => {
 		expect(readVersion).toHaveBeenCalledWith("/path/bun");
 	});
 
+	it("prefers and validates the home install after running the official installer", async () => {
+		const readVersion = vi.fn(async (executablePath: string) =>
+			executablePath === "/home/tester/.bun/bin/bun" ? "1.3.14" : "1.3.13",
+		);
+
+		const runtime = await resolveBunRuntime({
+			env: {},
+			findOnPath: async () => "/obsolete-path/bun",
+			homeDirectory: "/home/tester",
+			preferHomeInstall: true,
+			readVersion,
+		});
+
+		expect(runtime).toEqual({ path: "/home/tester/.bun/bin/bun", version: "1.3.14" });
+		expect(readVersion).toHaveBeenCalledWith("/home/tester/.bun/bin/bun");
+		expect(readVersion).not.toHaveBeenCalledWith("/obsolete-path/bun");
+	});
+
 	it("falls back to ~/.bun/bin/bun", async () => {
 		const readVersion = vi.fn(async () => "1.3.14");
 

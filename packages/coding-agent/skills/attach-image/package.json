@@ -2,6 +2,9 @@
 	"name": "@prime-agent/skill-attach-image",
 	"private": true,
 	"type": "module",
+	"dependencies": {
+		"@silvia-odwyer/photon-node": "0.3.4"
+	},
 	"primeAgent": {
 		"entry": "src/index.ts",
 		"global": "attachImage"

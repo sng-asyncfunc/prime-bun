@@ -33,6 +33,7 @@ export interface ResolveBunRuntimeOptions {
 	env?: NodeJS.ProcessEnv;
 	homeDirectory?: string;
 	findOnPath?: (name: string, env: NodeJS.ProcessEnv) => Promise<string | undefined>;
+	preferHomeInstall?: boolean;
 	readVersion?: (executablePath: string) => Promise<string>;
 }
 
@@ -112,9 +113,11 @@ export async function resolveBunRuntime(options: ResolveBunRuntimeOptions = {}):
 	const env = options.env ?? process.env;
 	const versionReader = options.readVersion ?? readVersion;
 	const overriddenPath = env.PRIME_AGENT_KERNEL_BUN?.trim();
-	const pathExecutable = overriddenPath ? undefined : await (options.findOnPath ?? findOnPath)("bun", env);
+	const homeExecutable = join(options.homeDirectory ?? homedir(), ".bun", "bin", "bun");
+	const pathExecutable =
+		overriddenPath || options.preferHomeInstall ? undefined : await (options.findOnPath ?? findOnPath)("bun", env);
 	const executablePath =
-		overriddenPath || pathExecutable || join(options.homeDirectory ?? homedir(), ".bun", "bin", "bun");
+		overriddenPath || (options.preferHomeInstall ? homeExecutable : pathExecutable || homeExecutable);
 
 	let version: string;
 	try {

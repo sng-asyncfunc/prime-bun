@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { stderr, stdin } from "node:process";
@@ -36,8 +36,8 @@ export type KernelBootstrapProgressHandler = (message: string) => void;
 
 export interface KernelBunRuntime extends ResolvedBunRuntime {
 	kernelDirectory: string;
+	preparedSkills: JavaScriptSkillRuntimeInfo[];
 	workerPath: string;
-	skillNodePaths: string[];
 	skillDiagnostics: Array<{ name: string; message: string }>;
 }
 
@@ -195,7 +195,7 @@ async function resolveOrInstallBun(options: EnsureKernelBunOptions): Promise<Res
 		}
 		try {
 			await installBun(options);
-			return await resolveBunRuntime();
+			return await resolveBunRuntime({ homeDirectory: homeDirectory(), preferHomeInstall: true });
 		} catch (installError) {
 			throw new Error(
 				`couldn't install Bun from bun.sh; run ${BUN_INSTALL_COMMAND}, then retry. ${errorMessage(installError)}`,
@@ -344,9 +344,18 @@ async function provisionKernelRuntime(
 				path.join(kernelDirectory, `${name}${assets.extension}`),
 			);
 		}
+		const existingDependencies = await readKernelDependencies(kernelDirectory);
 		await writeAtomic(
 			path.join(kernelDirectory, "package.json"),
-			`${JSON.stringify({ private: true, type: "module", dependencies: KERNEL_DEPENDENCIES }, null, 2)}\n`,
+			`${JSON.stringify(
+				{
+					private: true,
+					type: "module",
+					dependencies: { ...existingDependencies, ...KERNEL_DEPENDENCIES },
+				},
+				null,
+				2,
+			)}\n`,
 		);
 		await run(runtime.path, ["install", "--production"], { cwd: kernelDirectory });
 		await writeAtomic(
@@ -356,6 +365,17 @@ async function provisionKernelRuntime(
 		reportProgress(options, "✓ Bun runtime ready");
 	} finally {
 		await releaseLock().catch(() => undefined);
+	}
+}
+
+async function readKernelDependencies(kernelDirectory: string): Promise<Record<string, string>> {
+	const packageJsonPath = path.join(kernelDirectory, "package.json");
+	try {
+		const metadata: unknown = JSON.parse(await readFile(packageJsonPath, "utf8"));
+		if (!isRecord(metadata)) return {};
+		return readDependencyRecord(metadata.dependencies, "dependencies", packageJsonPath);
+	} catch {
+		return {};
 	}
 }
 
@@ -405,35 +425,94 @@ async function skillDependencyCacheCurrent(cacheDirectory: string, signature: st
 	}
 }
 
+function preparedSkillPaths(cacheDirectory: string, skill: JavaScriptSkillRuntimeInfo): JavaScriptSkillRuntimeInfo {
+	const relativeEntryPath = path.relative(skill.packagePath, skill.entryPath);
+	if (
+		!relativeEntryPath ||
+		relativeEntryPath === ".." ||
+		relativeEntryPath.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relativeEntryPath)
+	) {
+		throw new Error(`JavaScript skill entry ${skill.entryPath} must stay inside ${skill.packagePath}`);
+	}
+	const packagePath = path.join(cacheDirectory, "source", path.basename(skill.packagePath));
+	return {
+		...skill,
+		entryPath: path.join(packagePath, relativeEntryPath),
+		packageJsonPath: path.join(packagePath, path.basename(skill.packageJsonPath)),
+		packagePath,
+	};
+}
+
+async function copySkillSource(destinationRoot: string, skill: JavaScriptSkillRuntimeInfo): Promise<void> {
+	await mkdir(destinationRoot, { recursive: true });
+	await cp(skill.packagePath, path.join(destinationRoot, path.basename(skill.packagePath)), {
+		filter: (source) => {
+			const name = path.basename(source);
+			return name !== "node_modules" && name !== ".git";
+		},
+		force: true,
+		recursive: true,
+	});
+	const sharedSource = path.join(path.dirname(skill.packagePath), "_shared");
+	if (await exists(sharedSource)) {
+		await cp(sharedSource, path.join(destinationRoot, "_shared"), {
+			filter: (source) => path.basename(source) !== "node_modules",
+			force: true,
+			recursive: true,
+		});
+	}
+}
+
+async function refreshPreparedSkillSource(
+	cacheDirectory: string,
+	skill: JavaScriptSkillRuntimeInfo,
+): Promise<JavaScriptSkillRuntimeInfo> {
+	const temporarySource = path.join(cacheDirectory, `.source.${process.pid}.${randomUUID()}.tmp`);
+	try {
+		await copySkillSource(temporarySource, skill);
+		await rm(path.join(cacheDirectory, "source"), { force: true, recursive: true });
+		await rename(temporarySource, path.join(cacheDirectory, "source"));
+	} finally {
+		await rm(temporarySource, { force: true, recursive: true }).catch(() => undefined);
+	}
+	return preparedSkillPaths(cacheDirectory, skill);
+}
+
 async function provisionSkillDependencyCache(
 	runtime: ResolvedBunRuntime,
 	kernelDirectory: string,
 	skill: JavaScriptSkillRuntimeInfo,
 	dependencies: Record<string, string>,
-): Promise<string | undefined> {
-	if (Object.keys(dependencies).length === 0) return undefined;
+): Promise<JavaScriptSkillRuntimeInfo> {
+	if (Object.keys(dependencies).length === 0) return skill;
 	const identity = JSON.stringify({ packageJsonPath: path.resolve(skill.packageJsonPath), dependencies });
 	const signature = `sha256:${createHash("sha256").update(identity).digest("hex")}`;
 	const cacheDirectory = path.join(kernelDirectory, "skill-deps", signature.slice("sha256:".length, 38));
-	if (await skillDependencyCacheCurrent(cacheDirectory, signature)) {
-		return path.join(cacheDirectory, "node_modules");
-	}
 	const releaseLock = await acquireBootstrapLock(cacheDirectory);
 	try {
 		if (await skillDependencyCacheCurrent(cacheDirectory, signature)) {
-			return path.join(cacheDirectory, "node_modules");
+			return await refreshPreparedSkillSource(cacheDirectory, skill);
 		}
-		await mkdir(cacheDirectory, { recursive: true });
-		await writeAtomic(
-			path.join(cacheDirectory, "package.json"),
-			`${JSON.stringify({ private: true, dependencies }, null, 2)}\n`,
-		);
-		await run(runtime.path, ["install", "--production"], { cwd: cacheDirectory });
-		await writeAtomic(
-			path.join(cacheDirectory, SKILL_DEPENDENCY_STATE_FILE),
-			`${JSON.stringify({ signature, packageJsonPath: path.resolve(skill.packageJsonPath) })}\n`,
-		);
-		return path.join(cacheDirectory, "node_modules");
+		const temporaryCache = `${cacheDirectory}.${process.pid}.${randomUUID()}.tmp`;
+		try {
+			await mkdir(temporaryCache, { recursive: true });
+			await copySkillSource(path.join(temporaryCache, "source"), skill);
+			await writeAtomic(
+				path.join(temporaryCache, "package.json"),
+				`${JSON.stringify({ private: true, dependencies }, null, 2)}\n`,
+			);
+			await run(runtime.path, ["install", "--production"], { cwd: temporaryCache });
+			await writeAtomic(
+				path.join(temporaryCache, SKILL_DEPENDENCY_STATE_FILE),
+				`${JSON.stringify({ signature, packageJsonPath: path.resolve(skill.packageJsonPath) })}\n`,
+			);
+			await rm(cacheDirectory, { force: true, recursive: true });
+			await rename(temporaryCache, cacheDirectory);
+			return preparedSkillPaths(cacheDirectory, skill);
+		} finally {
+			await rm(temporaryCache, { force: true, recursive: true }).catch(() => undefined);
+		}
 	} finally {
 		await releaseLock().catch(() => undefined);
 	}
@@ -443,21 +522,24 @@ async function provisionSkillDependencies(
 	runtime: ResolvedBunRuntime,
 	kernelDirectory: string,
 	options: EnsureKernelBunOptions,
-): Promise<{ skillNodePaths: string[]; skillDiagnostics: Array<{ name: string; message: string }> }> {
-	const skillNodePaths: string[] = [];
+): Promise<{
+	preparedSkills: JavaScriptSkillRuntimeInfo[];
+	skillDiagnostics: Array<{ name: string; message: string }>;
+}> {
+	const preparedSkills: JavaScriptSkillRuntimeInfo[] = [];
 	const skillDiagnostics: Array<{ name: string; message: string }> = [];
 	for (const skill of options.javascriptSkills ?? []) {
 		try {
 			const dependencies = await readSkillDependencies(skill);
-			const nodePath = await provisionSkillDependencyCache(runtime, kernelDirectory, skill, dependencies);
-			if (nodePath) skillNodePaths.push(nodePath);
+			preparedSkills.push(await provisionSkillDependencyCache(runtime, kernelDirectory, skill, dependencies));
 		} catch (error) {
 			const message = `JavaScript skill ${skill.name} dependencies are unavailable: ${errorMessage(error)}`;
 			skillDiagnostics.push({ name: skill.name, message });
+			preparedSkills.push(skill);
 			reportProgress(options, `! ${message}`);
 		}
 	}
-	return { skillDiagnostics, skillNodePaths };
+	return { preparedSkills, skillDiagnostics };
 }
 
 function ensureKey(options: EnsureKernelBunOptions): string {

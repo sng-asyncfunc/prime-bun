@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -56,6 +56,34 @@ function createRuntimeAssets(): string {
 		writeFileSync(join(sourceDirectory, `${name}.ts`), `export const ${name.replaceAll("-", "_")} = true;\n`);
 	}
 	return sourceDirectory;
+}
+
+function createJavaScriptSkill(
+	name: string,
+	dependencyName: string,
+	dependencyVersion: string,
+): {
+	entryPath: string;
+	globalName: string;
+	name: string;
+	packageJsonPath: string;
+	packagePath: string;
+} {
+	const packagePath = join(tempDir, "skills", name);
+	const entryPath = join(packagePath, "src", "index.ts");
+	mkdirSync(join(packagePath, "src"), { recursive: true });
+	writeFileSync(entryPath, `export default ${JSON.stringify(name)};\n`);
+	writeFileSync(
+		join(packagePath, "package.json"),
+		`${JSON.stringify({ dependencies: { [dependencyName]: dependencyVersion }, private: true, type: "module" })}\n`,
+	);
+	return {
+		entryPath,
+		globalName: name.replaceAll("-", "_"),
+		name,
+		packageJsonPath: join(packagePath, "package.json"),
+		packagePath,
+	};
 }
 
 function expectProvisioned(runtime: KernelBunRuntime, kernelDirectory: string): void {
@@ -162,6 +190,75 @@ describe("Bun kernel bootstrap", () => {
 		expect(first.workerPath).toBe(second.workerPath);
 	});
 
+	it("preserves notebook-installed packages when runtime assets refresh", async () => {
+		installFakeBun();
+		const runtimeSourceDirectory = createRuntimeAssets();
+		const first = await ensureKernelBun({ runtimeSourceDirectory });
+		const packageJsonPath = join(first.kernelDirectory, "package.json");
+		const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+			dependencies: Record<string, string>;
+		};
+		packageJson.dependencies["user-notebook-package"] = "^2.4.0";
+		writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+		mkdirSync(join(first.kernelDirectory, "node_modules", "user-notebook-package"), { recursive: true });
+		writeFileSync(join(first.kernelDirectory, "node_modules", "user-notebook-package", "package.json"), "{}\n");
+		writeFileSync(join(runtimeSourceDirectory, "bun-worker.ts"), "export const refreshed = true;\n");
+
+		const second = await ensureKernelBun({ runtimeSourceDirectory });
+		const refreshedPackageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+			dependencies: Record<string, string>;
+		};
+
+		expect(refreshedPackageJson.dependencies["user-notebook-package"]).toBe("^2.4.0");
+		expect(existsSync(join(second.kernelDirectory, "node_modules", "user-notebook-package", "package.json"))).toBe(
+			true,
+		);
+	});
+
+	it("prepares each dependency-bearing skill in an isolated cache-local package", async () => {
+		installFakeBun();
+		const first = createJavaScriptSkill("first-skill", "shared-dependency", "1.0.0");
+		const second = createJavaScriptSkill("second-skill", "shared-dependency", "2.0.0");
+
+		const runtime = await ensureKernelBun({
+			javascriptSkills: [first, second],
+			runtimeSourceDirectory: createRuntimeAssets(),
+		});
+
+		expect(runtime.preparedSkills).toHaveLength(2);
+		const [preparedFirst, preparedSecond] = runtime.preparedSkills;
+		expect(preparedFirst?.entryPath).not.toBe(first.entryPath);
+		expect(preparedSecond?.entryPath).not.toBe(second.entryPath);
+		expect(preparedFirst?.entryPath).not.toBe(preparedSecond?.entryPath);
+		expect(preparedFirst?.entryPath).toContain(join(runtime.kernelDirectory, "skill-deps"));
+		expect(preparedSecond?.entryPath).toContain(join(runtime.kernelDirectory, "skill-deps"));
+		expect(readFileSync(preparedFirst?.entryPath ?? "", "utf8")).toContain("first-skill");
+		expect(readFileSync(preparedSecond?.entryPath ?? "", "utf8")).toContain("second-skill");
+	});
+
+	it("isolates a failed skill dependency install from successful skills", async () => {
+		const { bun } = installFakeBun();
+		const script = readFileSync(bun, "utf8").replace(
+			'if [ "$1" = "install" ]; then',
+			'if [ "$1" = "install" ] && /usr/bin/grep -q broken-dependency package.json; then exit 17; fi\nif [ "$1" = "install" ]; then',
+		);
+		writeExecutable(bun, script);
+		const broken = createJavaScriptSkill("broken-skill", "broken-dependency", "1.0.0");
+		const healthy = createJavaScriptSkill("healthy-skill", "healthy-dependency", "1.0.0");
+
+		const runtime = await ensureKernelBun({
+			javascriptSkills: [broken, healthy],
+			runtimeSourceDirectory: createRuntimeAssets(),
+		});
+
+		expect(runtime.skillDiagnostics).toEqual([
+			expect.objectContaining({ name: "broken-skill", message: expect.stringContaining("exit code 17") }),
+		]);
+		expect(runtime.preparedSkills[0]).toEqual(broken);
+		expect(runtime.preparedSkills[1]?.entryPath).not.toBe(healthy.entryPath);
+		expect(readFileSync(runtime.preparedSkills[1]?.entryPath ?? "", "utf8")).toContain("healthy-skill");
+	});
+
 	it("rejects Bun versions older than the supported baseline", async () => {
 		installFakeBun("1.3.13");
 
@@ -187,5 +284,34 @@ describe("Bun kernel bootstrap", () => {
 
 		expect(installRuntime).toHaveBeenCalledOnce();
 		expect(runtime.version).toBe("1.3.14");
+	});
+
+	it("uses the newly installed home Bun when PATH still contains an old release", async () => {
+		installFakeBun("1.3.13");
+		process.env.PRIME_AGENT_INSTALL_BUN = "1";
+		const installedBun = join(tempDir, ".bun", "bin", "bun");
+		const installRuntime = vi.fn(async () => {
+			mkdirSync(join(tempDir, ".bun", "bin"), { recursive: true });
+			writeExecutable(
+				installedBun,
+				[
+					"#!/bin/sh",
+					'if [ "$1" = "--version" ]; then printf "1.3.14\\n"; exit 0; fi',
+					'if [ "$1" = "install" ]; then',
+					"  /bin/mkdir -p node_modules/acorn node_modules/@modelcontextprotocol/sdk",
+					'  printf "{}\\n" > node_modules/acorn/package.json',
+					'  printf "{}\\n" > node_modules/@modelcontextprotocol/sdk/package.json',
+					"  exit 0",
+					"fi",
+					"exit 2",
+					"",
+				].join("\n"),
+			);
+		});
+
+		const runtime = await ensureKernelBun({ installRuntime, runtimeSourceDirectory: createRuntimeAssets() });
+
+		expect(installRuntime).toHaveBeenCalledOnce();
+		expect(runtime).toMatchObject({ path: installedBun, version: "1.3.14" });
 	});
 });

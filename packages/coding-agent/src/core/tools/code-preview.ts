@@ -10,7 +10,7 @@ const JAVASCRIPT_DEFINITION_PATTERN =
 const JAVASCRIPT_CONTROL_PATTERN = /^\s*(?:if|else|for|while|switch|try|catch|finally)\b/;
 const JAVASCRIPT_CALL_PATTERN = /^\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\(/;
 const JAVASCRIPT_LOW_SIGNAL_CALL_PATTERN =
-	/^\s*(?:await\s+)?(?:console\.(?:log|error|warn)|JSON\.(?:parse|stringify)|String|Number|Boolean|Array|Object)\s*\(/;
+	/^\s*(?:await\s+)?(?:process\.chdir|console\.(?:log|error|warn)|JSON\.(?:parse|stringify)|String|Number|Boolean|Array|Object)\s*\(/;
 const JAVASCRIPT_ASSIGNMENT_CALL_PATTERN =
 	/^\s*(?:const|let|var)\s+[A-Za-z_$][\w$]*(?:\s*:\s*[^=]+)?\s*=\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\(/;
 const JAVASCRIPT_EFFECT_CALL_PATTERN =

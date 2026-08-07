@@ -48,6 +48,16 @@ await Bun.write(path, text.replace("old", "new"));`;
 		});
 	});
 
+	it("prefers repository inspection over cwd setup", () => {
+		const code = `process.chdir('/Users/sheing/temp/sharenow');
+const readme = await fs.promises.readFile('README.md','utf8');
+console.log(readme);`;
+		expect(previewJavaScriptCode(code)).toEqual({
+			language: "javascript",
+			text: "const readme = await fs.promises.readFile('README.md','utf8');",
+		});
+	});
+
 	it("handles stronger bash heuristics", () => {
 		expect(previewBashCommand("cd packages/coding-agent && npm --prefix ../.. run check")).toEqual({
 			language: "bash",

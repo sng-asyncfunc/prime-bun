@@ -1,6 +1,7 @@
+import { performance } from "node:perf_hooks";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import stripAnsi from "strip-ansi";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.js";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 
@@ -157,6 +158,61 @@ describe("AssistantMessageComponent streaming identity", () => {
 			const message = createAssistantMessage([{ type: "text", text }]);
 			component.updateContent(message);
 			expectIdentity(component, message);
+		}
+	});
+
+	test("renders the latest skipped update at the trailing edge", () => {
+		vi.useFakeTimers();
+		const now = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			initTheme("dark");
+			const component = new AssistantMessageComponent();
+			const requestRender = vi.fn();
+			const first = createAssistantMessage([{ type: "text", text: "first" }]);
+			const latest = createAssistantMessage([{ type: "text", text: "latest" }]);
+
+			expect(component.updateStreamingContent(first, requestRender)).toBe(true);
+			expect(stripAnsi(component.render(90).join("\n"))).toContain("first");
+
+			now.mockReturnValue(10);
+			expect(component.updateStreamingContent(latest, requestRender)).toBe(false);
+			const cached = stripAnsi(component.render(90).join("\n"));
+			expect(cached).toContain("first");
+			expect(cached).not.toContain("latest");
+
+			vi.advanceTimersByTime(39);
+			expect(requestRender).not.toHaveBeenCalled();
+			now.mockReturnValue(50);
+			vi.advanceTimersByTime(1);
+			expect(requestRender).toHaveBeenCalledOnce();
+			expect(stripAnsi(component.render(90).join("\n"))).toContain("latest");
+		} finally {
+			now.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	test("cancels a trailing render when an immediate update finalizes the message", () => {
+		vi.useFakeTimers();
+		const now = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			initTheme("dark");
+			const component = new AssistantMessageComponent();
+			const requestRender = vi.fn();
+			component.updateStreamingContent(createAssistantMessage([{ type: "text", text: "first" }]), requestRender);
+			component.render(90);
+
+			now.mockReturnValue(10);
+			component.updateStreamingContent(createAssistantMessage([{ type: "text", text: "pending" }]), requestRender);
+			component.updateContent(createAssistantMessage([{ type: "text", text: "final" }]));
+
+			now.mockReturnValue(50);
+			vi.advanceTimersByTime(40);
+			expect(requestRender).not.toHaveBeenCalled();
+			expect(stripAnsi(component.render(90).join("\n"))).toContain("final");
+		} finally {
+			now.mockRestore();
+			vi.useRealTimers();
 		}
 	});
 

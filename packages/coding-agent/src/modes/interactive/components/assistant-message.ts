@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { type Component, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
 import { LOGIN_RECOVERY_MESSAGE } from "../../../core/auth-guidance.js";
@@ -13,6 +14,7 @@ const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 const LOGIN_RECOVERY_SUFFIX = `\n\n${LOGIN_RECOVERY_MESSAGE}`;
+const STREAMING_RENDER_INTERVAL_MS = 50;
 
 export interface AssistantMessageComponentOptions {
 	expanded?: boolean;
@@ -52,10 +54,9 @@ function formatInlineLoginRecoveryMessage(message: string): string | undefined {
 /**
  * Component that renders a complete assistant message.
  *
- * Streaming sends one updateContent() per token, so content updates are
- * reconciled lazily at render time (at most once per frame): when the block
- * structure is unchanged, only the text of changed blocks is updated in place,
- * preserving each Markdown child's render cache instead of rebuilding the tree.
+ * Streaming updates are admitted at a bounded cadence, then reconciled lazily
+ * at render time. When the block structure is unchanged, only changed block
+ * text is updated in place, preserving each Markdown child's render cache.
  */
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
@@ -70,6 +71,8 @@ export class AssistantMessageComponent extends Container {
 	private blockMarkdowns = new Map<number, Markdown>();
 	private lastBlockTexts = new Map<number, string>();
 	private precededByToolActivity: boolean;
+	private lastStreamingRenderAt = Number.NEGATIVE_INFINITY;
+	private streamingRenderTimer: NodeJS.Timeout | undefined;
 
 	constructor(
 		message?: AssistantMessage,
@@ -137,8 +140,43 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	updateContent(message: AssistantMessage): void {
+		this.cancelStreamingRender();
 		this.lastMessage = message;
 		this.dirty = true;
+	}
+
+	/** Keep the latest snapshot, but only admit expensive transcript frames at 20 fps. */
+	updateStreamingContent(message: AssistantMessage, requestRender: () => void): boolean {
+		this.lastMessage = message;
+		const now = performance.now();
+		const elapsed = now - this.lastStreamingRenderAt;
+		if (elapsed < STREAMING_RENDER_INTERVAL_MS) {
+			if (!this.streamingRenderTimer) {
+				this.streamingRenderTimer = setTimeout(() => {
+					this.streamingRenderTimer = undefined;
+					this.lastStreamingRenderAt = performance.now();
+					this.dirty = true;
+					requestRender();
+				}, STREAMING_RENDER_INTERVAL_MS - elapsed);
+				this.streamingRenderTimer.unref?.();
+			}
+			return false;
+		}
+		this.cancelStreamingRender();
+		this.lastStreamingRenderAt = now;
+		this.dirty = true;
+		return true;
+	}
+
+	dispose(): void {
+		this.cancelStreamingRender();
+	}
+
+	private cancelStreamingRender(): void {
+		if (this.streamingRenderTimer) {
+			clearTimeout(this.streamingRenderTimer);
+			this.streamingRenderTimer = undefined;
+		}
 	}
 
 	/**

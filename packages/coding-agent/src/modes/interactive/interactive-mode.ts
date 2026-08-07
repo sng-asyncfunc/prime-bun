@@ -2803,6 +2803,7 @@ export class InteractiveMode {
 				this.pastedImages.delete(markerId);
 			}
 		}
+		this.streamingComponent?.dispose();
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		// The discarded component's loader interval keeps firing otherwise; no
@@ -2854,6 +2855,7 @@ export class InteractiveMode {
 	private async renderResyncedSession(snapshot: AgentConnectionSnapshot): Promise<void> {
 		const bashFinished = this.isBashRunning() && !snapshot.state.isBashRunning;
 		this.applyConnectionStateSnapshot(snapshot.state);
+		this.streamingComponent?.dispose();
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.rlmNodeId = snapshot.parent?.childId;
@@ -5405,14 +5407,21 @@ export class InteractiveMode {
 			case "message_update":
 				if (event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					this.ensureAssistantStreamingComponent(event.message).updateContent(this.streamingMessage);
+					const component = this.ensureAssistantStreamingComponent(event.message);
+					const shouldRender = component.updateStreamingContent(this.streamingMessage, () => {
+						if (this.streamingComponent === component) {
+							this.ui.requestRender();
+						}
+					});
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
 							await this.getOrCreatePendingToolComponent(content);
 						}
 					}
-					this.ui.requestRender();
+					if (shouldRender) {
+						this.ui.requestRender();
+					}
 				}
 				break;
 
@@ -5452,6 +5461,7 @@ export class InteractiveMode {
 							component.setArgsComplete();
 						}
 					}
+					this.streamingComponent?.dispose();
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 					this.footer.invalidate();
@@ -5523,6 +5533,7 @@ export class InteractiveMode {
 					} else {
 						this.chatContainer.removeChild(this.streamingComponent);
 					}
+					this.streamingComponent.dispose();
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 				}
@@ -5648,6 +5659,7 @@ export class InteractiveMode {
 	}
 
 	private startAssistantStreamingMessage(message: AssistantMessage): void {
+		this.streamingComponent?.dispose();
 		this.streamingComponent = new AssistantMessageComponent(
 			undefined,
 			this.hideThinkingBlock,
@@ -9678,6 +9690,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 		this.stopGoalTrayTimer();
 		this.closeHeartbeatManager();
 		this.clearExtensionTerminalInputListeners();
+		this.streamingComponent?.dispose();
 		this.footer.dispose();
 		this.footerDataProvider.dispose();
 		if (this.unsubscribe) {

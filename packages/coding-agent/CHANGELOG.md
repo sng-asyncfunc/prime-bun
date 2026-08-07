@@ -12,6 +12,7 @@
 - Added top-level `return` support to Bun JavaScript and TypeScript cells, including conditional exits that retain the latest values of prior bindings.
 - Changed JavaScript tool summaries to use a compact `js` label, adaptive two-row intent previews, and meaningful operations instead of cwd setup.
 - Changed the source-checkout command to npm-linked `prime-bun`, with Prime Bun help text and a separate default daemon socket.
+- Fixed chat input and scrolling lag during high-frequency response streaming.
 
 ## [0.7.0] - 2026-08-05
 

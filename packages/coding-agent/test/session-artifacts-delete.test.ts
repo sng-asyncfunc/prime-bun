@@ -25,7 +25,7 @@ describe("deleteSessionFile removes the session artifact directory", () => {
 
 		const artifactDir = join(root, "session-artifacts", sessionId);
 		mkdirSync(artifactDir, { recursive: true });
-		writeFileSync(join(artifactDir, "kernel-state.dill"), "payload");
+		writeFileSync(join(artifactDir, "kernel-state.bin"), "payload");
 		writeFileSync(join(artifactDir, "kernel-state.json"), "{}");
 		writeFileSync(join(artifactDir, "scheduled-jobs.json"), '{"jobs":[],"dispatches":[]}\n');
 
@@ -45,7 +45,7 @@ describe("deleteSessionFile removes the session artifact directory", () => {
 
 		const artifactDir = join(root, "session-artifacts", sessionId);
 		mkdirSync(artifactDir, { recursive: true });
-		writeFileSync(join(artifactDir, "kernel-state.dill"), "payload");
+		writeFileSync(join(artifactDir, "kernel-state.bin"), "payload");
 		let wasSessionRemovedBeforeCallback = false;
 		let wereArtifactsPresentDuringCallback = false;
 

@@ -9,6 +9,9 @@ import {
 	snapshotValueSkipReason,
 } from "../src/core/kernel/state-snapshot.js";
 
+const float16ArrayConstructor = (globalThis as { Float16Array?: new (values: Iterable<number>) => object })
+	.Float16Array;
+
 describe("Bun kernel state snapshot paths", () => {
 	it("places the binary payload and manifest in the session artifact directory", () => {
 		const artifactDir = "/home/u/.prime/agent/session-artifacts/abc-123";
@@ -71,6 +74,10 @@ describe("snapshotValueSkipReason", () => {
 		} finally {
 			objectKeysSpy.mockRestore();
 		}
+	});
+
+	it.skipIf(float16ArrayConstructor === undefined)("accepts Float16Array when the host supports it", () => {
+		expect(snapshotValueSkipReason(new float16ArrayConstructor!([1.5, -2.25]))).toBeUndefined();
 	});
 
 	it("rejects unsupported values at any nesting depth", () => {

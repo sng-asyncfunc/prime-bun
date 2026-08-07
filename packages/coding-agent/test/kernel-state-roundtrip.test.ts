@@ -102,6 +102,34 @@ largeBytes[largeBytes.length - 1] = 251;
 		}
 	});
 
+	it("restores Float16Array values after restart", async () => {
+		const snapshotConfig = { path: snapshotPath, manifestPath, debounceMs: 60_000 };
+		const writer = createManager({ snapshot: snapshotConfig });
+		try {
+			await writer.execute(`
+const float16Values = new Float16Array([1.5, -2.25, 0.5]);
+`);
+			const snapshot = await writer.snapshotState();
+			expect(snapshot?.saved).toContain("float16Values");
+		} finally {
+			await writer.dispose();
+		}
+
+		const reader = createManager({ snapshot: snapshotConfig });
+		try {
+			expect((await reader.restoreState())?.restored).toContain("float16Values");
+			const result = await reader.execute(
+				`({ first: float16Values[0], middle: float16Values[1], last: float16Values[2], tag: Object.prototype.toString.call(float16Values) })`,
+			);
+			expect(result.result).toContain("first: 1.5");
+			expect(result.result).toContain("middle: -2.25");
+			expect(result.result).toContain("last: 0.5");
+			expect(result.result).toContain('tag: "[object Float16Array]"');
+		} finally {
+			await reader.dispose();
+		}
+	});
+
 	it("treats a missing snapshot as an empty restore", async () => {
 		const missingPath = join(directory, "missing.bin");
 		const manager = createManager({ snapshot: { path: missingPath, manifestPath: join(directory, "missing.json") } });

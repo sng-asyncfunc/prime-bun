@@ -141,6 +141,8 @@ export function decodeSnapshotPayload(payload: Uint8Array): SnapshotPayloadEntry
 	});
 }
 
+const float16ArrayConstructor = (globalThis as { Float16Array?: { prototype: object } }).Float16Array;
+
 const TYPED_ARRAY_PROTOTYPES = new Set<object>([
 	Int8Array.prototype,
 	Uint8Array.prototype,
@@ -153,6 +155,7 @@ const TYPED_ARRAY_PROTOTYPES = new Set<object>([
 	Float64Array.prototype,
 	BigInt64Array.prototype,
 	BigUint64Array.prototype,
+	...(float16ArrayConstructor ? [float16ArrayConstructor.prototype] : []),
 ]);
 
 function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: string): string | undefined {

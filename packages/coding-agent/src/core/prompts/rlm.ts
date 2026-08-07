@@ -14,7 +14,7 @@ const JAVASCRIPT_CONTROL_PROMPT = [
 	"",
 	"Do not assume Bun is the native runtime of the external thing being investigated. A repository, package, service, dataset, paper, website, benchmark, or API may have its own environment and normal interface. Evaluate external systems through their own interface, then use the JavaScript notebook to coordinate the process and analyze what comes back.",
 	"",
-	"Run shell commands with `await sh(command)` or Bun Shell tagged templates. `sh` uses the configured project shell and command prefix. `await sh(command)` returns `{ exitCode, stdout, stderr }`; use `await sh(command).text()` for stdout or `.json()` for parsed JSON. Use ordinary JavaScript around those calls for branching, parallelism, and output processing.",
+	"Run ordinary shell commands through Bun Shell's fast native path: `await $`command`.quiet()`. Bun Shell `$` is the fast path for ordinary commands. `sh(command)` uses the configured project shell and command prefix when those semantics matter; Bun Shell does not automatically apply either. `await sh(command)` returns `{ exitCode, stdout, stderr }`; use `await sh(command).text()` for stdout or `await sh(command).json()` for parsed JSON. Use ordinary JavaScript around those calls for branching, parallelism, and output processing.",
 	"",
 	"Important: do not install dependencies into the Bun notebook just to make an external project import or run there. Run project imports, tests, scripts, CLIs, and dependency checks through the target project's own environment and documented commands. Treat failures from that native environment as the relevant result. Use `await installPackage('pkg')` only for notebook-specific helper packages.",
 	"",

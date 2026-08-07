@@ -43,7 +43,7 @@ const largeFiles = await Promise.all(
 );
 ```
 
-Run project commands through their own environment with Bun Shell:
+Run ordinary project commands through Bun Shell's fast native path. Bun Shell does not automatically apply Prime Agent's configured project shell or command prefix:
 
 ```javascript
 const check = await $`npm run check`.quiet();
@@ -59,6 +59,8 @@ const data = await sh("some-command --json").json();
 ```
 
 Each Bun Shell call is a child process, while JavaScript bindings and `process.chdir()` changes persist in the notebook. Prime Agent extensions may intentionally add custom tools, but the built-in RLM design does not require a separate model tool for every capability.
+
+Bun batches cell output to reduce host-message overhead, stores checkpoints with bounded typed-array state, and reports provisioning, startup, queue, checkpoint, execution, and total timings in tool status. A checkpoint captures notebook state for the current session; it does not package the target project's environment or recover external processes.
 
 ### 2. Subagents are native RLM calls
 

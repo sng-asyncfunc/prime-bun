@@ -54,7 +54,16 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Runtime: Bun 1.3.14 or newer");
 		expect(prompt).toContain("Installed JavaScript skill globals (prepared): `websearch`, `refine`.");
 		expect(prompt).toContain("Bun is the agent's long-lived JavaScript notebook");
+		const bunShellIndex = prompt.indexOf("await $`command`.quiet()");
+		const shIndex = prompt.indexOf("await sh(command)");
+		expect(bunShellIndex).toBeGreaterThanOrEqual(0);
+		expect(shIndex).toBeGreaterThan(bunShellIndex);
+		expect(prompt).toContain("Bun Shell `$` is the fast path for ordinary commands");
+		expect(prompt).toContain("`sh(command)` uses the configured project shell and command prefix");
 		expect(prompt).toContain("await sh(command)");
+		expect(prompt).toContain("{ exitCode, stdout, stderr }");
+		expect(prompt).toContain("await sh(command).text()");
+		expect(prompt).toContain("await sh(command).json()");
 		expect(prompt).toContain("await installPackage('pkg')");
 		expect(prompt).toContain("process.chdir(dir)");
 		expect(prompt).toContain("JavaScript state persists across cells");

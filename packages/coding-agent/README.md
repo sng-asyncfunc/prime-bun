@@ -18,6 +18,7 @@ Prime Agent began as a hard fork of [pi-mono](https://github.com/badlogic/pi-mon
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [RLM Execution](#rlm-execution)
 - [Providers & Models](#providers--models)
 - [Interactive Mode](#interactive-mode)
   - [Editor](#editor)
@@ -71,6 +72,24 @@ Then just talk to Prime Agent. By default, Prime Agent gives the model one tool:
 The runtime is prepared automatically on first invocation and requires Bun 1.3.14 or newer. TypeScript syntax is transpiled for execution but is not type-checked. Set `PRIME_AGENT_KERNEL_BUN` to use a specific supported Bun executable.
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
+
+## RLM Execution
+
+For ordinary project commands, the Bun notebook uses Bun Shell's fast native path:
+
+```javascript
+const check = await $`npm run check`.quiet();
+```
+
+Bun Shell does not automatically apply Prime Agent's configured project shell or command prefix. Use `sh` when those semantics matter:
+
+```javascript
+const result = await sh("npm run check"); // { exitCode, stdout, stderr }
+const text = await sh("git status --short").text();
+const data = await sh("some-command --json").json();
+```
+
+Bun batches cell output to reduce host-message overhead, stores checkpoints with bounded typed-array state, and reports provisioning, startup, queue, checkpoint, execution, and total timings in tool status. A checkpoint captures notebook state for the current session; it does not package the target project's environment or recover external processes.
 
 ## Providers & Models
 

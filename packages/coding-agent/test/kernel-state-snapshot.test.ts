@@ -138,6 +138,47 @@ describe("snapshotValueSkipReason", () => {
 		}
 	});
 
+	it("accepts dense primitive arrays when user code modifies RegExp.prototype.test", () => {
+		const regexpTestSpy = vi.spyOn(RegExp.prototype, "test").mockImplementation(() => {
+			throw new Error("user-modified RegExp.prototype.test");
+		});
+		let reason: string | undefined;
+
+		try {
+			reason = snapshotValueSkipReason([1, "two", true, null, undefined, 3n]);
+		} finally {
+			regexpTestSpy.mockRestore();
+		}
+		expect(reason).toBeUndefined();
+	});
+
+	it("preserves sparse arrays while rejecting custom properties on them", () => {
+		const sparse: unknown[] = [];
+		sparse.length = 3;
+		sparse[0] = 1;
+		sparse[2] = 3;
+		const sparseWithState = Object.assign(sparse.slice(), { extra: true });
+
+		expect(snapshotValueSkipReason(sparse)).toBeUndefined();
+		expect(snapshotValueSkipReason(sparseWithState)).toMatch(/custom array properties/i);
+	});
+
+	it("ignores enumerable properties inherited by arrays", () => {
+		Object.defineProperty(Array.prototype, "primeInheritedSnapshotTest", {
+			configurable: true,
+			enumerable: true,
+			value: () => undefined,
+		});
+		let reason: string | undefined;
+		try {
+			reason = snapshotValueSkipReason([1, 2, 3]);
+		} finally {
+			Reflect.deleteProperty(Array.prototype, "primeInheritedSnapshotTest");
+		}
+
+		expect(reason).toBeUndefined();
+	});
+
 	it.skipIf(float16ArrayConstructor === undefined)("accepts Float16Array when the host supports it", () => {
 		expect(snapshotValueSkipReason(new float16ArrayConstructor!([1.5, -2.25]))).toBeUndefined();
 	});

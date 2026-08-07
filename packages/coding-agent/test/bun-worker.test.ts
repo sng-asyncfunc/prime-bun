@@ -239,6 +239,40 @@ describe("Bun worker", () => {
 		expect(result).toMatchObject({ bindingNames: ["typedValue"], status: "ok", value: "42" });
 	});
 
+	it("persists conditional return mutations after TypeScript transpilation", async () => {
+		client.send({
+			cellId: "top-level-return-cell",
+			code: `
+let returnSeed: number = 20;
+returnSeed += 1;
+if (returnSeed === 21) {
+	return ++returnSeed;
+}
+const unreachableReturnBinding: number = 99;
+`,
+			id: "top-level-return-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const returned = await client.waitForType("result", (message) => message.replyTo === "top-level-return-execute");
+		expect(returned).toMatchObject({ status: "ok", value: "22" });
+
+		client.send({
+			cellId: "top-level-return-persistence-cell",
+			code: "({ returnSeed, unreachableType: typeof unreachableReturnBinding });",
+			id: "top-level-return-persistence-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const persisted = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "top-level-return-persistence-execute",
+		);
+		requireSuccess(persisted);
+		expect(persisted.value).toContain("returnSeed: 22");
+		expect(persisted.value).toContain('unreachableType: "undefined"');
+	});
+
 	it("bounds inspected cell results before writing the protocol frame", async () => {
 		client.send({
 			cellId: "bounded-result-cell",
@@ -321,6 +355,44 @@ describe("Bun worker", () => {
 		expect(result.value).toContain('util: "ready-1"');
 		expect(result.value).toContain('require: "d"');
 		expect(result.value).toContain("webCrypto: true");
+	});
+
+	it("exposes await-first filesystem helpers while retaining sync and callback APIs", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-fs-global-"));
+		const filePath = join(directory, "README.md");
+		try {
+			await writeFile(filePath, "filesystem-ready", "utf8");
+			client.send({
+				cellId: "filesystem-global-cell",
+				code: `
+const awaited = await fs.readFile(${JSON.stringify(filePath)}, "utf8");
+const promised = await fs.promises.readFile(${JSON.stringify(filePath)}, "utf8");
+const synchronous = fs.readFileSync(${JSON.stringify(filePath)}, "utf8");
+const callback = await new Promise((resolve, reject) => {
+	fs.callbacks.readFile(${JSON.stringify(filePath)}, "utf8", (error, value) => {
+		if (error) reject(error);
+		else resolve(value);
+	});
+});
+({ awaited, promised, synchronous, callback });
+`,
+				id: "filesystem-global-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+
+			const result = await client.waitForType(
+				"result",
+				(message) => message.replyTo === "filesystem-global-execute",
+			);
+			requireSuccess(result);
+			expect(result.value).toContain('awaited: "filesystem-ready"');
+			expect(result.value).toContain('promised: "filesystem-ready"');
+			expect(result.value).toContain('synchronous: "filesystem-ready"');
+			expect(result.value).toContain('callback: "filesystem-ready"');
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
 	});
 
 	it("persists static import bindings across cells", async () => {

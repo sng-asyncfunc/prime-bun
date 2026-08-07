@@ -88,6 +88,89 @@ value + 1;
 		expect(await execution.result).toBe(43);
 	});
 
+	it("persists the latest binding values before a final top-level return", async () => {
+		const execution = compileCell(`
+let count = 1;
+count += 2;
+return count;
+throw new Error("unreachable");
+`);
+
+		expect(await execution.result).toBe(3);
+		expect(execution.bindings.get("count")).toBe(3);
+	});
+
+	it("persists the latest binding values before a bare top-level return", async () => {
+		const execution = compileCell("let completed = false; completed = true; return;");
+
+		expect(await execution.result).toBeUndefined();
+		expect(execution.bindings.get("completed")).toBe(true);
+	});
+
+	it("persists conditional return mutations without reading later declarations", async () => {
+		const execution = compileCell(`
+let count = 1;
+count += 2;
+if (count === 3) {
+  return ++count;
+}
+const unreachable = 99;
+`);
+
+		expect(await execution.result).toBe(4);
+		expect(execution.bindings.get("count")).toBe(4);
+		expect(execution.bindings.has("unreachable")).toBe(false);
+	});
+
+	it("persists mutations made by user finally blocks after a return value is evaluated", async () => {
+		const execution = compileCell(`
+let count = 1;
+try {
+  count = 2;
+  return count;
+} finally {
+  count = 3;
+}
+`);
+
+		expect(await execution.result).toBe(2);
+		expect(execution.bindings.get("count")).toBe(3);
+	});
+
+	it("does not persist return-path mutations when a finally block throws", async () => {
+		const execution = compileCell(`
+let count = 1;
+try {
+  count = 2;
+  return count;
+} finally {
+  count = 3;
+  throw new Error("return overridden");
+}
+`);
+
+		await expect(execution.result).rejects.toThrow("return overridden");
+		expect(execution.bindings.get("count")).toBe(1);
+	});
+
+	it("continues normally when a finally block cancels a return", async () => {
+		const execution = compileCell(`
+let count = 1;
+returnAttempt: try {
+  count = 2;
+  return count;
+} finally {
+  count = 3;
+  break returnAttempt;
+}
+count = 4;
+count;
+`);
+
+		expect(await execution.result).toBe(4);
+		expect(execution.bindings.get("count")).toBe(4);
+	});
+
 	it("lowers static imports in statement order with one load per declaration", () => {
 		const transformed = transformJavaScriptCell(`
 globalThis.__primeOrder = ["before"];

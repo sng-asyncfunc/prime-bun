@@ -9,14 +9,16 @@ Allow JavaScript and TypeScript notebook cells to use top-level `return` without
 - `return value` exits the current cell and exposes `value` as the cell result.
 - Bare `return` exits the current cell without a result.
 - Statements following an executed return do not run.
-- Top-level declarations executed before a return remain available to later cells through the existing persistence hooks.
+- Top-level declarations executed before a return remain available to later cells with their latest values, including mutations made by an enclosing `finally` block.
 - The final-expression result behavior remains unchanged for cells without a top-level return.
 
 ## Implementation
 
-The cell transformer will enable Acorn's `allowReturnOutsideFunction` parser option. No return statements need rewriting because the worker already executes transformed cells inside an `AsyncFunction`.
+The cell transformer enables Acorn's `allowReturnOutsideFunction` parser option because the worker executes transformed cells inside an `AsyncFunction`.
 
-Declaration persistence remains statement-local: the transformer already injects `__primePersist` immediately after each top-level declaration. Therefore an early return retains declarations that executed before it and naturally excludes declarations that were not reached.
+For each top-level statement containing a notebook-scope return, the transformer records the return value and completion, then persists bindings in an enclosing `finally`. Wrapping the top-level statement makes persistence run after nested user `finally` blocks. A return overridden by an exception or canceled by another control-flow completion does not trigger the return persistence path.
+
+Only bindings declared by earlier top-level statements are included, avoiding temporal-dead-zone reads of declarations that the return skipped. Returns inside nested functions and classes retain normal JavaScript semantics and are not rewritten.
 
 ## Error Handling
 
@@ -24,11 +26,11 @@ Invalid return expressions continue to produce normal syntax errors. Runtime exc
 
 ## Verification
 
-Unit coverage will prove early exit, returned and bare values, and persistence before the return. A worker integration regression will prove the same behavior after Bun's TypeScript transpilation and across a following cell.
+Unit coverage proves final, bare, conditional, exception-overridden, and canceled returns, including persistence after user `finally` mutations. A worker integration regression proves the same behavior after Bun's TypeScript transpilation and across a following cell.
 
 ## Non-Goals
 
-- Rewriting returns or suppressing explicit return values.
+- Changing returns inside nested functions or classes.
 - Changing final-expression wrapping.
 - Changing static binding metadata for unreachable declarations.
 - Changing worker protocol messages or snapshot behavior.

@@ -2,9 +2,12 @@ import {
 	type ClassDeclaration,
 	type FunctionDeclaration,
 	type ImportDeclaration,
+	type ModuleDeclaration,
 	type Pattern,
 	type Program,
 	parse,
+	type ReturnStatement,
+	type Statement,
 	type VariableDeclaration,
 } from "acorn";
 
@@ -219,9 +222,100 @@ function applyEdits(source: string, edits: SourceEdit[]): string {
 function parseCell(source: string): Program {
 	return parse(source, {
 		allowAwaitOutsideFunction: true,
+		allowReturnOutsideFunction: true,
 		ecmaVersion: "latest",
 		sourceType: "module",
 	});
+}
+
+function collectNotebookReturnStatements(statement: Statement | ModuleDeclaration, returns: ReturnStatement[]): void {
+	switch (statement.type) {
+		case "ReturnStatement":
+			returns.push(statement);
+			return;
+		case "BlockStatement":
+			for (const child of statement.body) collectNotebookReturnStatements(child, returns);
+			return;
+		case "WithStatement":
+		case "LabeledStatement":
+		case "WhileStatement":
+		case "DoWhileStatement":
+		case "ForStatement":
+		case "ForInStatement":
+		case "ForOfStatement":
+			collectNotebookReturnStatements(statement.body, returns);
+			return;
+		case "IfStatement":
+			collectNotebookReturnStatements(statement.consequent, returns);
+			if (statement.alternate) collectNotebookReturnStatements(statement.alternate, returns);
+			return;
+		case "SwitchStatement":
+			for (const switchCase of statement.cases) {
+				for (const child of switchCase.consequent) collectNotebookReturnStatements(child, returns);
+			}
+			return;
+		case "TryStatement":
+			collectNotebookReturnStatements(statement.block, returns);
+			if (statement.handler) collectNotebookReturnStatements(statement.handler.body, returns);
+			if (statement.finalizer) collectNotebookReturnStatements(statement.finalizer, returns);
+			return;
+		case "ExpressionStatement":
+		case "EmptyStatement":
+		case "DebuggerStatement":
+		case "BreakStatement":
+		case "ContinueStatement":
+		case "ThrowStatement":
+		case "VariableDeclaration":
+		case "FunctionDeclaration":
+		case "ClassDeclaration":
+		case "ImportDeclaration":
+		case "ExportNamedDeclaration":
+		case "ExportDefaultDeclaration":
+		case "ExportAllDeclaration":
+			return;
+	}
+}
+
+function returnPersistenceEdit(
+	source: string,
+	statement: Statement | ModuleDeclaration,
+	returns: readonly ReturnStatement[],
+	bindings: readonly BindingPersistence[],
+	index: number,
+): SourceEdit {
+	let namespace = `__primeReturn${index}`;
+	while (source.includes(namespace)) namespace += "_";
+	const didReturn = `${namespace}DidReturn`;
+	const returnValue = `${namespace}Value`;
+	const caughtError = `${namespace}Error`;
+	const statementSource = source.slice(statement.start, statement.end);
+	const returnEdits = returns.map((returnStatement): SourceEdit => {
+		const argument = returnStatement.argument;
+		return {
+			start: returnStatement.start - statement.start,
+			end: returnStatement.end - statement.start,
+			text: argument
+				? `return (${returnValue} = (${source.slice(argument.start, argument.end)}), ${didReturn} = true, ${returnValue});`
+				: `return (${didReturn} = true, undefined);`,
+		};
+	});
+	const transformedStatement = applyEdits(statementSource, returnEdits);
+	return {
+		start: statement.start,
+		end: statement.end,
+		text: `let ${didReturn} = false;
+let ${returnValue};
+try {
+${transformedStatement}
+${didReturn} = false;
+} catch (${caughtError}) {
+${didReturn} = false;
+throw ${caughtError};
+} finally {
+if (${didReturn}) {${persistenceSource(bindings)}
+}
+}`,
+	};
 }
 
 export function transformJavaScriptCell(source: string): TransformedJavaScriptCell {
@@ -232,8 +326,15 @@ export function transformJavaScriptCell(source: string): TransformedJavaScriptCe
 	const persistedBindings: BindingPersistence[] = [];
 	const generatedImportNames = new Set<string>();
 	let importIndex = 0;
+	let returnIndex = 0;
 
 	for (const statement of program.body) {
+		const returns: ReturnStatement[] = [];
+		collectNotebookReturnStatements(statement, returns);
+		if (returns.length > 0 && persistedBindings.length > 0) {
+			edits.push(returnPersistenceEdit(source, statement, returns, persistedBindings, returnIndex));
+			returnIndex += 1;
+		}
 		switch (statement.type) {
 			case "ImportDeclaration": {
 				const namespace = privateImportNamespace(source, importIndex, generatedImportNames);

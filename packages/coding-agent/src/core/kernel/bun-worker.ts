@@ -33,6 +33,11 @@ import {
 
 type PersistBinding = (name: string, value: unknown, recipe?: ModuleBindingRecipe) => void;
 type AsyncExecutable = (...args: unknown[]) => Promise<unknown>;
+type PrimeFileSystem = Omit<typeof fsModule, keyof typeof fsModule.promises | "promises"> &
+	typeof fsModule.promises & {
+		callbacks: typeof fsModule;
+		promises: typeof fsModule.promises;
+	};
 
 export interface ShellResult {
 	exitCode: number;
@@ -47,7 +52,7 @@ export interface ShellPromise extends Promise<ShellResult> {
 
 interface PrimeWorkerGlobals {
 	$: typeof $;
-	fs: typeof fsModule;
+	fs: PrimeFileSystem;
 	os: typeof osModule;
 	path: typeof pathModule;
 	util: typeof utilModule;
@@ -110,6 +115,12 @@ const MAX_SKILL_UNAVAILABLE_REASON_CHARS = 512;
 const MAX_WRITEV_BUFFERS = 1024;
 const cellContext = new AsyncLocalStorage<ActiveCell>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
+const primeFileSystem: PrimeFileSystem = Object.freeze({
+	...fsModule,
+	...fsModule.promises,
+	callbacks: fsModule,
+	promises: fsModule.promises,
+});
 let requireModule = createRequire(import.meta.url);
 const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
 	...args: string[]
@@ -971,7 +982,7 @@ function defineRuntimeGlobal<K extends keyof PrimeWorkerGlobals>(name: K, value:
 }
 
 defineRuntimeGlobal("$", $);
-defineRuntimeGlobal("fs", fsModule);
+defineRuntimeGlobal("fs", primeFileSystem);
 defineRuntimeGlobal("os", osModule);
 defineRuntimeGlobal("path", pathModule);
 defineRuntimeGlobal("util", utilModule);

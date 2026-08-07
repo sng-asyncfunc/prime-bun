@@ -176,13 +176,33 @@ const TYPED_ARRAY_PROTOTYPES = new Set<object>([
 	...(float16ArrayConstructor ? [float16ArrayConstructor.prototype] : []),
 ]);
 
-function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: string): string | undefined {
-	if (value === null) return undefined;
+function isSnapshotSafePrimitive(value: unknown): boolean {
+	if (value === null) return true;
 	const valueType = typeof value;
-	if (valueType === "undefined" || valueType === "string" || valueType === "number" || valueType === "boolean") {
-		return undefined;
+	return (
+		valueType === "undefined" ||
+		valueType === "string" ||
+		valueType === "number" ||
+		valueType === "boolean" ||
+		valueType === "bigint"
+	);
+}
+
+function isUnsignedIntegerString(value: string): boolean {
+	if (value === "0") return true;
+	if (value.length === 0) return false;
+	const first = value.charCodeAt(0);
+	if (first < 49 || first > 57) return false;
+	for (let index = 1; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		if (code < 48 || code > 57) return false;
 	}
-	if (valueType === "bigint") return undefined;
+	return true;
+}
+
+function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: string): string | undefined {
+	if (isSnapshotSafePrimitive(value)) return undefined;
+	const valueType = typeof value;
 	if (valueType === "symbol") return `${path}: symbol values are not snapshot-safe`;
 	if (valueType === "function") return `${path}: function values are not snapshot-safe`;
 	if (valueType !== "object") return `${path}: unsupported value type ${valueType}`;
@@ -231,10 +251,14 @@ function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: strin
 			if (Object.keys(object).length > 0) return `${path}: custom Map properties are not snapshot-safe`;
 			let index = 0;
 			for (const [key, entryValue] of object) {
-				const keyReason = inspectSnapshotValue(key, seen, `${path}.mapKey${index}`);
-				if (keyReason) return keyReason;
-				const valueReason = inspectSnapshotValue(entryValue, seen, `${path}.mapValue${index}`);
-				if (valueReason) return valueReason;
+				if (!isSnapshotSafePrimitive(key)) {
+					const keyReason = inspectSnapshotValue(key, seen, `${path}.mapKey${index}`);
+					if (keyReason) return keyReason;
+				}
+				if (!isSnapshotSafePrimitive(entryValue)) {
+					const valueReason = inspectSnapshotValue(entryValue, seen, `${path}.mapValue${index}`);
+					if (valueReason) return valueReason;
+				}
 				index += 1;
 			}
 			return undefined;
@@ -244,21 +268,23 @@ function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: strin
 			if (Object.keys(object).length > 0) return `${path}: custom Set properties are not snapshot-safe`;
 			let index = 0;
 			for (const entryValue of object) {
-				const reason = inspectSnapshotValue(entryValue, seen, `${path}.setValue${index}`);
-				if (reason) return reason;
+				if (!isSnapshotSafePrimitive(entryValue)) {
+					const reason = inspectSnapshotValue(entryValue, seen, `${path}.setValue${index}`);
+					if (reason) return reason;
+				}
 				index += 1;
 			}
 			return undefined;
 		}
 		if (Array.isArray(object)) {
 			if (prototype !== Array.prototype) return `${path}: custom prototype is not snapshot-safe`;
-			for (const key of Object.keys(object)) {
-				if (!/^(0|[1-9]\d*)$/.test(key)) return `${path}: custom array properties are not snapshot-safe`;
-				const reason = inspectSnapshotValue(
-					(object as unknown as Record<string, unknown>)[key],
-					seen,
-					`${path}[${key}]`,
-				);
+			const array = object as unknown[];
+			for (const key in array) {
+				if (!Object.hasOwn(array, key)) continue;
+				if (!isUnsignedIntegerString(key)) return `${path}: custom array properties are not snapshot-safe`;
+				const entryValue = (array as unknown as Record<string, unknown>)[key];
+				if (isSnapshotSafePrimitive(entryValue)) continue;
+				const reason = inspectSnapshotValue(entryValue, seen, `${path}[${key}]`);
 				if (reason) return reason;
 			}
 			return undefined;
@@ -267,6 +293,7 @@ function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: strin
 			return `${path}: custom prototype is not snapshot-safe`;
 		}
 		for (const [key, entryValue] of Object.entries(object)) {
+			if (isSnapshotSafePrimitive(entryValue)) continue;
 			const reason = inspectSnapshotValue(entryValue, seen, `${path}.${key}`);
 			if (reason) return reason;
 		}

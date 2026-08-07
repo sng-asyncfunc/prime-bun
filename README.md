@@ -130,3 +130,9 @@ Our agent and TUI is built on top of [`pi`](https://github.com/earendil-works/pi
 ## License
 
 Prime Bun is fully open source and released under the [MIT License](LICENSE).
+
+## Disclaimer
+
+I am not claiming JavaScript wins every RLM race. If you are building data pipelines, running heavy numerical analysis, or using the classic scientific stack, Prime Agent's native IPython setup is exactly what you need.
+
+But the future of coding agents isn't strictly data science. It is web infrastructure, edge deployments, and massive TypeScript monorepos. Prime Agent is an incredible leap forward for autonomous coding. But if you are building for the web, do yourself a favor: kill the Python kernel and run it in Bun.

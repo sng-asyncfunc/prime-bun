@@ -1,6 +1,11 @@
 const PRIME_RUNTIME_GLOBAL_NAMES = [
 	"$",
 	"Bun",
+	"fs",
+	"os",
+	"path",
+	"util",
+	"require",
 	"sh",
 	"installPackage",
 	"hostRequest",

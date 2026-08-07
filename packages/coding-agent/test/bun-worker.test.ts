@@ -276,20 +276,90 @@ describe("Bun worker", () => {
 		).resolves.toMatchObject({ status: "ok", value: "42" });
 	});
 
-	it("exposes the JavaScript RLM and package installation APIs", async () => {
+	it("preloads common modules with the JavaScript RLM and package APIs", async () => {
 		client.send({
 			cellId: "runtime-api-cell",
-			code: "({ rlm: typeof rlm, harness: typeof rlm.harness.createMemory, installPackage: typeof installPackage, hostRequest: typeof hostRequest });",
+			code: `({
+				runtime: typeof rlm,
+				harness: typeof rlm.harness.createMemory,
+				installPackage: typeof installPackage,
+				hostRequest: typeof hostRequest,
+				fs: typeof fs.promises.readFile,
+				path: path.basename("/a/b"),
+				os: typeof os.homedir,
+				util: util.format("%s-%d", "ready", 1),
+				require: require("node:path").basename("/c/d"),
+				webCrypto: crypto === globalThis.crypto,
+			});`,
 			id: "runtime-api-execute",
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			type: "execute",
 		});
 		const result = await client.waitForType("result", (message) => message.replyTo === "runtime-api-execute");
 		requireSuccess(result);
-		expect(result.value).toContain('rlm: "function"');
+		expect(result.value).toContain('runtime: "function"');
 		expect(result.value).toContain('harness: "function"');
 		expect(result.value).toContain('installPackage: "function"');
 		expect(result.value).toContain('hostRequest: "function"');
+		expect(result.value).toContain('fs: "function"');
+		expect(result.value).toContain('path: "b"');
+		expect(result.value).toContain('os: "function"');
+		expect(result.value).toContain('util: "ready-1"');
+		expect(result.value).toContain('require: "d"');
+		expect(result.value).toContain("webCrypto: true");
+	});
+
+	it("persists static import bindings across cells", async () => {
+		client.send({
+			cellId: "static-import-cell",
+			code: 'import { basename as importedBasename } from "node:path"; importedBasename("/a/b");',
+			id: "static-import-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const imported = await client.waitForType("result", (message) => message.replyTo === "static-import-execute");
+		expect(imported).toMatchObject({ status: "ok", value: '"b"' });
+
+		client.send({
+			cellId: "static-import-reuse-cell",
+			code: 'importedBasename("/c/d");',
+			id: "static-import-reuse-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const reused = await client.waitForType("result", (message) => message.replyTo === "static-import-reuse-execute");
+		expect(reused).toMatchObject({ status: "ok", value: '"d"' });
+	});
+
+	it("rejects declarations that shadow runtime globals", async () => {
+		client.send({
+			cellId: "runtime-collision-cell",
+			code: "const fs = 1;",
+			id: "runtime-collision-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const collision = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "runtime-collision-execute",
+		);
+		expect(collision).toMatchObject({
+			error: { message: expect.stringMatching(/fs.*runtime global/i) },
+			status: "error",
+		});
+
+		client.send({
+			cellId: "runtime-collision-check-cell",
+			code: 'path.basename("/still/available");',
+			id: "runtime-collision-check-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const result = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "runtime-collision-check-execute",
+		);
+		expect(result).toMatchObject({ status: "ok", value: '"available"' });
 	});
 
 	it("rejects package names that Bun would parse as command flags", async () => {

@@ -3,12 +3,16 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { Console } from "node:console";
 import { randomUUID } from "node:crypto";
+import * as fsModule from "node:fs";
 import { createReadStream, createWriteStream } from "node:fs";
 import { type FileHandle, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import * as osModule from "node:os";
+import * as pathModule from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
+import * as utilModule from "node:util";
 import { $ } from "bun";
 import { type ModuleBindingRecipe, transformJavaScriptCell } from "./bun-cell-transform.js";
 import {
@@ -43,6 +47,11 @@ export interface ShellPromise extends Promise<ShellResult> {
 
 interface PrimeWorkerGlobals {
 	$: typeof $;
+	fs: typeof fsModule;
+	os: typeof osModule;
+	path: typeof pathModule;
+	util: typeof utilModule;
+	require: NodeJS.Require;
 	sh: (command: string) => ShellPromise;
 	installPackage: (...names: string[]) => Promise<ShellResult>;
 	hostRequest: (requestType: string, payload?: unknown) => Promise<unknown>;
@@ -101,7 +110,7 @@ const MAX_SKILL_UNAVAILABLE_REASON_CHARS = 512;
 const MAX_WRITEV_BUFFERS = 1024;
 const cellContext = new AsyncLocalStorage<ActiveCell>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
-const requireModule = createRequire(import.meta.url);
+let requireModule = createRequire(import.meta.url);
 const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
 	...args: string[]
 ) => AsyncExecutable;
@@ -912,13 +921,26 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 	}
 }
 
-workerGlobals.$ = $;
-workerGlobals.sh = runShell;
-workerGlobals.installPackage = installPackage;
-workerGlobals.hostRequest = hostRequest;
-workerGlobals.rlm = createBunRlmRuntime(hostRequest);
-workerGlobals.__primeHostRequest = hostRequest;
-workerGlobals.__primeDisplay = display;
+function defineRuntimeGlobal<K extends keyof PrimeWorkerGlobals>(name: K, value: PrimeWorkerGlobals[K]): void {
+	Object.defineProperty(workerGlobals, name, {
+		configurable: true,
+		enumerable: true,
+		value,
+		writable: false,
+	});
+}
+
+defineRuntimeGlobal("$", $);
+defineRuntimeGlobal("fs", fsModule);
+defineRuntimeGlobal("os", osModule);
+defineRuntimeGlobal("path", pathModule);
+defineRuntimeGlobal("util", utilModule);
+defineRuntimeGlobal("sh", runShell);
+defineRuntimeGlobal("installPackage", installPackage);
+defineRuntimeGlobal("hostRequest", hostRequest);
+defineRuntimeGlobal("rlm", createBunRlmRuntime(hostRequest));
+defineRuntimeGlobal("__primeHostRequest", hostRequest);
+defineRuntimeGlobal("__primeDisplay", display);
 process.stdout.write = createProcessStreamWrite("stdout", rawStdoutWrite);
 process.stderr.write = createProcessStreamWrite("stderr", rawStderrWrite);
 globalThis.console = new Console({
@@ -966,6 +988,10 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 	const startedAt = performance.now();
 	try {
 		const transformed = transformJavaScriptCell(cellTranspiler.transformSync(message.code));
+		const conflictingBinding = transformed.bindingNames.find((name) => runtimeBindingNames.has(name));
+		if (conflictingBinding) {
+			throw new SyntaxError(`${conflictingBinding} conflicts with a runtime global and cannot be redeclared`);
+		}
 		const executor = new AsyncFunction("__primePersist", transformed.code);
 		const result = await cellContext.run(activeCell, () => executor(persistBinding));
 		flushCellStreams(message.cellId);
@@ -1006,6 +1032,8 @@ async function initialize(message: Extract<HostToBunWorkerMessage, { type: "init
 		bunPath = message.bunPath;
 		commandPrefix = message.commandPrefix;
 		kernelDirectory = message.kernelDirectory;
+		requireModule = createRequire(join(kernelDirectory, "package.json"));
+		defineRuntimeGlobal("require", requireModule);
 		shellExecutable = message.shell.executable;
 		shellArgs = [...message.shell.args];
 		initialEnvironment = { ...process.env };

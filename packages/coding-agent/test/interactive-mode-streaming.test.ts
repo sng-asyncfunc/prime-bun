@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { Container, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
@@ -157,6 +158,82 @@ describe("InteractiveMode streaming events", () => {
 		expect(renderChat(fakeThis.chatContainer)).toContain("final response");
 		expect(fakeThis.streamingComponent).toBeUndefined();
 		expect(fakeThis.streamingMessage).toBeUndefined();
+	});
+
+	test("coalesces high-frequency assistant render requests", async () => {
+		vi.useFakeTimers();
+		const now = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			const fakeThis = createFakeInteractiveModeThis();
+			const requestRender = vi.mocked(fakeThis.ui.requestRender);
+			const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+			const update = (text: string): AgentConnectionSessionEvent => ({
+				type: "message_update",
+				message: createAssistantMessage(text),
+				assistantMessageEvent: {
+					type: "text_delta",
+					contentIndex: 0,
+					delta: text,
+					partial: createAssistantMessage(text),
+				},
+			});
+
+			await handleEvent.call(fakeThis, update("first"));
+			expect(requestRender).toHaveBeenCalledOnce();
+			requestRender.mockClear();
+
+			now.mockReturnValue(10);
+			await handleEvent.call(fakeThis, update("second"));
+			expect(requestRender).not.toHaveBeenCalled();
+
+			vi.advanceTimersByTime(39);
+			expect(requestRender).not.toHaveBeenCalled();
+			now.mockReturnValue(50);
+			vi.advanceTimersByTime(1);
+			expect(requestRender).toHaveBeenCalledOnce();
+			expect(renderChat(fakeThis.chatContainer)).toContain("second");
+		} finally {
+			now.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	test("cancels a trailing assistant render when the message ends", async () => {
+		vi.useFakeTimers();
+		const now = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			const fakeThis = createFakeInteractiveModeThis();
+			const requestRender = vi.mocked(fakeThis.ui.requestRender);
+			const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+			const update = (text: string): AgentConnectionSessionEvent => ({
+				type: "message_update",
+				message: createAssistantMessage(text),
+				assistantMessageEvent: {
+					type: "text_delta",
+					contentIndex: 0,
+					delta: text,
+					partial: createAssistantMessage(text),
+				},
+			});
+
+			await handleEvent.call(fakeThis, update("first"));
+			requestRender.mockClear();
+			now.mockReturnValue(10);
+			await handleEvent.call(fakeThis, update("pending"));
+			await handleEvent.call(fakeThis, {
+				type: "message_end",
+				message: createAssistantMessage("final"),
+			});
+
+			expect(requestRender).toHaveBeenCalledOnce();
+			now.mockReturnValue(50);
+			vi.advanceTimersByTime(40);
+			expect(requestRender).toHaveBeenCalledOnce();
+			expect(renderChat(fakeThis.chatContainer)).toContain("final");
+		} finally {
+			now.mockRestore();
+			vi.useRealTimers();
+		}
 	});
 
 	test("renders assistant end events when attaching after all updates", async () => {

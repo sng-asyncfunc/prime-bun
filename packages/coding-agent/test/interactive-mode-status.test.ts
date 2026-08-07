@@ -1124,6 +1124,7 @@ describe("InteractiveMode pending bash components", () => {
 
 		const editorStub = { clearHistory: vi.fn(), setText: vi.fn() };
 		const endFeatureHintRun = vi.fn();
+		const streamingComponent = { dispose: vi.fn() };
 		const fakeThis = {
 			endFeatureHintRun,
 			chatContainer: new Container(),
@@ -1134,7 +1135,7 @@ describe("InteractiveMode pending bash components", () => {
 			liveImageMarkerIds: () => new Set(),
 			defaultEditor: editorStub,
 			editor: editorStub,
-			streamingComponent: undefined,
+			streamingComponent,
 			streamingMessage: undefined,
 			activeBashComponent: component,
 			pendingBashComponents: [component],
@@ -1157,6 +1158,7 @@ describe("InteractiveMode pending bash components", () => {
 
 		expect(loader.intervalId).toBeNull();
 		expect(endFeatureHintRun).toHaveBeenCalledOnce();
+		expect(streamingComponent.dispose).toHaveBeenCalledOnce();
 		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBeUndefined();
 	});
 });
@@ -1449,7 +1451,7 @@ describe("InteractiveMode connection events", () => {
 			refreshCommandCatalogForCurrentSession,
 			isAgentCompacting: () => true,
 			isBashRunning: () => true,
-			streamingComponent: {},
+			streamingComponent: { dispose: vi.fn() },
 			streamingMessage: {},
 			applyConnectionStateSnapshot: vi.fn(),
 			replaceSubagentSummary: vi.fn(),
@@ -1496,7 +1498,7 @@ describe("InteractiveMode connection events", () => {
 		};
 		const fakeThis = {
 			activeBashComponent: bashComponent,
-			streamingComponent: {},
+			streamingComponent: { dispose: vi.fn() },
 			streamingMessage: {},
 			isAgentCompacting: () => true,
 			isBashRunning: () => true,
@@ -1717,7 +1719,7 @@ describe("InteractiveMode tool event rendering", () => {
 			footer: { invalidate: vi.fn() },
 			updateConnectionStateFromEvent: vi.fn(),
 			activityTracker: new AgentActivityTracker(),
-			streamingComponent: { updateContent: vi.fn() },
+			streamingComponent: { updateContent: vi.fn(), updateStreamingContent: vi.fn(() => true) },
 			streamingMessage: undefined,
 			chatContainer: new Container(),
 			pendingTools: new Map<string, ToolExecutionComponent>(),

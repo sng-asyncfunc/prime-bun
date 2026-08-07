@@ -157,6 +157,39 @@ globalThis.__primeOrder.push("after");
 		});
 	});
 
+	it("records selected exports from a destructured literal require", () => {
+		const transformed = transformJavaScriptCell('const { basename, join: combine } = require("node:path");');
+
+		expect(transformed.bindingRecipes).toEqual({
+			basename: {
+				exportName: "basename",
+				loader: "require",
+				specifier: "node:path",
+				type: "module",
+			},
+			combine: {
+				exportName: "join",
+				loader: "require",
+				specifier: "node:path",
+				type: "module",
+			},
+		});
+	});
+
+	it("avoids collisions between user identifiers and lowered import namespaces", () => {
+		const transformed = transformJavaScriptCell(`
+const __primeImport0 = "user-value";
+import * as pathModule from "node:path";
+[__primeImport0, pathModule.basename("/a/b")];
+`);
+		const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
+			...args: string[]
+		) => CellFunction;
+
+		expect(() => new AsyncFunction("__primePersist", transformed.code)).not.toThrow();
+		expect(transformed.code).toContain("const __primeImport0_ = await import");
+	});
+
 	it("persists the final value when a new binding is mutated later in the cell", async () => {
 		const execution = compileCell(`
 let count = 1;

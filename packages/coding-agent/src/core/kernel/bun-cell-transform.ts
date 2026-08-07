@@ -79,6 +79,26 @@ function objectPatternBinding(pattern: Pattern): string | undefined {
 	return undefined;
 }
 
+function recordObjectPatternRecipes(
+	pattern: Extract<Pattern, { type: "ObjectPattern" }>,
+	loader: ModuleBindingRecipe["loader"],
+	specifier: string,
+	recipes: Record<string, ModuleBindingRecipe>,
+): void {
+	for (const property of pattern.properties) {
+		if (property.type === "RestElement" || property.computed) continue;
+		const exportName =
+			property.key.type === "Identifier"
+				? property.key.name
+				: property.key.type === "Literal"
+					? literalString(property.key.value)
+					: undefined;
+		const localName = objectPatternBinding(property.value);
+		if (!exportName || !localName) continue;
+		recipes[localName] = { exportName, loader, specifier, type: "module" };
+	}
+}
+
 function literalModuleRecipes(declaration: VariableDeclaration): Record<string, ModuleBindingRecipe> {
 	const recipes: Record<string, ModuleBindingRecipe> = {};
 	for (const declarator of declaration.declarations) {
@@ -94,23 +114,12 @@ function literalModuleRecipes(declaration: VariableDeclaration): Record<string, 
 				recipes[declarator.id.name] = { loader: "import", specifier, type: "module" };
 				continue;
 			}
-			if (declarator.id.type !== "ObjectPattern") continue;
-			for (const property of declarator.id.properties) {
-				if (property.type === "RestElement" || property.computed) continue;
-				const exportName =
-					property.key.type === "Identifier"
-						? property.key.name
-						: property.key.type === "Literal"
-							? literalString(property.key.value)
-							: undefined;
-				const localName = objectPatternBinding(property.value);
-				if (!exportName || !localName) continue;
-				recipes[localName] = { exportName, loader: "import", specifier, type: "module" };
+			if (declarator.id.type === "ObjectPattern") {
+				recordObjectPatternRecipes(declarator.id, "import", specifier, recipes);
 			}
 			continue;
 		}
 		if (
-			declarator.id.type !== "Identifier" ||
 			initializer.type !== "CallExpression" ||
 			initializer.callee.type !== "Identifier" ||
 			initializer.callee.name !== "require" ||
@@ -122,7 +131,11 @@ function literalModuleRecipes(declaration: VariableDeclaration): Record<string, 
 		if (!argument || argument.type !== "Literal") continue;
 		const specifier = literalString(argument.value);
 		if (!specifier) continue;
-		recipes[declarator.id.name] = { loader: "require", specifier, type: "module" };
+		if (declarator.id.type === "Identifier") {
+			recipes[declarator.id.name] = { loader: "require", specifier, type: "module" };
+		} else if (declarator.id.type === "ObjectPattern") {
+			recordObjectPatternRecipes(declarator.id, "require", specifier, recipes);
+		}
 	}
 	return recipes;
 }
@@ -135,7 +148,7 @@ function importedBindingExpression(namespace: string, exportName: string, specif
 
 function lowerImportDeclaration(
 	declaration: ImportDeclaration,
-	index: number,
+	namespace: string,
 ): { code: string; bindings: BindingPersistence[] } {
 	const specifier = literalString(declaration.source.value);
 	if (!specifier) throw new SyntaxError("Static import specifiers must be string literals.");
@@ -146,7 +159,6 @@ function lowerImportDeclaration(
 		return { code: `await import(${JSON.stringify(specifier)});`, bindings: [] };
 	}
 
-	const namespace = `__primeImport${index}`;
 	const lines = [`const ${namespace} = await import(${JSON.stringify(specifier)});`];
 	const bindings: BindingPersistence[] = [];
 	for (const importSpecifier of declaration.specifiers) {
@@ -180,6 +192,13 @@ function lowerImportDeclaration(
 	return { code: lines.join("\n"), bindings };
 }
 
+function privateImportNamespace(source: string, index: number, generatedNames: Set<string>): string {
+	let name = `__primeImport${index}`;
+	while (source.includes(name) || generatedNames.has(name)) name += "_";
+	generatedNames.add(name);
+	return name;
+}
+
 function persistenceSource(bindings: readonly BindingPersistence[]): string {
 	return bindings
 		.map(({ name, recipe }) => {
@@ -211,12 +230,14 @@ export function transformJavaScriptCell(source: string): TransformedJavaScriptCe
 	const bindingNames: string[] = [];
 	const bindingRecipes: Record<string, ModuleBindingRecipe> = {};
 	const persistedBindings: BindingPersistence[] = [];
+	const generatedImportNames = new Set<string>();
 	let importIndex = 0;
 
 	for (const statement of program.body) {
 		switch (statement.type) {
 			case "ImportDeclaration": {
-				const lowered = lowerImportDeclaration(statement, importIndex);
+				const namespace = privateImportNamespace(source, importIndex, generatedImportNames);
+				const lowered = lowerImportDeclaration(statement, namespace);
 				importIndex += 1;
 				bindingNames.push(...lowered.bindings.map(({ name }) => name));
 				for (const binding of lowered.bindings) {

@@ -779,6 +779,7 @@ const callable = () => 5;
 const pathModule = await import("node:path");
 const { join: selectedJoin } = await import("node:path");
 const requiredPath = require("node:path");
+const { extname: requiredExtname } = require("node:path");
 globalThis.explicitValue = 40;
 plain.count;
 `,
@@ -811,6 +812,7 @@ plain.count;
 					"pathModule",
 					"plain",
 					"requiredPath",
+					"requiredExtname",
 					"selectedJoin",
 					"staticBasename",
 				]),
@@ -835,6 +837,7 @@ delete globalThis.explicitValue;
 pathModule = undefined;
 selectedJoin = undefined;
 requiredPath = undefined;
+requiredExtname = undefined;
 staticBasename = undefined;
 plain.count;
 `,
@@ -866,6 +869,7 @@ plain.count;
 					basename: pathModule.basename("/a/b"),
 					selected: selectedJoin("a", "b"),
 					required: requiredPath.basename("/c/d"),
+					requiredSelected: requiredExtname("archive.tar.gz"),
 					static: staticBasename("/e/f"),
 				});`,
 				id: "snapshot-check-execute",
@@ -881,6 +885,7 @@ plain.count;
 			expect(result.value).toContain('basename: "b"');
 			expect(result.value).toContain('selected: "a/b"');
 			expect(result.value).toContain('required: "d"');
+			expect(result.value).toContain('requiredSelected: ".gz"');
 			expect(result.value).toContain('static: "f"');
 		} finally {
 			await rm(directory, { force: true, recursive: true });

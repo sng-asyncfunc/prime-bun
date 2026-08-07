@@ -58,6 +58,13 @@ console.log(readme);`;
 		});
 	});
 
+	it("skips an inline cwd setup prefix", () => {
+		expect(previewJavaScriptCode("process.chdir(process.cwd()); fs.readFileSync('README.md');")).toEqual({
+			language: "javascript",
+			text: "fs.readFileSync('README.md');",
+		});
+	});
+
 	it("handles stronger bash heuristics", () => {
 		expect(previewBashCommand("cd packages/coding-agent && npm --prefix ../.. run check")).toEqual({
 			language: "bash",

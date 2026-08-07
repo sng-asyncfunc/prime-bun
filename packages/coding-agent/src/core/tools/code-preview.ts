@@ -11,6 +11,7 @@ const JAVASCRIPT_CONTROL_PATTERN = /^\s*(?:if|else|for|while|switch|try|catch|fi
 const JAVASCRIPT_CALL_PATTERN = /^\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\(/;
 const JAVASCRIPT_LOW_SIGNAL_CALL_PATTERN =
 	/^\s*(?:await\s+)?(?:process\.chdir|console\.(?:log|error|warn)|JSON\.(?:parse|stringify)|String|Number|Boolean|Array|Object)\s*\(/;
+const JAVASCRIPT_CHDIR_PREFIX_PATTERN = /^\s*process\.chdir\((?:[^()]|\([^()]*\))*\)\s*;\s*/;
 const JAVASCRIPT_ASSIGNMENT_CALL_PATTERN =
 	/^\s*(?:const|let|var)\s+[A-Za-z_$][\w$]*(?:\s*:\s*[^=]+)?\s*=\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\(/;
 const JAVASCRIPT_EFFECT_CALL_PATTERN =
@@ -228,10 +229,16 @@ function simplifyJavaScriptLine(line: string): string {
 	return consoleMatch?.[1]?.trim() || trimmed;
 }
 
+function stripJavaScriptCwdPrefix(line: string): string {
+	const stripped = line.replace(JAVASCRIPT_CHDIR_PREFIX_PATTERN, "");
+	return stripped.trim() ? stripped : line;
+}
+
 export function previewJavaScriptCode(code: string): CodePreview {
 	const lines = code.trimEnd().split("\n");
 	let best: PreviewCandidate | undefined;
-	for (const [index, line] of lines.entries()) {
+	for (const [index, rawLine] of lines.entries()) {
+		const line = stripJavaScriptCwdPrefix(rawLine);
 		const score = javaScriptLineScore(line, index);
 		if (score < 0) continue;
 		const candidate = {

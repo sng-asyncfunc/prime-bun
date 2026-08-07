@@ -32,12 +32,10 @@ The parent keeps its own context focused while the notebook holds working state 
 
 The default RLM runtime exposes one built-in model tool: `javascript`. Reading and editing files, running project commands, transforming results, invoking skills, and delegating work all begin from that persistent notebook instead of separate built-in tool calls.
 
-JavaScript state survives across tool calls and compaction. Variables, functions, parsed results, and task handles remain available on later turns. TypeScript syntax is erased before execution without running a type checker. Use dynamic imports because static imports are not valid notebook cells:
+JavaScript state survives across tool calls and compaction. Variables, functions, parsed results, and task handles remain available on later turns. TypeScript syntax is erased before execution without running a type checker. Common modules are already available as `fs`, `path`, `os`, and `util`, alongside kernel-relative `require` and Bun/web globals. Use them directly; static imports, dynamic imports, and literal `require()` bindings for other modules persist across cells and recovery:
 
 ```javascript
-const { readdir } = await import("node:fs/promises");
-
-const sourceFiles = (await readdir("src", { recursive: true })).filter((path) => path.endsWith(".ts"));
+const sourceFiles = (await fs.promises.readdir("src", { recursive: true })).filter((path) => path.endsWith(".ts"));
 const largeFiles = await Promise.all(
   sourceFiles.map(async (path) => ({ path, size: Bun.file(`src/${path}`).size })),
 );

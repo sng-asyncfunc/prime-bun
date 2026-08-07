@@ -149,6 +149,15 @@ globalThis.__primeOrder.push("after");
 		});
 	});
 
+	it("does not invent recipes for non-literal dynamic imports", () => {
+		const transformed = transformJavaScriptCell(`
+const specifier = "node:path";
+const pathModule = await import(specifier);
+`);
+
+		expect(transformed.bindingRecipes).toEqual({});
+	});
+
 	it("records a literal require namespace recipe", () => {
 		const transformed = transformJavaScriptCell('const library = require("node:path");');
 

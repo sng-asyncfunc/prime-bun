@@ -63,13 +63,13 @@ Exports remain invalid in notebook cells because a cell is an evaluation unit ra
 
 ## Startup Prelude
 
-The worker owns a declarative preload table containing the four binding names and canonical `node:` specifiers. Initialization imports each namespace before the first cell and seeds it through the same binding mechanism used for notebook declarations.
+The worker imports the four namespaces before the first cell and defines them as read-only runtime globals alongside kernel-relative `require`.
 
-Preloads are ordinary configurable notebook bindings with module recipes, not immutable runtime globals. This preserves three properties:
+The implementation reserves these globals rather than treating them as ordinary configurable notebook bindings. This deliberate hardening preserves three properties:
 
-1. a later cell can intentionally redefine `fs`, `path`, `os`, or `util`;
-2. the redefinition is captured by normal snapshot behavior; and
-3. an old session snapshot containing one of those names can override the default during restore.
+1. a cell cannot accidentally replace `fs`, `path`, `os`, `util`, or `require`;
+2. snapshots omit these bindings because every worker recreates them; and
+3. an old snapshot containing one of these names cannot override the standard runtime contract during restore.
 
 The preload names are nevertheless reserved from JavaScript skill registration. A skill requesting one of those globals becomes markdown-only with a diagnostic instead of replacing the standard module.
 
@@ -131,7 +131,7 @@ Recipe restoration is isolated per binding:
 
 A malformed recipe or unavailable module is reported in the existing restore diagnostics and does not discard unrelated state. Package upgrades between snapshot and restore resolve the current package version, matching existing dynamic-import recovery behavior.
 
-Preloaded defaults are recreated for every worker before session restore. A restored user binding with the same name then replaces the default.
+Preloaded defaults are recreated for every worker before session restore. A snapshot binding with the same name is rejected as a runtime collision and the standard default remains available.
 
 ## Prompt and Documentation
 
@@ -179,7 +179,7 @@ Implementation follows red-green TDD in focused package tests.
 - `fs`, `path`, `os`, and `util` work in the first cell without imports;
 - `fetch`, WebCrypto, `$`, and `sh` retain their current identities;
 - a static import is usable in a later cell;
-- a later cell can redeclare an import and a preload;
+- a later cell can redeclare an ordinary import while preload declarations fail as runtime collisions;
 - `require("node:path")` works and persists;
 - core-runtime and skill-global declarations fail before execution;
 - preload/skill collisions degrade only the skill; and
@@ -188,7 +188,7 @@ Implementation follows red-green TDD in focused package tests.
 ### Recovery tests
 
 - namespace, named, aliased, default, destructured dynamic-import, and literal-require bindings restore after worker replacement;
-- a redefined preload restores instead of reverting to the default;
+- a snapshot binding that collides with a preload is rejected without replacing the default;
 - a version-2 raw import recipe restores under the version-3 decoder;
 - one invalid recipe fails independently; and
 - side-effect-only imports are not falsely reported as restored state.

@@ -229,14 +229,14 @@ describe("Bun worker", () => {
 	it("executes erasable TypeScript syntax", async () => {
 		client.send({
 			cellId: "typescript-cell",
-			code: "const typedValue: number = 42; typedValue;",
+			code: 'import type { Stats } from "node:fs"; const typedValue: number = 42; typedValue;',
 			id: "typescript-execute",
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			type: "execute",
 		});
 
 		const result = await client.waitForType("result", (message) => message.replyTo === "typescript-execute");
-		expect(result).toMatchObject({ status: "ok", value: "42" });
+		expect(result).toMatchObject({ bindingNames: ["typedValue"], status: "ok", value: "42" });
 	});
 
 	it("bounds inspected cell results before writing the protocol frame", async () => {

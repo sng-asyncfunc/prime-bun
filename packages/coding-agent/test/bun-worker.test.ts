@@ -30,6 +30,20 @@ function requireSuccess(message: MessageOfType<"result">): asserts message is Bu
 	expect(message.status).toBe("ok");
 }
 
+function legacyV2ImportSnapshot(name: string, specifier: string): Buffer {
+	const data = Buffer.from(specifier, "utf8");
+	const header = Buffer.from(
+		JSON.stringify({
+			entries: [{ kind: "import", length: data.byteLength, name, offset: 0 }],
+			version: 2,
+		}),
+		"utf8",
+	);
+	const prefix = Buffer.alloc(4);
+	prefix.writeUInt32BE(header.byteLength);
+	return Buffer.concat([prefix, header, data]);
+}
+
 class BunWorkerTestClient {
 	readonly messages: BunWorkerToHostMessage[] = [];
 	readonly stdout: string[] = [];
@@ -757,11 +771,14 @@ response.answer;
 			client.send({
 				cellId: "snapshot-source",
 				code: `
+import { basename as staticBasename } from "node:path";
 const plain = { count: 1, nested: new Map([["key", new Set([2, 3])]]) };
 class Custom { constructor() { this.value = 4; } }
 const custom = new Custom();
 const callable = () => 5;
 const pathModule = await import("node:path");
+const { join: selectedJoin } = await import("node:path");
+const requiredPath = require("node:path");
 globalThis.explicitValue = 40;
 plain.count;
 `,
@@ -769,7 +786,11 @@ plain.count;
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				type: "execute",
 			});
-			await client.waitForType("result", (message) => message.replyTo === "snapshot-source-execute");
+			const sourceResult = await client.waitForType(
+				"result",
+				(message) => message.replyTo === "snapshot-source-execute",
+			);
+			requireSuccess(sourceResult);
 
 			client.send({
 				id: "snapshot",
@@ -783,7 +804,16 @@ plain.count;
 			const snapshot = await client.waitForType("snapshot_result");
 			expect(snapshot).toMatchObject({
 				replyTo: "snapshot",
-				saved: expect.arrayContaining(["Custom", "callable", "explicitValue", "pathModule", "plain"]),
+				saved: expect.arrayContaining([
+					"Custom",
+					"callable",
+					"explicitValue",
+					"pathModule",
+					"plain",
+					"requiredPath",
+					"selectedJoin",
+					"staticBasename",
+				]),
 			});
 			expect(snapshot.skipped.map((entry) => entry.name)).toContain("custom");
 			const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
@@ -795,11 +825,19 @@ plain.count;
 				expect.arrayContaining(["Custom", "callable", "explicitValue", "pathModule", "plain"]),
 			);
 			expect(manifest.bunVersion).toMatch(/^1\.3\./);
-			expect(manifest.version).toBe(2);
+			expect(manifest.version).toBe(3);
 
 			client.send({
 				cellId: "snapshot-mutation",
-				code: "plain.count = 99; delete globalThis.explicitValue; plain.count;",
+				code: `
+plain.count = 99;
+delete globalThis.explicitValue;
+pathModule = undefined;
+selectedJoin = undefined;
+requiredPath = undefined;
+staticBasename = undefined;
+plain.count;
+`,
 				id: "snapshot-mutation-execute",
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				type: "execute",
@@ -820,7 +858,16 @@ plain.count;
 
 			client.send({
 				cellId: "snapshot-check",
-				code: `({ count: plain.count, called: callable(), custom: new Custom().value, explicitValue, basename: pathModule.basename("/a/b") });`,
+				code: `({
+					count: plain.count,
+					called: callable(),
+					custom: new Custom().value,
+					explicitValue,
+					basename: pathModule.basename("/a/b"),
+					selected: selectedJoin("a", "b"),
+					required: requiredPath.basename("/c/d"),
+					static: staticBasename("/e/f"),
+				});`,
 				id: "snapshot-check-execute",
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				type: "execute",
@@ -832,6 +879,40 @@ plain.count;
 			expect(result.value).toContain("custom: 4");
 			expect(result.value).toContain("explicitValue: 40");
 			expect(result.value).toContain('basename: "b"');
+			expect(result.value).toContain('selected: "a/b"');
+			expect(result.value).toContain('required: "d"');
+			expect(result.value).toContain('static: "f"');
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
+	it("restores namespace imports from a hand-built v2 snapshot", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-v2-snapshot-"));
+		const path = join(directory, "state.bin");
+		try {
+			await writeFile(path, legacyV2ImportSnapshot("legacyPath", "node:path"));
+			client.send({
+				id: "legacy-v2-restore",
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "restore",
+			});
+			const restore = await client.waitForType(
+				"restore_result",
+				(message) => message.replyTo === "legacy-v2-restore",
+			);
+			expect(restore).toMatchObject({ failed: [], restored: ["legacyPath"] });
+
+			client.send({
+				cellId: "legacy-v2-check-cell",
+				code: 'legacyPath.basename("/legacy/file");',
+				id: "legacy-v2-check-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			const result = await client.waitForType("result", (message) => message.replyTo === "legacy-v2-check-execute");
+			expect(result).toMatchObject({ status: "ok", value: '"file"' });
 		} finally {
 			await rm(directory, { force: true, recursive: true });
 		}

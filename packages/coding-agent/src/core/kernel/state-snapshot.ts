@@ -3,7 +3,8 @@ import { join } from "node:path";
 export const DEFAULT_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
 
 const KERNEL_STATE_BASENAME = "kernel-state";
-export const SNAPSHOT_FORMAT_VERSION = 2;
+export const SNAPSHOT_FORMAT_VERSION = 3;
+const LEGACY_SNAPSHOT_FORMAT_VERSION = 2;
 const HEADER_LENGTH_BYTES = 4;
 const MAX_HEADER_BYTES = 16 * 1024 * 1024;
 
@@ -31,7 +32,7 @@ export interface SnapshotPayloadParts {
 	byteLength: number;
 }
 
-export type SnapshotPayloadKind = "function" | "import" | "runtime";
+export type SnapshotPayloadKind = "function" | "import" | "module" | "runtime";
 
 interface SnapshotHeaderEntry {
 	name: string;
@@ -41,7 +42,7 @@ interface SnapshotHeaderEntry {
 }
 
 interface SnapshotHeader {
-	version: number;
+	version: typeof LEGACY_SNAPSHOT_FORMAT_VERSION | typeof SNAPSHOT_FORMAT_VERSION;
 	entries: SnapshotHeaderEntry[];
 }
 
@@ -62,7 +63,11 @@ function corruptSnapshot(reason: string): Error {
 }
 
 function parseHeader(value: unknown): SnapshotHeader {
-	if (!isRecord(value) || value.version !== SNAPSHOT_FORMAT_VERSION || !Array.isArray(value.entries)) {
+	if (
+		!isRecord(value) ||
+		(value.version !== LEGACY_SNAPSHOT_FORMAT_VERSION && value.version !== SNAPSHOT_FORMAT_VERSION) ||
+		!Array.isArray(value.entries)
+	) {
 		throw corruptSnapshot("invalid header");
 	}
 	const entries = value.entries.map((entry): SnapshotHeaderEntry => {
@@ -74,7 +79,7 @@ function parseHeader(value: unknown): SnapshotHeader {
 			!Number.isSafeInteger(entry.length) ||
 			(entry.offset as number) < 0 ||
 			(entry.length as number) < 0 ||
-			(kind !== undefined && kind !== "function" && kind !== "import" && kind !== "runtime")
+			(kind !== undefined && kind !== "function" && kind !== "import" && kind !== "module" && kind !== "runtime")
 		) {
 			throw corruptSnapshot("invalid entry metadata");
 		}
@@ -85,7 +90,7 @@ function parseHeader(value: unknown): SnapshotHeader {
 			...(kind ? { kind } : {}),
 		};
 	});
-	return { version: SNAPSHOT_FORMAT_VERSION, entries };
+	return { version: value.version, entries };
 }
 
 export function encodeSnapshotPayloadParts(entries: readonly SnapshotPayloadEntry[]): SnapshotPayloadParts {

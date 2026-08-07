@@ -117,6 +117,39 @@ const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor a
 const restoreFunctionValue = new AsyncFunction("__primeSource", 'return (0, eval)("(" + __primeSource + "\\n)");');
 const restoreImportedValue = new AsyncFunction("__primeSpecifier", "return import(__primeSpecifier);");
 
+function parseModuleBindingRecipe(data: Uint8Array): ModuleBindingRecipe {
+	const value: unknown = JSON.parse(Buffer.from(data).toString("utf8"));
+	if (
+		!isRecord(value) ||
+		value.type !== "module" ||
+		(value.loader !== "import" && value.loader !== "require") ||
+		typeof value.specifier !== "string" ||
+		value.specifier.length === 0 ||
+		(value.exportName !== undefined && typeof value.exportName !== "string")
+	) {
+		throw new Error("module recipe is invalid");
+	}
+	return {
+		...(value.exportName !== undefined ? { exportName: value.exportName } : {}),
+		loader: value.loader,
+		specifier: value.specifier,
+		type: "module",
+	};
+}
+
+async function restoreModuleBinding(recipe: ModuleBindingRecipe): Promise<unknown> {
+	const loaded =
+		recipe.loader === "require" ? requireModule(recipe.specifier) : await restoreImportedValue(recipe.specifier);
+	if (recipe.exportName === undefined) return loaded;
+	if (
+		((typeof loaded !== "object" || loaded === null) && typeof loaded !== "function") ||
+		!Reflect.has(loaded, recipe.exportName)
+	) {
+		throw new Error(`Module ${recipe.specifier} does not export ${recipe.exportName}`);
+	}
+	return Reflect.get(loaded, recipe.exportName);
+}
+
 let activeCell: ActiveCell | undefined;
 let lastCell: ActiveCell | undefined;
 let activeExecutionId: string | undefined;
@@ -751,7 +784,7 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 			}
 			const importRecipe = bindingRecipes.get(name)?.recipe;
 			if (importRecipe) {
-				saveEntry({ data: Buffer.from(importRecipe.specifier, "utf8"), kind: "import", name });
+				saveEntry({ data: Buffer.from(JSON.stringify(importRecipe), "utf8"), kind: "module", name });
 				continue;
 			}
 			if (typeof value === "function") {
@@ -870,7 +903,9 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 				failed.push({ name: entry.name, reason: normalizeError(error).message });
 			}
 		}
-		for (const entry of entries.filter((candidate) => candidate.kind === "function" || candidate.kind === "import")) {
+		for (const entry of entries.filter(
+			(candidate) => candidate.kind === "function" || candidate.kind === "import" || candidate.kind === "module",
+		)) {
 			if (runtimeBindingNames.has(entry.name)) {
 				failed.push({ name: entry.name, reason: "runtime binding was not restored" });
 				continue;
@@ -888,6 +923,11 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 						if (!source) throw new Error("import recipe has an empty specifier");
 						const value = await restoreImportedValue(source);
 						persistBinding(entry.name, value, { loader: "import", specifier: source, type: "module" });
+						break;
+					}
+					case "module": {
+						const recipe = parseModuleBindingRecipe(entry.data);
+						persistBinding(entry.name, await restoreModuleBinding(recipe), recipe);
 						break;
 					}
 				}
@@ -951,6 +991,12 @@ globalThis.console = new Console({
 Bun.write = taggedBunWrite;
 
 const cellTranspiler = new Bun.Transpiler({ deadCodeElimination: false, loader: "ts", target: "bun" });
+const BUN_REQUIRE_SHIM = "var {require}=import.meta;";
+
+function transpileCell(source: string): string {
+	const transpiled = cellTranspiler.transformSync(source);
+	return transpiled.startsWith(BUN_REQUIRE_SHIM) ? transpiled.slice(BUN_REQUIRE_SHIM.length) : transpiled;
+}
 
 async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "execute" }>): Promise<void> {
 	if (!initialized) {
@@ -987,7 +1033,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 	lastCell = activeCell;
 	const startedAt = performance.now();
 	try {
-		const transformed = transformJavaScriptCell(cellTranspiler.transformSync(message.code));
+		const transformed = transformJavaScriptCell(transpileCell(message.code));
 		const conflictingBinding = transformed.bindingNames.find((name) => runtimeBindingNames.has(name));
 		if (conflictingBinding) {
 			throw new SyntaxError(`${conflictingBinding} conflicts with a runtime global and cannot be redeclared`);

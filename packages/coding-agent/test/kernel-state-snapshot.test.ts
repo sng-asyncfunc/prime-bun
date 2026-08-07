@@ -23,6 +23,20 @@ describe("Bun kernel state snapshot paths", () => {
 });
 
 describe("Bun snapshot binary format", () => {
+	function legacyV2ImportPayload(name: string, specifier: string): Buffer {
+		const data = Buffer.from(specifier, "utf8");
+		const header = Buffer.from(
+			JSON.stringify({
+				entries: [{ kind: "import", length: data.byteLength, name, offset: 0 }],
+				version: 2,
+			}),
+			"utf8",
+		);
+		const prefix = Buffer.alloc(4);
+		prefix.writeUInt32BE(header.byteLength);
+		return Buffer.concat([prefix, header, data]);
+	}
+
 	it("materializes the legacy payload from zero-copy entry parts", () => {
 		const alpha = Uint8Array.from([1, 2, 3]);
 		const entries = [
@@ -41,12 +55,44 @@ describe("Bun snapshot binary format", () => {
 	it("round-trips independently serialized binding blobs", () => {
 		const payload = encodeSnapshotPayload([
 			{ name: "alpha", data: Uint8Array.from([1, 2, 3]) },
+			{
+				name: "basename",
+				data: Uint8Array.from(
+					Buffer.from(
+						JSON.stringify({ exportName: "basename", loader: "import", specifier: "node:path", type: "module" }),
+					),
+				),
+				kind: "module",
+			},
 			{ name: "unicode_变量", data: Uint8Array.from([5, 8, 13, 21]) },
 		]);
+		const headerLength = payload.readUInt32BE(0);
+		const header = JSON.parse(payload.subarray(4, 4 + headerLength).toString("utf8")) as { version: number };
 
+		expect(header.version).toBe(3);
 		expect(decodeSnapshotPayload(payload)).toEqual([
 			{ name: "alpha", data: Uint8Array.from([1, 2, 3]) },
+			{
+				name: "basename",
+				data: Uint8Array.from(
+					Buffer.from(
+						JSON.stringify({
+							exportName: "basename",
+							loader: "import",
+							specifier: "node:path",
+							type: "module",
+						}),
+					),
+				),
+				kind: "module",
+			},
 			{ name: "unicode_变量", data: Uint8Array.from([5, 8, 13, 21]) },
+		]);
+	});
+
+	it("decodes hand-built v2 import entries", () => {
+		expect(decodeSnapshotPayload(legacyV2ImportPayload("pathModule", "node:path"))).toEqual([
+			{ data: Uint8Array.from(Buffer.from("node:path")), kind: "import", name: "pathModule" },
 		]);
 	});
 

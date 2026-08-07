@@ -9,7 +9,7 @@
 </p>
 
 <h3 align="center">
-Prime Agent: A Self-Improving RLM Agent
+Prime Bun: A Bun-Native RLM Agent
 </h3>
 
 <p align="center">
@@ -28,12 +28,36 @@ Prime Agent: A Self-Improving RLM Agent
   </a>
 </p>
 
-Prime Agent is an open-source coding and research agent for general and long-running work. It is designed around two core abstractions:
+<p align="center">
+  <img src="assets/brand/prime-bun-hero.png" alt="Prime Bun Agent: Bun-native JavaScript RLM" width="960" style="max-width: 100%;">
+</p>
+
+## Bun-native by design
+
+Prime Bun replaces the Python notebook with a native Bun implementation. RLM programs execute as persistent JavaScript or TypeScript directly in Bun—not through a Python wrapper or subprocess bridge—with retained session state, prepared runtime globals, native shell execution, abort and recovery handling, and snapshot support.
+
+Lower is better. **Bun faster** is the reduction in elapsed time relative to the Python implementation.
+
+| Operation | Bun | Python | Bun faster |
+|---|---:|---:|---:|
+| Startup | 57.8 ms | 789.4 ms | 92.7% |
+| Scalar cell | 2.07 ms | 2.96 ms | 30.1% |
+| 64 KiB output | 1.77 ms | 3.10 ms | 42.9% |
+| 10,000 writes | 3.20 ms | 14.98 ms | 78.6% |
+| Native shell | 1.38 ms | 9.13 ms | 84.9% |
+| Abort | 146.5 ms | 175.7 ms | 16.6% |
+| Recovery | 2.55 ms | 3.30 ms | 22.7% |
+| 32 MiB snapshot | 23.31 ms | 38.31 ms | 39.2% |
+
+> [!NOTE]
+> Prime Bun is a fork of [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent). All credit for the original agent, RLM architecture, TUI, and surrounding ecosystem goes to Prime Intellect and the Prime Agent contributors. Their thoughtful and ambitious work created an exceptional open-source foundation; this fork focuses on a Bun-native JavaScript and TypeScript runtime.
+
+Prime Bun builds on Prime Agent, an open-source coding and research agent for general and long-running work. It preserves two core abstractions:
 
 - The **[Recursive Language Model (RLM)](https://www.primeintellect.ai/blog/rlm)** treats context as variables (*prompt-as-a-variable*) and tools like recursive subagents as function calls (*programmatic tool /sub-agent calling*) inside a persistent REPL.
 - The **[Continual Harness](https://arxiv.org/abs/2605.09998)** stores supplemental prompts, memories, skill descriptions, and reusable subagent specifications as durable state that Prime Agent can refine through small, evidence-backed updates, local to the session by default.
 
-Prime Agent combines a persistent Bun JavaScript control environment with durable harness state, so useful working context and reusable operating patterns can outlive a single chat window.
+Prime Bun combines a persistent Bun JavaScript control environment with durable harness state, so useful working context and reusable operating patterns can outlive a single chat window.
 
 - **Everything is programmatic:** the persistent Bun notebook is the built-in model tool; file operations, shell commands, skill use, subagents, and context management happen through JavaScript or TypeScript.
 - **Subagents are built in:** `rlm(...)` spawns real child agents for parallel or background work and returns an admission handle; results arrive through explicit agent messages or files.

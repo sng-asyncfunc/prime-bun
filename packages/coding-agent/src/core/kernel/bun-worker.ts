@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { Console } from "node:console";
 import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { type FileHandle, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
@@ -21,7 +21,7 @@ import { type BunRlmRuntime, createBunRlmRuntime } from "./bun-rlm-runtime.js";
 import { BUN_RUNTIME_GLOBAL_NAMES } from "./bun-runtime-globals.js";
 import {
 	decodeSnapshotPayload,
-	encodeSnapshotPayload,
+	encodeSnapshotPayloadParts,
 	SNAPSHOT_FORMAT_VERSION,
 	type SnapshotPayloadEntry,
 	snapshotValueSkipReason,
@@ -93,6 +93,7 @@ const pendingHostRequests = new Map<string, PendingHostRequest>();
 const cellStreams = new Map<string, CellStreamState>();
 const RUNTIME_STATE_ENTRY_NAME = "\0prime:runtime";
 const MAX_CELL_STREAM_BYTES = 32 * 1024;
+const MAX_WRITEV_BUFFERS = 1024;
 const cellContext = new AsyncLocalStorage<ActiveCell>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
 const requireModule = createRequire(import.meta.url);
@@ -450,6 +451,66 @@ async function writeAtomic(path: string, data: Uint8Array | string): Promise<voi
 	}
 }
 
+async function writeSnapshotParts(handle: FileHandle, parts: readonly Uint8Array[]): Promise<void> {
+	let partIndex = 0;
+	let partOffset = 0;
+	let position = 0;
+	while (partIndex < parts.length) {
+		while (partIndex < parts.length && partOffset === parts[partIndex]!.byteLength) {
+			partIndex += 1;
+			partOffset = 0;
+		}
+		if (partIndex === parts.length) return;
+
+		const buffers: Uint8Array[] = [];
+		let batchBytes = 0;
+		for (let index = partIndex; index < parts.length && buffers.length < MAX_WRITEV_BUFFERS; index += 1) {
+			const part = parts[index]!;
+			const offset = index === partIndex ? partOffset : 0;
+			if (offset === part.byteLength) continue;
+			const buffer = offset === 0 ? part : part.subarray(offset);
+			buffers.push(buffer);
+			batchBytes += buffer.byteLength;
+		}
+
+		const { bytesWritten } = await handle.writev(buffers, position);
+		if (bytesWritten <= 0 || bytesWritten > batchBytes) {
+			throw new Error(`Unable to write Bun snapshot: writev wrote ${bytesWritten} of ${batchBytes} bytes`);
+		}
+		position += bytesWritten;
+		let remaining = bytesWritten;
+		while (remaining > 0) {
+			const part = parts[partIndex]!;
+			const available = part.byteLength - partOffset;
+			if (remaining < available) {
+				partOffset += remaining;
+				remaining = 0;
+				continue;
+			}
+			remaining -= available;
+			partIndex += 1;
+			partOffset = 0;
+		}
+	}
+}
+
+async function writeBinaryAtomic(path: string, parts: readonly Uint8Array[]): Promise<void> {
+	await mkdir(dirname(path), { recursive: true });
+	const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	let handle: FileHandle | undefined;
+	try {
+		handle = await open(temporaryPath, "w");
+		await writeSnapshotParts(handle, parts);
+		await handle.close();
+		handle = undefined;
+		await rename(temporaryPath, path);
+	} catch (error) {
+		await handle?.close().catch(() => undefined);
+		await rm(temporaryPath, { force: true }).catch(() => undefined);
+		throw error;
+	}
+}
+
 async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "snapshot" }>): Promise<void> {
 	const savedEntries: SnapshotPayloadEntry[] = [];
 	const skipped: { name: string; reason: string }[] = [];
@@ -501,7 +562,7 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 				continue;
 			}
 			try {
-				const data = Uint8Array.from(new Uint8Array(serialize(value)));
+				const data = new Uint8Array(serialize(value));
 				saveEntry({ name, data });
 			} catch (error) {
 				skipped.push({ name, reason: `serialization failed: ${normalizeError(error).message}` });
@@ -515,9 +576,9 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 			});
 		}
 
-		const payload = encodeSnapshotPayload(savedEntries);
+		const payload = encodeSnapshotPayloadParts(savedEntries);
 		const savedNames = savedEntries.filter((entry) => entry.kind !== "runtime").map((entry) => entry.name);
-		await writeAtomic(message.path, payload);
+		await writeBinaryAtomic(message.path, payload.parts);
 		await writeAtomic(
 			message.manifestPath,
 			`${JSON.stringify(

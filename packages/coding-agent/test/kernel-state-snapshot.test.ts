@@ -4,6 +4,7 @@ import {
 	DEFAULT_SNAPSHOT_MAX_BYTES,
 	decodeSnapshotPayload,
 	encodeSnapshotPayload,
+	encodeSnapshotPayloadParts,
 	manifestPathIn,
 	snapshotPathIn,
 	snapshotValueSkipReason,
@@ -22,6 +23,21 @@ describe("Bun kernel state snapshot paths", () => {
 });
 
 describe("Bun snapshot binary format", () => {
+	it("materializes the legacy payload from zero-copy entry parts", () => {
+		const alpha = Uint8Array.from([1, 2, 3]);
+		const entries = [
+			{ name: "alpha", data: alpha },
+			{ name: "unicode_变量", data: Uint8Array.from([5, 8, 13, 21]) },
+		];
+		const payload = encodeSnapshotPayload(entries);
+		const encoded = encodeSnapshotPayloadParts(entries);
+
+		expect(Buffer.concat(encoded.parts, encoded.byteLength)).toEqual(payload);
+		expect(encoded.byteLength).toBe(payload.byteLength);
+		alpha[1] = 89;
+		expect(encoded.parts[2]?.[1]).toBe(89);
+	});
+
 	it("round-trips independently serialized binding blobs", () => {
 		const payload = encodeSnapshotPayload([
 			{ name: "alpha", data: Uint8Array.from([1, 2, 3]) },

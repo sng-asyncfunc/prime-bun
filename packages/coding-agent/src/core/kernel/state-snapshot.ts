@@ -26,6 +26,11 @@ export interface SnapshotPayloadEntry {
 	kind?: SnapshotPayloadKind;
 }
 
+export interface SnapshotPayloadParts {
+	parts: Uint8Array[];
+	byteLength: number;
+}
+
 export type SnapshotPayloadKind = "function" | "import" | "runtime";
 
 interface SnapshotHeaderEntry {
@@ -83,7 +88,7 @@ function parseHeader(value: unknown): SnapshotHeader {
 	return { version: SNAPSHOT_FORMAT_VERSION, entries };
 }
 
-export function encodeSnapshotPayload(entries: readonly SnapshotPayloadEntry[]): Buffer {
+export function encodeSnapshotPayloadParts(entries: readonly SnapshotPayloadEntry[]): SnapshotPayloadParts {
 	let offset = 0;
 	const headerEntries = entries.map((entry): SnapshotHeaderEntry => {
 		const metadata: SnapshotHeaderEntry = {
@@ -102,7 +107,15 @@ export function encodeSnapshotPayload(entries: readonly SnapshotPayloadEntry[]):
 	if (header.byteLength > MAX_HEADER_BYTES) throw new Error("Bun snapshot header exceeds the 16 MiB limit");
 	const prefix = Buffer.allocUnsafe(HEADER_LENGTH_BYTES);
 	prefix.writeUInt32BE(header.byteLength, 0);
-	return Buffer.concat([prefix, header, ...entries.map((entry) => Buffer.from(entry.data))]);
+	return {
+		byteLength: HEADER_LENGTH_BYTES + header.byteLength + offset,
+		parts: [prefix, header, ...entries.map((entry) => entry.data)],
+	};
+}
+
+export function encodeSnapshotPayload(entries: readonly SnapshotPayloadEntry[]): Buffer {
+	const encoded = encodeSnapshotPayloadParts(entries);
+	return Buffer.concat(encoded.parts, encoded.byteLength);
 }
 
 export function decodeSnapshotPayload(payload: Uint8Array): SnapshotPayloadEntry[] {

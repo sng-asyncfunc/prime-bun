@@ -102,6 +102,26 @@ largeBytes[largeBytes.length - 1] = 251;
 		}
 	});
 
+	it("snapshots typed arrays without Uint8Array.from", async () => {
+		const writer = createManager({
+			snapshot: {
+				path: join(directory, "zero-copy.bin"),
+				manifestPath: join(directory, "zero-copy.json"),
+				debounceMs: 60_000,
+			},
+		});
+		try {
+			await writer.execute(`
+const bytesWithoutCopies = new Uint8Array([3, 5, 8]);
+Uint8Array.from = () => { throw new Error("Uint8Array.from must not be used while snapshotting"); };
+`);
+			const snapshot = await writer.snapshotState();
+			expect(snapshot?.saved).toContain("bytesWithoutCopies");
+		} finally {
+			await writer.dispose();
+		}
+	});
+
 	it("restores Float16Array values after restart", async () => {
 		const snapshotConfig = { path: snapshotPath, manifestPath, debounceMs: 60_000 };
 		const writer = createManager({ snapshot: snapshotConfig });

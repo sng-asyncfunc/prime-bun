@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added xAI subscription login with device authorization, automatic token refresh, and API-key fallback.
 - Replaced the Python notebook with a persistent Bun JavaScript and TypeScript notebook, including native JavaScript skills and RLM globals.
 - Fixed Bun notebook parity for TypeScript syntax, cell-scoped streams, shell consumers, executable-state and abort recovery, and automatically provisioned JavaScript skill dependencies.
 - Improved Bun RLM output batching, bounded typed-array checkpoints, and status with complete phase and total timing.

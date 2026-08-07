@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added xAI subscription login with device authorization, automatic token refresh, and API-key fallback.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

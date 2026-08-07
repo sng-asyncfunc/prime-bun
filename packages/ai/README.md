@@ -75,7 +75,7 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 - **Cerebras**
 - **Cloudflare AI Gateway**
 - **Cloudflare Workers AI**
-- **xAI**
+- **xAI** (API key or Grok/X subscription OAuth)
 - **OpenRouter**
 - **Vercel AI Gateway**
 - **MiniMax**
@@ -1101,6 +1101,7 @@ Several providers require OAuth authentication instead of static API keys:
 - **Anthropic** (Claude Pro/Max subscription)
 - **OpenAI Codex** (ChatGPT Plus/Pro subscription, access to GPT-5.x Codex models)
 - **GitHub Copilot** (Copilot subscription)
+- **xAI** (eligible Grok/X subscription)
 
 For paid Cloud Code Assist subscriptions, set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` to your project ID.
 
@@ -1152,6 +1153,7 @@ The quickest way to authenticate:
 ```bash
 npx prime-agent-ai login              # interactive provider selection
 npx prime-agent-ai login anthropic    # login to specific provider
+npx prime-agent-ai login xai          # login with a Grok/X subscription
 npx prime-agent-ai list               # list available providers
 ```
 
@@ -1168,6 +1170,7 @@ import {
   loginOpenAICodex,
   loginGitHubCopilot,
   loginGeminiCli,
+  loginXai,
 
   // Token management
   refreshOAuthToken,   // (provider, credentials) => new credentials
@@ -1237,6 +1240,8 @@ const response = await complete(model, {
 **Azure OpenAI (Responses)**: Uses the Responses API only. Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` supports both `https://<resource>.openai.azure.com` and `https://<resource>.cognitiveservices.azure.com`; root endpoints are normalized to `.../openai/v1` automatically. Use `AZURE_OPENAI_API_VERSION` (defaults to `v1`) to override the API version if needed. Deployment names are treated as model IDs by default, override with `azureDeploymentName` or `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` using comma-separated `model-id=deployment` pairs (for example `gpt-4o-mini=my-deployment,gpt-4o=prod`). Legacy deployment-based URLs are intentionally unsupported.
 
 **GitHub Copilot**: If you get "The requested model is not supported" error, enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click "Enable".
+
+**xAI**: Use the `xai` OAuth provider to authenticate an eligible Grok or X subscription through xAI's device authorization page. Tokens refresh automatically. `XAI_API_KEY` and explicitly stored xAI API keys remain supported as a fallback.
 
 ## Development
 

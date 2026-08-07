@@ -3,6 +3,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
+import { APP_NAME } from "../../config.js";
 
 const DAEMON_SOCKET_MODE = 0o600;
 const DAEMON_SOCKET_DIR_MODE = 0o700;
@@ -35,7 +36,7 @@ export interface DaemonSocketIdentity {
 
 export function defaultDaemonSocketPath(): string {
 	if (process.platform === "win32") {
-		return "\\\\.\\pipe\\prime-agent-daemon";
+		return `\\\\.\\pipe\\${APP_NAME}-daemon`;
 	}
 	return join(defaultDaemonSocketDir(), "daemon.sock");
 }
@@ -213,7 +214,7 @@ function assertSocketLease(socketPath: string, lease: DaemonSocketPathLease): vo
 
 export function defaultDaemonSocketDir(): string {
 	const suffix = typeof process.getuid === "function" ? String(process.getuid()) : "user";
-	return join(tmpdir(), `prime-agent-${suffix}`);
+	return join(tmpdir(), `${APP_NAME}-${suffix}`);
 }
 
 function ensureDefaultDaemonSocketDir(socketPath: string): void {

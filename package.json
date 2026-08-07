@@ -1,6 +1,9 @@
 {
-	"name": "prime-agent",
+	"name": "prime-bun",
 	"private": true,
+	"bin": {
+		"prime-bun": "./prime-agent.sh"
+	},
 	"type": "module",
 	"workspaces": [
 		"packages/*",

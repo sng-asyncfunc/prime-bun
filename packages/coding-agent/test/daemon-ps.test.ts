@@ -183,7 +183,7 @@ describe("planReap", () => {
 		const daemon = makeDaemon({ socketPath: "/tmp/hung.sock", status: "unreachable", pid: 7 });
 		const skipped = planReap([daemon], false)[0]!;
 		expect(skipped.kind).toBe("skip");
-		expect(skipped.kind === "skip" ? skipped.reason : "").toContain("prime-agent shutdown --force");
+		expect(skipped.kind === "skip" ? skipped.reason : "").toContain("prime-bun shutdown --force");
 		expect(planReap([daemon], true)[0]!.kind).toBe("kill");
 	});
 

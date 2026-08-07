@@ -4,7 +4,7 @@
 	"description": "Coding agent CLI with Bun-backed tools and session management",
 	"type": "module",
 	"piConfig": {
-		"name": "prime-agent",
+		"name": "prime-bun",
 		"configDir": ".prime/agent"
 	},
 	"bin": {

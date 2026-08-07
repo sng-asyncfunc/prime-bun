@@ -20,11 +20,11 @@ Prime Bun: A Bun-Native RLM Agent
 </p>
 
 <p align="center">
-  <a href="https://github.com/PrimeIntellect-ai/prime-agent/actions/workflows/ci.yml">
-    <img src="https://github.com/PrimeIntellect-ai/prime-agent/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  <a href="https://github.com/sng-asyncfunc/prime-bun/actions/workflows/ci.yml">
+    <img src="https://github.com/sng-asyncfunc/prime-bun/actions/workflows/ci.yml/badge.svg" alt="CI" />
   </a>
-  <a href="https://github.com/PrimeIntellect-ai/prime-agent/actions/workflows/build-binaries.yml">
-    <img src="https://github.com/PrimeIntellect-ai/prime-agent/actions/workflows/build-binaries.yml/badge.svg" alt="Build Binaries" />
+  <a href="https://github.com/sng-asyncfunc/prime-bun/actions/workflows/build-binaries.yml">
+    <img src="https://github.com/sng-asyncfunc/prime-bun/actions/workflows/build-binaries.yml/badge.svg" alt="Build Binaries" />
   </a>
 </p>
 
@@ -55,7 +55,7 @@ Lower is better. **Bun faster** is the reduction in elapsed time relative to the
 Prime Bun builds on Prime Agent, an open-source coding and research agent for general and long-running work. It preserves two core abstractions:
 
 - The **[Recursive Language Model (RLM)](https://www.primeintellect.ai/blog/rlm)** treats context as variables (*prompt-as-a-variable*) and tools like recursive subagents as function calls (*programmatic tool /sub-agent calling*) inside a persistent REPL.
-- The **[Continual Harness](https://arxiv.org/abs/2605.09998)** stores supplemental prompts, memories, skill descriptions, and reusable subagent specifications as durable state that Prime Agent can refine through small, evidence-backed updates, local to the session by default.
+- The **[Continual Harness](https://arxiv.org/abs/2605.09998)** stores supplemental prompts, memories, skill descriptions, and reusable subagent specifications as durable state that Prime Bun can refine through small, evidence-backed updates, local to the session by default.
 
 Prime Bun combines a persistent Bun JavaScript control environment with durable harness state, so useful working context and reusable operating patterns can outlive a single chat window.
 
@@ -69,45 +69,45 @@ Prime Bun combines a persistent Bun JavaScript control environment with durable 
 
 ## Getting Started
 
-Install the latest stable release on macOS or Linux:
+Install the local checkout with Node.js 22.8 or newer:
 
 ```bash
-curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
+git clone https://github.com/sng-asyncfunc/prime-bun.git
+cd prime-bun
+npm ci
+npm link
 ```
 
-The installer downloads a versioned release, verifies its SHA-256 checksum, installs the `prime-agent` command, and can prepare the Bun runtime used by the agent.
-
-Start Prime Agent from the repository or directory you want it to work in:
+`npm link` exposes the checkout as the `prime-bun` command. Run it from the repository or directory you want Prime Bun to work in:
 
 ```bash
 cd /path/to/project
-prime-agent
+prime-bun
 ```
 
-On first launch, run `/login` to choose a subscription or API-key provider. Prime Agent works in the current directory and can run commands and modify files there. Use a disposable clone, clean worktree, or another checkpoint you can inspect and restore.
+On first launch, run `/login` to choose a subscription or API-key provider. Prime Bun works in the current directory and can run commands and modify files there. Use a disposable clone, clean worktree, or another checkpoint you can inspect and restore.
 
 > [!WARNING]
-> Prime Agent executes model-generated JavaScript, TypeScript, and project commands with your user permissions. Its worker and notebook processes improve lifecycle isolation and recovery; they are **not** a security sandbox. Review changes and use trusted repositories, instructions, skills, and extensions only. Run untrusted code or instructions in an external sandbox or restricted environment.
+> Prime Bun executes model-generated JavaScript, TypeScript, and project commands with your user permissions. Its worker and notebook processes improve lifecycle isolation and recovery; they are **not** a security sandbox. Review changes and use trusted repositories, instructions, skills, and extensions only. Run untrusted code or instructions in an external sandbox or restricted environment.
 
 Useful commands:
 
 ```bash
-prime-agent agents                   # Browse running, idle, and saved sessions
-prime-agent attach <agent>           # Reattach to a running session
-prime-agent --resume <path|id>       # Resume a saved session
-prime-agent status                   # Inspect background service state
-prime-agent doctor [--fix]           # Inspect or repair background services
-prime-agent update [--force]         # Update Prime Agent
-prime-agent shutdown [--force]       # Stop every agent, worker, and background service
+prime-bun agents                   # Browse running, idle, and saved sessions
+prime-bun attach <agent>           # Reattach to a running session
+prime-bun --resume <path|id>       # Resume a saved session
+prime-bun status                   # Inspect background service state
+prime-bun doctor [--fix]           # Inspect or repair background services
+prime-bun shutdown [--force]       # Stop every agent, worker, and background service
 ```
 
 ## Built for Long-Running Work
-Prime Agent is built for long-running work, especially for evaluations in research. These features are available in the TUI, and when run autonomously. 
+Prime Bun is built for long-running work, especially for evaluations in research. These features are available in the TUI and when run autonomously.
 
 - **Continual Harness:** `/refine` can persist focused, reviewable lessons as supplemental prompts, memories, reusable skill descriptions, or subagent specifications, with recorded refinement history. It does not replace packaging and reviewing new executable skills.
 - **Direct agent-to-agent communication:** running agents and retained subagents can discover one another, exchange messages, and steer active work.
 - **Daemon-backed continuity:** active sessions, Bun notebook state, schedules, and subagents keep running when the terminal detaches and can be reattached later.
-- **Heartbeats and schedules:** `/heartbeat`, `rlmHeartbeat`, and `prime-agent schedule` can re-enter a session periodically or at a specific time.
+- **Heartbeats and schedules:** `/heartbeat`, `rlmHeartbeat`, and `prime-bun schedule` can re-enter a session periodically or at a specific time.
 - **Persistent goals:** `/goal` keeps an objective and its progress active across turns until it is completed, paused, or cleared.
 - **Bounded autonomous mode:** `/autonomous` continues within configured turn, token, and time budgets and can run user-defined quality gates. A passed gate checks only what that gate verifies; reaching a limit does not imply task success.
 
@@ -129,4 +129,4 @@ Our agent and TUI is built on top of [`pi`](https://github.com/earendil-works/pi
 
 ## License
 
-Prime Agent is fully open source and released under the [MIT License](LICENSE).
+Prime Bun is fully open source and released under the [MIT License](LICENSE).

@@ -43,6 +43,40 @@ describe("Bun KernelManager", () => {
 		expect(manager.isRunning).toBe(true);
 	});
 
+	it("reports complete timings for queued executions with recovery checkpoints", async () => {
+		const manager = createManager();
+		await manager.execute("const stateForTiming = { value: 1 };");
+
+		const result = await manager.execute("1;");
+
+		expect(result.timings).toBeDefined();
+		if (!result.timings) return;
+		expect(Object.keys(result.timings).sort()).toEqual([
+			"checkpointMs",
+			"executionMs",
+			"queueMs",
+			"startupMs",
+			"totalMs",
+		]);
+		for (const timing of Object.values(result.timings)) {
+			expect(Number.isFinite(timing)).toBe(true);
+			expect(timing).toBeGreaterThanOrEqual(0);
+		}
+		expect(result.durationMs).toBe(result.timings.totalMs);
+		expect(result.timings.totalMs).toBeGreaterThanOrEqual(result.timings.executionMs);
+		expect(result.timings.totalMs).toBeGreaterThanOrEqual(result.timings.checkpointMs);
+	});
+
+	it("preserves the exact result shape for an already aborted execution", async () => {
+		const manager = createManager();
+		const controller = new AbortController();
+		controller.abort();
+
+		const result = await manager.execute("1;", { signal: controller.signal });
+
+		expect(result).toEqual({ durationMs: 0, status: "aborted", stderr: "", stdout: "" });
+	});
+
 	it("streams bounded stdout and stderr", async () => {
 		const manager = createManager();
 		const streamed: Array<{ chunk: string; name: "stdout" | "stderr" }> = [];

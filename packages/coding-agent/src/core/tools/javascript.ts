@@ -10,6 +10,7 @@ import {
 	type HostRequestHandlers,
 	type KernelAttachment,
 	type KernelDiffDisplay,
+	type KernelExecutionTimings,
 	KernelManager,
 	type KernelSentAgentMessage,
 } from "../kernel/index.js";
@@ -83,8 +84,13 @@ function setWorkingMessage(ctx: ExtensionContext | undefined, message?: string):
 
 export type JavaScriptToolInput = Static<typeof javascriptSchema>;
 
+export interface JavaScriptToolTimings extends KernelExecutionTimings {
+	provisioningMs: number;
+}
+
 export interface JavaScriptToolDetails {
 	durationMs?: number;
+	timings?: JavaScriptToolTimings;
 	status?: "ok" | "error" | "aborted" | "starting";
 	errorEname?: string;
 	stdout?: string;
@@ -287,6 +293,7 @@ export function createJavaScriptToolDefinition(
 		executionMode: "sequential",
 		parameters: javascriptSchema,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			const toolStartedAt = performance.now();
 			let hasWorkingMessage = false;
 			const setToolWorkingMessage = (message?: string) => {
 				setWorkingMessage(ctx, message);
@@ -297,7 +304,9 @@ export function createJavaScriptToolDefinition(
 				onUpdate?.({ content: [{ type: "text", text: message }], details: { status: "starting" } });
 			};
 			try {
+				const provisioningStartedAt = performance.now();
 				const manager = await provisioner.ensure(reportStartupProgress, signal);
+				const rawProvisioningMs = Math.max(0, performance.now() - provisioningStartedAt);
 				const result = await manager.execute(params.code, {
 					onLateSentAgentMessage: options?.onLateSentAgentMessage
 						? (message) => options.onLateSentAgentMessage?.(toolCallId, message)
@@ -317,12 +326,30 @@ export function createJavaScriptToolDefinition(
 					{ type: "text", text: text || "" },
 					...imageBlocksFromAttachments(result.attachments),
 				];
+				const rawToolTotalMs = Math.max(
+					0,
+					performance.now() - toolStartedAt,
+					rawProvisioningMs,
+					result.durationMs,
+					...(result.timings ? Object.values(result.timings) : []),
+				);
+				const durationMs = Math.round(Number.isFinite(rawToolTotalMs) ? rawToolTotalMs : 0);
+				const timings: JavaScriptToolTimings | undefined = result.timings
+					? {
+							checkpointMs: result.timings.checkpointMs,
+							executionMs: result.timings.executionMs,
+							provisioningMs: Math.round(Number.isFinite(rawProvisioningMs) ? rawProvisioningMs : 0),
+							queueMs: result.timings.queueMs,
+							startupMs: result.timings.startupMs,
+							totalMs: durationMs,
+						}
+					: undefined;
 				return {
 					content,
 					details: {
 						attachments: result.attachments,
 						diffs: result.diffs,
-						durationMs: result.durationMs,
+						durationMs,
 						error: result.error,
 						errorEname: result.error?.ename,
 						result: result.result,
@@ -330,6 +357,7 @@ export function createJavaScriptToolDefinition(
 						status: result.status,
 						stderr: result.stderr,
 						stdout: result.stdout,
+						timings,
 					},
 					isError: result.status === "error" || result.status === "aborted",
 				};

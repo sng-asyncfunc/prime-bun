@@ -112,6 +112,14 @@ export interface KernelSentAgentMessage {
 	};
 }
 
+export interface KernelExecutionTimings {
+	startupMs: number;
+	queueMs: number;
+	checkpointMs: number;
+	executionMs: number;
+	totalMs: number;
+}
+
 export interface ExecuteResult {
 	stdout: string;
 	stderr: string;
@@ -122,6 +130,7 @@ export interface ExecuteResult {
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
 	durationMs: number;
+	timings?: KernelExecutionTimings;
 }
 
 type MessageType = BunWorkerToHostMessage["type"];
@@ -170,6 +179,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function elapsedMilliseconds(startedAt: number): number {
+	const elapsed = performance.now() - startedAt;
+	return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+}
+
+function roundMilliseconds(value: number): number {
+	return Math.round(Number.isFinite(value) ? Math.max(0, value) : 0);
 }
 
 function createKernelStartupAbortError(): Error {
@@ -518,19 +536,49 @@ export class KernelManager {
 	}
 
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+		const totalStartedAt = performance.now();
 		if (opts.signal?.aborted) return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
+		const startupStartedAt = performance.now();
 		await this.start({ signal: opts.signal });
-		return this.withExecutionLock(async () => {
-			if (opts.signal?.aborted) return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
-			if (this.recoverySnapshotDirty) await this.flushRecoverySnapshot();
-			const result = await this.executeInner(code, opts);
-			if (result.status === "ok") {
-				this.recoverySnapshotDirty = true;
-				if (this.options.snapshot) this.persistentSnapshotDirty = true;
-				this.scheduleSnapshot();
-			}
-			return result;
-		});
+		const startupMs = elapsedMilliseconds(startupStartedAt);
+		const queueStartedAt = performance.now();
+		let queueMs = 0;
+		return this.withExecutionLock(
+			async () => {
+				if (opts.signal?.aborted) return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
+				let checkpointMs = 0;
+				if (this.recoverySnapshotDirty) {
+					const checkpointStartedAt = performance.now();
+					await this.flushRecoverySnapshot();
+					checkpointMs = elapsedMilliseconds(checkpointStartedAt);
+				}
+				const result = await this.executeInner(code, opts);
+				if (result.status === "ok") {
+					this.recoverySnapshotDirty = true;
+					if (this.options.snapshot) this.persistentSnapshotDirty = true;
+					this.scheduleSnapshot();
+				}
+				const executionMs = Number.isFinite(result.durationMs) ? Math.max(0, result.durationMs) : 0;
+				const totalMs = Math.max(
+					elapsedMilliseconds(totalStartedAt),
+					startupMs,
+					queueMs,
+					checkpointMs,
+					executionMs,
+				);
+				const timings: KernelExecutionTimings = {
+					checkpointMs: roundMilliseconds(checkpointMs),
+					executionMs: roundMilliseconds(executionMs),
+					queueMs: roundMilliseconds(queueMs),
+					startupMs: roundMilliseconds(startupMs),
+					totalMs: roundMilliseconds(totalMs),
+				};
+				return { ...result, durationMs: timings.totalMs, timings };
+			},
+			() => {
+				queueMs = elapsedMilliseconds(queueStartedAt);
+			},
+		);
 	}
 
 	private async executeInner(code: string, opts: ExecuteOptions): Promise<ExecuteResult> {
@@ -547,7 +595,7 @@ export class KernelManager {
 			opts,
 			requestId,
 			sentAgentMessages: [],
-			startedAt: Date.now(),
+			startedAt: performance.now(),
 			stderr: "",
 			stderrTruncated: false,
 			stdout: "",
@@ -590,11 +638,17 @@ export class KernelManager {
 			}
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			if (outcome.message.status === "error") {
-				return this.executionResult(execution, "error", {
-					ename: outcome.message.error.name,
-					evalue: outcome.message.error.message,
-					traceback: outcome.message.error.stack?.split("\n") ?? [],
-				});
+				return this.executionResult(
+					execution,
+					"error",
+					{
+						ename: outcome.message.error.name,
+						evalue: outcome.message.error.message,
+						traceback: outcome.message.error.stack?.split("\n") ?? [],
+					},
+					undefined,
+					outcome.message.durationMs,
+				);
 			}
 			if (execution.fatalDisplayError) {
 				return this.executionResult(
@@ -606,9 +660,10 @@ export class KernelManager {
 						traceback: [execution.fatalDisplayError],
 					},
 					outcome.message.value,
+					outcome.message.durationMs,
 				);
 			}
-			return this.executionResult(execution, "ok", undefined, outcome.message.value);
+			return this.executionResult(execution, "ok", undefined, outcome.message.value, outcome.message.durationMs);
 		} finally {
 			opts.signal?.removeEventListener("abort", onAbort);
 			if (this.activeExecution === execution) this.activeExecution = undefined;
@@ -621,6 +676,7 @@ export class KernelManager {
 		status: ExecuteResult["status"],
 		error?: ExecuteResult["error"],
 		result?: string,
+		executionDurationMs?: number,
 	): ExecuteResult {
 		let stdout = execution.stdout;
 		let stderr = execution.stderr;
@@ -633,7 +689,7 @@ export class KernelManager {
 		return {
 			attachments: execution.attachments.length > 0 ? execution.attachments : undefined,
 			diffs: execution.diffs.length > 0 ? execution.diffs : undefined,
-			durationMs: Date.now() - execution.startedAt,
+			durationMs: executionDurationMs ?? elapsedMilliseconds(execution.startedAt),
 			error,
 			result: boundedResult,
 			sentAgentMessages: execution.sentAgentMessages.length > 0 ? execution.sentAgentMessages : undefined,
@@ -893,7 +949,7 @@ export class KernelManager {
 		this.snapshotTimer.unref?.();
 	}
 
-	private async withExecutionLock<T>(operation: () => Promise<T>): Promise<T> {
+	private async withExecutionLock<T>(operation: () => Promise<T>, onAcquired?: () => void): Promise<T> {
 		const previous = this.executionQueue;
 		let release: () => void = () => {};
 		this.executionQueue = new Promise<void>((resolve) => {
@@ -901,6 +957,7 @@ export class KernelManager {
 		});
 		await previous;
 		try {
+			onAcquired?.();
 			if (this.recoveryPromise) await this.recoveryPromise;
 			return await operation();
 		} finally {

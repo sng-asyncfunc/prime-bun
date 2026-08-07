@@ -93,30 +93,54 @@ describe("BunKernelProvisioner", () => {
 			executeResult({
 				attachments: [{ data: "aGVsbG8=", mimeType: "image/png", path: "/tmp/image.png" }],
 				diffs: [{ newStr: "new", oldStr: "old", path: "/tmp/file.ts", startLine: 4 }],
+				durationMs: 2,
 				result: "42",
 				stderr: "warning",
+				timings: { checkpointMs: 1, executionMs: 2, queueMs: 1, startupMs: 1, totalMs: 2 },
 			}),
 		);
 		const manager = { execute } as unknown as KernelManager;
-		const ensure = vi.fn(async () => manager);
+		let releaseProvisioning = (): void => {};
+		const provisioningGate = new Promise<void>((resolve) => {
+			releaseProvisioning = resolve;
+		});
+		const ensure = vi.fn(async () => {
+			await provisioningGate;
+			return manager;
+		});
 		const provisioner = { ensure } as unknown as BunKernelProvisioner;
 		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
 
-		const result = await tool.execute("call-1", { code: "const answer = 42; answer;" }, undefined, undefined, {
+		const pendingResult = tool.execute("call-1", { code: "const answer = 42; answer;" }, undefined, undefined, {
 			ui: { setWorkingMessage: vi.fn() },
 		} as unknown as ExtensionContext);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		releaseProvisioning();
+		const result = await pendingResult;
 
 		expect(execute).toHaveBeenCalledWith(
 			"const answer = 42; answer;",
 			expect.objectContaining({ onStream: expect.any(Function), signal: undefined }),
 		);
 		expect(result.details).toMatchObject({
+			durationMs: expect.any(Number),
 			status: "ok",
 			stdout: "output",
 			stderr: "warning",
 			result: "42",
 			diffs: [{ path: "/tmp/file.ts", startLine: 4 }],
+			timings: {
+				checkpointMs: 1,
+				executionMs: 2,
+				provisioningMs: expect.any(Number),
+				queueMs: 1,
+				startupMs: 1,
+				totalMs: expect.any(Number),
+			},
 		});
+		expect(result.details.timings?.provisioningMs).toBeGreaterThan(0);
+		expect(result.details.durationMs).toBe(result.details.timings?.totalMs);
+		expect(result.details.durationMs).toBeGreaterThan(2);
 		expect(result.content).toEqual([
 			{ type: "text", text: "output\nwarning\n42" },
 			{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },

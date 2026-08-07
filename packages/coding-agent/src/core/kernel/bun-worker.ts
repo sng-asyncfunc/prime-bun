@@ -10,7 +10,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { $ } from "bun";
-import { type ImportBindingRecipe, transformJavaScriptCell } from "./bun-cell-transform.js";
+import { type ModuleBindingRecipe, transformJavaScriptCell } from "./bun-cell-transform.js";
 import {
 	BUN_WORKER_PROTOCOL_VERSION,
 	type BunWorkerError,
@@ -27,7 +27,7 @@ import {
 	snapshotValueSkipReason,
 } from "./state-snapshot.js";
 
-type PersistBinding = (name: string, value: unknown, recipe?: ImportBindingRecipe) => void;
+type PersistBinding = (name: string, value: unknown, recipe?: ModuleBindingRecipe) => void;
 type AsyncExecutable = (...args: unknown[]) => Promise<unknown>;
 
 export interface ShellResult {
@@ -62,7 +62,7 @@ interface PendingHostRequest {
 }
 
 interface BindingRecipeState {
-	recipe: ImportBindingRecipe;
+	recipe: ModuleBindingRecipe;
 	value: unknown;
 }
 
@@ -878,7 +878,7 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 					case "import": {
 						if (!source) throw new Error("import recipe has an empty specifier");
 						const value = await restoreImportedValue(source);
-						persistBinding(entry.name, value, { specifier: source, type: "import" });
+						persistBinding(entry.name, value, { loader: "import", specifier: source, type: "module" });
 						break;
 					}
 				}

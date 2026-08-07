@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { transformJavaScriptCell } from "../src/core/kernel/bun-cell-transform.js";
+import { type ModuleBindingRecipe, transformJavaScriptCell } from "../src/core/kernel/bun-cell-transform.js";
 
-type CellFunction = (
-	persist: (name: string, value: unknown, recipe?: { type: "import"; specifier: string }) => void,
-) => Promise<unknown>;
+type CellFunction = (persist: (name: string, value: unknown, recipe?: ModuleBindingRecipe) => void) => Promise<unknown>;
 
 function compileCell(source: string): {
 	bindings: Map<string, unknown>;
-	recipes: Map<string, { type: "import"; specifier: string }>;
+	recipes: Map<string, ModuleBindingRecipe>;
 	result: Promise<unknown>;
 } {
 	const transformed = transformJavaScriptCell(source);
@@ -16,7 +14,7 @@ function compileCell(source: string): {
 	) => CellFunction;
 	const execute = new AsyncFunction("__primePersist", transformed.code);
 	const bindings = new Map<string, unknown>();
-	const recipes = new Map<string, { type: "import"; specifier: string }>();
+	const recipes = new Map<string, ModuleBindingRecipe>();
 	return {
 		bindings,
 		recipes,
@@ -90,14 +88,72 @@ value + 1;
 		expect(await execution.result).toBe(43);
 	});
 
-	it("records a restore recipe for a literal dynamic import", () => {
+	it("lowers static imports in statement order with one load per declaration", () => {
 		const transformed = transformJavaScriptCell(`
-const pathModule = await import("node:path");
-pathModule.basename("/a/b");
+globalThis.__primeOrder = ["before"];
+import pathDefault, { basename, join as combine } from "node:path";
+globalThis.__primeOrder.push("middle");
+import * as fsModule from "node:fs";
+import "node:util";
+globalThis.__primeOrder.push("after");
 `);
 
+		expect(transformed.bindingNames).toEqual(["pathDefault", "basename", "combine", "fsModule"]);
 		expect(transformed.bindingRecipes).toEqual({
-			pathModule: { type: "import", specifier: "node:path" },
+			pathDefault: {
+				exportName: "default",
+				loader: "import",
+				specifier: "node:path",
+				type: "module",
+			},
+			basename: {
+				exportName: "basename",
+				loader: "import",
+				specifier: "node:path",
+				type: "module",
+			},
+			combine: {
+				exportName: "join",
+				loader: "import",
+				specifier: "node:path",
+				type: "module",
+			},
+			fsModule: { loader: "import", specifier: "node:fs", type: "module" },
+		});
+		expect(transformed.code.match(/await import\("node:path"\)/g)).toHaveLength(1);
+		expect(transformed.code).toContain('await import("node:util")');
+		expect(transformed.code).not.toContain("import pathDefault");
+		expect(transformed.code.indexOf('push("middle")')).toBeLessThan(
+			transformed.code.indexOf('await import("node:fs")'),
+		);
+	});
+
+	it("records selected exports from a destructured literal dynamic import", () => {
+		const transformed = transformJavaScriptCell(
+			'const { readFile, writeFile: write } = await import("node:fs/promises");',
+		);
+
+		expect(transformed.bindingRecipes).toEqual({
+			readFile: {
+				exportName: "readFile",
+				loader: "import",
+				specifier: "node:fs/promises",
+				type: "module",
+			},
+			write: {
+				exportName: "writeFile",
+				loader: "import",
+				specifier: "node:fs/promises",
+				type: "module",
+			},
+		});
+	});
+
+	it("records a literal require namespace recipe", () => {
+		const transformed = transformJavaScriptCell('const library = require("node:path");');
+
+		expect(transformed.bindingRecipes).toEqual({
+			library: { loader: "require", specifier: "node:path", type: "module" },
 		});
 	});
 
@@ -123,9 +179,9 @@ count;
 		expect(() => transformJavaScriptCell("const value = ;")).toThrow(/Unexpected token/);
 	});
 
-	it("rejects static imports with an actionable alternative", () => {
-		expect(() => transformJavaScriptCell('import { readFile } from "node:fs/promises";')).toThrow(
-			/use await import\(\) or require\(\)/i,
+	it("continues to reject exports from notebook cells", () => {
+		expect(() => transformJavaScriptCell("export const value = 1;")).toThrow(
+			"Exports are not supported in Bun cells.",
 		);
 	});
 });

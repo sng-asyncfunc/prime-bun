@@ -1248,6 +1248,69 @@ describe("daemon worker supervisor monitoring", () => {
 		},
 	);
 
+	it("clears an intentional-stop tombstone before retrying a worker", async () => {
+		type RetryWorker = {
+			descriptor: {
+				workerId: string;
+				rootActiveSessionId: string;
+				rootSessionId: string;
+				lifecycle: "ready" | "recovering";
+				consecutiveFailures: number;
+				stopRequestedAt?: string;
+				archiveOnStop?: boolean;
+			};
+			intentionalStop: boolean;
+			summaries: Map<string, SessionSummary>;
+		};
+		type RetryHarness = {
+			workers: Map<string, RetryWorker>;
+			persistWorker: ReturnType<typeof vi.fn>;
+			recoverWorker: ReturnType<typeof vi.fn>;
+			handleCommand(
+				client: DaemonSocketClient,
+				command: { type: "retry_worker"; activeSessionId: string },
+			): Promise<unknown>;
+		};
+		const worker: RetryWorker = {
+			descriptor: {
+				workerId: "worker-1",
+				rootActiveSessionId: "active-1",
+				rootSessionId: "session-1",
+				lifecycle: "ready",
+				consecutiveFailures: 2,
+				stopRequestedAt: new Date().toISOString(),
+				archiveOnStop: true,
+			},
+			intentionalStop: true,
+			summaries: new Map(),
+		};
+		const persistWorker = vi.fn(() => {
+			expect(worker.intentionalStop).toBe(false);
+			expect(worker.descriptor.stopRequestedAt).toBeUndefined();
+			expect(worker.descriptor.archiveOnStop).toBeUndefined();
+			expect(worker.descriptor.lifecycle).toBe("recovering");
+			expect(worker.descriptor.consecutiveFailures).toBe(0);
+		});
+		const recoverWorker = vi.fn(async () => {
+			worker.descriptor.lifecycle = "ready";
+		});
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			persistWorker,
+			recoverWorker,
+			assertWorkerAccessibleToClient: vi.fn(),
+		}) as RetryHarness;
+
+		await supervisor.handleCommand({} as DaemonSocketClient, {
+			type: "retry_worker",
+			activeSessionId: worker.descriptor.rootSessionId,
+		});
+
+		expect(persistWorker).toHaveBeenCalledOnce();
+		expect(recoverWorker).toHaveBeenCalledWith(worker);
+		expect(persistWorker.mock.invocationCallOrder[0]).toBeLessThan(recoverWorker.mock.invocationCallOrder[0]!);
+	});
+
 	it("cancels an in-flight recovery after an intentional stop tombstone", async () => {
 		vi.useFakeTimers();
 		type RecoveryWorker = {

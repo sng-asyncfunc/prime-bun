@@ -1549,6 +1549,8 @@ export class DaemonSupervisor {
 				const worker = direct ?? (await this.findWorkerForClient(client, command.activeSessionId)).worker;
 				this.assertWorkerAccessibleToClient(client, worker, command.activeSessionId);
 				worker.intentionalStop = false;
+				worker.descriptor.stopRequestedAt = undefined;
+				worker.descriptor.archiveOnStop = undefined;
 				worker.descriptor.lifecycle = "recovering";
 				worker.descriptor.consecutiveFailures = 0;
 				this.persistWorker(worker);

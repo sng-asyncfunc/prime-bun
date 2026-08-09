@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed interactive input and fullscreen scrolling lag under long transcripts by prioritizing focused frames, repainting only changing components, and reusing cached viewport content.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

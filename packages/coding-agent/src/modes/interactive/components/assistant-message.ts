@@ -73,6 +73,7 @@ export class AssistantMessageComponent extends Container {
 	private precededByToolActivity: boolean;
 	private lastStreamingRenderAt = Number.NEGATIVE_INFINITY;
 	private streamingRenderTimer: NodeJS.Timeout | undefined;
+	private requestTargetedRender?: () => void;
 
 	constructor(
 		message?: AssistantMessage,
@@ -145,6 +146,10 @@ export class AssistantMessageComponent extends Container {
 		this.dirty = true;
 	}
 
+	setRenderRequester(requestRender: () => void): void {
+		this.requestTargetedRender = requestRender;
+	}
+
 	/** Keep the latest snapshot, but only admit expensive transcript frames at 20 fps. */
 	updateStreamingContent(message: AssistantMessage, requestRender: () => void): boolean {
 		this.lastMessage = message;
@@ -156,7 +161,7 @@ export class AssistantMessageComponent extends Container {
 					this.streamingRenderTimer = undefined;
 					this.lastStreamingRenderAt = performance.now();
 					this.dirty = true;
-					requestRender();
+					(this.requestTargetedRender ?? requestRender)();
 				}, STREAMING_RENDER_INTERVAL_MS - elapsed);
 				this.streamingRenderTimer.unref?.();
 			}
@@ -165,6 +170,10 @@ export class AssistantMessageComponent extends Container {
 		this.cancelStreamingRender();
 		this.lastStreamingRenderAt = now;
 		this.dirty = true;
+		if (this.requestTargetedRender) {
+			this.requestTargetedRender();
+			return false;
+		}
 		return true;
 	}
 

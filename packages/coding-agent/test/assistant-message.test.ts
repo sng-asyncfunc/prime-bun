@@ -192,6 +192,36 @@ describe("AssistantMessageComponent streaming identity", () => {
 		}
 	});
 
+	test("uses a bound targeted renderer for streaming frames", () => {
+		vi.useFakeTimers();
+		const now = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			initTheme("dark");
+			const component = new AssistantMessageComponent();
+			const requestTargetedRender = vi.fn();
+			const requestFullRender = vi.fn();
+			component.setRenderRequester(requestTargetedRender);
+
+			const first = createAssistantMessage([{ type: "text", text: "first" }]);
+			expect(component.updateStreamingContent(first, requestFullRender)).toBe(false);
+			expect(requestTargetedRender).toHaveBeenCalledOnce();
+			expect(requestFullRender).not.toHaveBeenCalled();
+			component.render(90);
+
+			now.mockReturnValue(10);
+			const latest = createAssistantMessage([{ type: "text", text: "latest" }]);
+			expect(component.updateStreamingContent(latest, requestFullRender)).toBe(false);
+			now.mockReturnValue(50);
+			vi.advanceTimersByTime(40);
+
+			expect(requestTargetedRender).toHaveBeenCalledTimes(2);
+			expect(requestFullRender).not.toHaveBeenCalled();
+		} finally {
+			now.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	test("cancels a trailing render when an immediate update finalizes the message", () => {
 		vi.useFakeTimers();
 		const now = vi.spyOn(performance, "now").mockReturnValue(0);

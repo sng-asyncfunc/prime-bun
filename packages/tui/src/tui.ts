@@ -64,6 +64,9 @@ export interface Component {
 	 */
 	handleInput?(data: string): void;
 
+	/** Bind component-owned updates to a targeted render of this component. */
+	setRenderRequester?(requestRender: () => void): void;
+
 	/**
 	 * If true, component receives key release events (Kitty protocol).
 	 * Default is false - release events are filtered out.
@@ -101,6 +104,18 @@ interface FrameSelectionRegion {
 	line: number;
 	col: number;
 	width: number;
+}
+
+interface ChildRenderMetadata {
+	width: number;
+	lineCount: number;
+	selectionRegions: ReadonlyArray<TableCellSelectionRegion>;
+}
+
+interface FocusedRenderPatch {
+	startLine: number;
+	previousLineCount: number;
+	lines: string[];
 }
 
 /**
@@ -244,6 +259,7 @@ export interface OverlayHandle {
 export class Container implements Component {
 	children: Component[] = [];
 	private selectionRegions: TableCellSelectionRegion[] = [];
+	private childRenderMetadata = new Map<Component, ChildRenderMetadata>();
 
 	addChild(component: Component): void {
 		this.children.push(component);
@@ -254,16 +270,21 @@ export class Container implements Component {
 		const index = this.children.indexOf(component);
 		if (index !== -1) {
 			this.children.splice(index, 1);
+			// The previous frame still contains the removed child's lines, so all
+			// offsets are stale until the next full render.
+			this.childRenderMetadata.clear();
 			this.selectionRegions = [];
 		}
 	}
 
 	clear(): void {
 		this.children = [];
+		this.childRenderMetadata.clear();
 		this.selectionRegions = [];
 	}
 
 	invalidate(): void {
+		this.childRenderMetadata.clear();
 		this.selectionRegions = [];
 		for (const child of this.children) {
 			child.invalidate?.();
@@ -272,11 +293,90 @@ export class Container implements Component {
 
 	render(width: number): string[] {
 		const lines: string[] = [];
-		const selectionRegions: TableCellSelectionRegion[] = [];
+		const nextMetadata = new Map<Component, ChildRenderMetadata>();
 		for (const child of this.children) {
-			const lineOffset = lines.length;
 			const childLines = child.render(width);
-			for (const region of child.getSelectionRegions?.() ?? []) {
+			nextMetadata.set(child, {
+				width,
+				lineCount: childLines.length,
+				selectionRegions: child.getSelectionRegions?.() ?? [],
+			});
+			for (const line of childLines) {
+				lines.push(line);
+			}
+		}
+		this.childRenderMetadata = nextMetadata;
+		this.rebuildSelectionRegions();
+		return lines;
+	}
+
+	/**
+	 * Render only the focused descendant and return its changed line range.
+	 * Sibling output is represented by line counts captured during the last full
+	 * render, so input feedback never has to walk the transcript.
+	 */
+	renderFocused(width: number, target: Component): FocusedRenderPatch | undefined {
+		for (const child of this.children) {
+			const metadata = this.childRenderMetadata.get(child);
+			if (!metadata || metadata.width !== width) {
+				return undefined;
+			}
+		}
+
+		let lineOffset = 0;
+		for (const child of this.children) {
+			const metadata = this.childRenderMetadata.get(child);
+			if (!metadata) {
+				return undefined;
+			}
+
+			let patch: FocusedRenderPatch | undefined;
+			if (child === target) {
+				const childLines = child.render(width);
+				patch = {
+					startLine: 0,
+					previousLineCount: metadata.lineCount,
+					lines: childLines,
+				};
+				this.childRenderMetadata.set(child, {
+					width,
+					lineCount: childLines.length,
+					selectionRegions: child.getSelectionRegions?.() ?? [],
+				});
+			} else if (child instanceof Container && child.render === Container.prototype.render) {
+				patch = child.renderFocused(width, target);
+				if (patch) {
+					this.childRenderMetadata.set(child, {
+						width,
+						lineCount: metadata.lineCount + patch.lines.length - patch.previousLineCount,
+						selectionRegions: child.getSelectionRegions(),
+					});
+				}
+			}
+
+			if (patch) {
+				this.rebuildSelectionRegions();
+				return {
+					...patch,
+					startLine: lineOffset + patch.startLine,
+				};
+			}
+			lineOffset += metadata.lineCount;
+		}
+
+		return undefined;
+	}
+
+	private rebuildSelectionRegions(): void {
+		const selectionRegions: TableCellSelectionRegion[] = [];
+		let lineOffset = 0;
+		for (const child of this.children) {
+			const metadata = this.childRenderMetadata.get(child);
+			if (!metadata) {
+				this.selectionRegions = [];
+				return;
+			}
+			for (const region of metadata.selectionRegions) {
 				selectionRegions.push({
 					...region,
 					line: region.line + lineOffset,
@@ -284,12 +384,9 @@ export class Container implements Component {
 					tableBottom: region.tableBottom + lineOffset,
 				});
 			}
-			for (const line of childLines) {
-				lines.push(line);
-			}
+			lineOffset += metadata.lineCount;
 		}
 		this.selectionRegions = selectionRegions;
-		return lines;
 	}
 
 	getSelectionRegions(): ReadonlyArray<TableCellSelectionRegion> {
@@ -314,9 +411,19 @@ export class TUI extends Container {
 	/** Copies fullscreen mouse selections; when unset, OSC 52 is written directly. */
 	public onCopy?: (text: string) => void;
 	private renderRequested = false;
+	private focusedRenderRequested = false;
+	private viewportRenderRequested = false;
+	private targetedRenderComponents = new Set<Component>();
 	private renderTimer: NodeJS.Timeout | undefined;
-	private lastRenderAt = 0;
-	private static readonly MIN_RENDER_INTERVAL_MS = 16;
+	private renderTimerKind: "focused" | "full" | "viewport" | "targeted" | undefined;
+	private lastFocusedRenderAt = 0;
+	private lastFullRenderAt = 0;
+	private lastViewportRenderAt = 0;
+	private lastTargetedRenderAt = 0;
+	private static readonly MIN_FOCUSED_RENDER_INTERVAL_MS = 16;
+	private static readonly MIN_FULL_RENDER_INTERVAL_MS = 16;
+	private static readonly MIN_VIEWPORT_RENDER_INTERVAL_MS = 16;
+	private static readonly MIN_TARGETED_RENDER_INTERVAL_MS = 50;
 	private cursorRow = 0; // Logical cursor row (end of rendered content)
 	private hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
 	private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
@@ -327,6 +434,7 @@ export class TUI extends Container {
 	private preserveViewportOnNextRender = false; // One-shot: repaint visible viewport in place instead of replaying scrollback
 	private stopped = false;
 	private overlaySelectionRegions: FrameSelectionRegion[] = [];
+	private renderRequesterBound = new WeakSet<Component>();
 
 	// While set, doRender paints fixed frames via the viewport; the inline
 	// differ's bookkeeping stays frozen in `inlineState` until exit.
@@ -345,6 +453,16 @@ export class TUI extends Container {
 			hardwareCursorRow: number;
 			maxLinesRendered: number;
 			previousViewportTop: number;
+		};
+		cachedTranscript?: {
+			width: number;
+			lines: string[];
+			selectionRegions: TableCellSelectionRegion[];
+			componentMetadata: Map<Component, ChildRenderMetadata>;
+		};
+		cachedDock?: {
+			width: number;
+			lines: string[];
 		};
 	} | null = null;
 	private static readonly WHEEL_SCROLL_LINES = 3;
@@ -602,6 +720,10 @@ export class TUI extends Container {
 			clearTimeout(this.renderTimer);
 			this.renderTimer = undefined;
 		}
+		this.renderTimerKind = undefined;
+		this.focusedRenderRequested = false;
+		this.viewportRenderRequested = false;
+		this.targetedRenderComponents.clear();
 		// Move cursor to the end of the content to prevent overwriting/artifacts on exit
 		if (!preserveAltScreen && this.previousLines.length > 0) {
 			const targetRow = this.previousLines.length; // Line after the last content
@@ -623,6 +745,8 @@ export class TUI extends Container {
 	}
 
 	requestRender(force = false): void {
+		this.viewportRenderRequested = false;
+		this.targetedRenderComponents.clear();
 		if (force) {
 			this.fullscreen?.viewport.reset();
 			// Keep the previous frame metadata so the forced full repaint can
@@ -635,19 +759,63 @@ export class TUI extends Container {
 				clearTimeout(this.renderTimer);
 				this.renderTimer = undefined;
 			}
+			this.renderTimerKind = undefined;
 			this.renderRequested = true;
 			process.nextTick(() => {
 				if (this.stopped || !this.renderRequested) {
 					return;
 				}
 				this.renderRequested = false;
-				this.lastRenderAt = performance.now();
+				this.focusedRenderRequested = false;
+				const now = performance.now();
+				this.lastFocusedRenderAt = now;
+				this.lastFullRenderAt = now;
+				this.lastViewportRenderAt = now;
+				this.lastTargetedRenderAt = now;
 				this.doRender();
 			});
 			return;
 		}
 		if (this.renderRequested) return;
 		this.renderRequested = true;
+		if (this.renderTimerKind === "targeted" && this.renderTimer) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = undefined;
+			this.renderTimerKind = undefined;
+		}
+		process.nextTick(() => this.scheduleRender());
+	}
+
+	requestRenderFor(component: Component): void {
+		if (this.renderRequested) return;
+		if (this.targetedRenderComponents.has(component)) return;
+		this.targetedRenderComponents.add(component);
+		process.nextTick(() => this.scheduleRender());
+	}
+
+	private requestViewportRender(): void {
+		if (!this.fullscreen || this.renderRequested || this.viewportRenderRequested) return;
+		this.viewportRenderRequested = true;
+		if (this.renderTimerKind === "targeted" && this.renderTimer) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = undefined;
+			this.renderTimerKind = undefined;
+		}
+		process.nextTick(() => this.scheduleRender());
+	}
+
+	private requestFocusedRender(): void {
+		if (!this.focusedComponent) {
+			this.requestRender();
+			return;
+		}
+		if (this.focusedRenderRequested) return;
+		this.focusedRenderRequested = true;
+		if (this.renderTimerKind !== "focused" && this.renderTimer) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = undefined;
+			this.renderTimerKind = undefined;
+		}
 		process.nextTick(() => this.scheduleRender());
 	}
 
@@ -705,6 +873,7 @@ export class TUI extends Container {
 		if (!this.fullscreen) return;
 		const { inlineState } = this.fullscreen;
 		this.fullscreen = null;
+		this.viewportRenderRequested = false;
 		this.syncFullscreenMouseTracking();
 		if (options.leaveAltScreen !== false) {
 			this.terminal.leaveAltScreen();
@@ -731,19 +900,19 @@ export class TUI extends Container {
 	scrollBy(lines: number): void {
 		if (!this.fullscreen) return;
 		this.fullscreen.viewport.scrollBy(lines);
-		this.requestRender();
+		this.requestViewportRender();
 	}
 
 	scrollToTop(): void {
 		if (!this.fullscreen) return;
 		this.fullscreen.viewport.scrollToTop();
-		this.requestRender();
+		this.requestViewportRender();
 	}
 
 	scrollToBottom(): void {
 		if (!this.fullscreen) return;
 		this.fullscreen.viewport.scrollToBottom();
-		this.requestRender();
+		this.requestViewportRender();
 	}
 
 	/** Scroll state of the fullscreen window, or null when not fullscreen. */
@@ -787,7 +956,7 @@ export class TUI extends Container {
 				this.stopSelectionAutoScroll();
 				return;
 			}
-			this.requestRender();
+			this.requestViewportRender();
 			this.scheduleSelectionAutoScroll(TUI.SELECTION_AUTO_SCROLL_INTERVAL_MS);
 		}, delay);
 		this.selectionAutoScrollTimer.unref();
@@ -802,20 +971,102 @@ export class TUI extends Container {
 	}
 
 	private scheduleRender(): void {
-		if (this.stopped || this.renderTimer || !this.renderRequested) {
+		if (
+			this.stopped ||
+			this.renderTimer ||
+			(!this.renderRequested &&
+				!this.focusedRenderRequested &&
+				!this.viewportRenderRequested &&
+				this.targetedRenderComponents.size === 0)
+		) {
 			return;
 		}
-		const elapsed = performance.now() - this.lastRenderAt;
-		const delay = Math.max(0, TUI.MIN_RENDER_INTERVAL_MS - elapsed);
+		const kind = this.focusedRenderRequested
+			? "focused"
+			: this.renderRequested
+				? "full"
+				: this.viewportRenderRequested
+					? "viewport"
+					: "targeted";
+		let lastRenderAt: number;
+		let interval: number;
+		switch (kind) {
+			case "focused":
+				lastRenderAt = this.lastFocusedRenderAt;
+				interval = TUI.MIN_FOCUSED_RENDER_INTERVAL_MS;
+				break;
+			case "full":
+				lastRenderAt = this.lastFullRenderAt;
+				interval = TUI.MIN_FULL_RENDER_INTERVAL_MS;
+				break;
+			case "viewport":
+				lastRenderAt = this.lastViewportRenderAt;
+				interval = TUI.MIN_VIEWPORT_RENDER_INTERVAL_MS;
+				break;
+			case "targeted":
+				lastRenderAt = this.lastTargetedRenderAt;
+				interval = TUI.MIN_TARGETED_RENDER_INTERVAL_MS;
+				break;
+		}
+		const elapsed = performance.now() - lastRenderAt;
+		const delay = Math.max(0, interval - elapsed);
+		this.renderTimerKind = kind;
 		this.renderTimer = setTimeout(() => {
 			this.renderTimer = undefined;
-			if (this.stopped || !this.renderRequested) {
+			this.renderTimerKind = undefined;
+			if (
+				this.stopped ||
+				(!this.renderRequested &&
+					!this.focusedRenderRequested &&
+					!this.viewportRenderRequested &&
+					this.targetedRenderComponents.size === 0)
+			) {
 				return;
 			}
-			this.renderRequested = false;
-			this.lastRenderAt = performance.now();
-			this.doRender();
-			if (this.renderRequested) {
+			if (this.focusedRenderRequested) {
+				this.focusedRenderRequested = false;
+				this.lastFocusedRenderAt = performance.now();
+				const rendered = this.focusedComponent ? this.doRender(this.focusedComponent) : false;
+				if (!rendered) {
+					this.renderRequested = false;
+					this.viewportRenderRequested = false;
+					this.targetedRenderComponents.clear();
+					this.lastFullRenderAt = performance.now();
+					this.doRender();
+				}
+			} else if (this.renderRequested) {
+				this.lastFullRenderAt = performance.now();
+				this.renderRequested = false;
+				this.viewportRenderRequested = false;
+				this.targetedRenderComponents.clear();
+				this.doRender();
+			} else if (this.viewportRenderRequested) {
+				this.viewportRenderRequested = false;
+				this.lastViewportRenderAt = performance.now();
+				if (!this.renderFullscreen(undefined, true)) {
+					this.lastFullRenderAt = performance.now();
+					this.targetedRenderComponents.clear();
+					this.doRender();
+				}
+			} else {
+				this.lastTargetedRenderAt = performance.now();
+				const targets = [...this.targetedRenderComponents];
+				this.targetedRenderComponents.clear();
+				for (const target of targets) {
+					if (this.doRender(target)) continue;
+					this.renderRequested = false;
+					this.targetedRenderComponents.clear();
+					this.lastFullRenderAt = performance.now();
+					this.doRender();
+					break;
+				}
+			}
+			if (
+				this.renderRequested ||
+				this.focusedRenderRequested ||
+				this.viewportRenderRequested ||
+				this.targetedRenderComponents.size > 0
+			) {
 				this.scheduleRender();
 			}
 		}, delay);
@@ -876,7 +1127,7 @@ export class TUI extends Container {
 				return;
 			}
 			this.focusedComponent.handleInput(data);
-			this.requestRender();
+			this.requestFocusedRender();
 		}
 	}
 
@@ -1294,6 +1545,18 @@ export class TUI extends Container {
 		return lines;
 	}
 
+	private bindRenderRequester(component: Component): void {
+		if (component.setRenderRequester && !this.renderRequesterBound.has(component)) {
+			component.setRenderRequester(() => this.requestRenderFor(component));
+			this.renderRequesterBound.add(component);
+		}
+		if (component instanceof Container) {
+			for (const child of component.children) {
+				this.bindRenderRequester(child);
+			}
+		}
+	}
+
 	private collectKittyImageIds(lines: string[]): Set<number> {
 		const ids = new Set<number>();
 		for (const line of lines) {
@@ -1415,32 +1678,154 @@ export class TUI extends Container {
 		return null;
 	}
 
-	private renderFullscreen(): void {
+	private renderFullscreen(renderTarget?: Component, cachedOnly = false): boolean {
 		const fullscreen = this.fullscreen;
-		if (!fullscreen) return;
+		if (!fullscreen) return false;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		this.syncFullscreenMouseTracking();
 		this.overlaySelectionRegions = [];
 
-		const transcript: string[] = [];
-		const selectionRegions: TableCellSelectionRegion[] = [];
-		const dock = withFullscreenImageFallback(() => {
-			for (const component of fullscreen.scroll) {
-				const lineOffset = transcript.length;
-				const componentLines = component.render(width);
-				for (const region of component.getSelectionRegions?.() ?? []) {
-					selectionRegions.push({
-						...region,
-						line: region.line + lineOffset,
-						tableTop: region.tableTop + lineOffset,
-						tableBottom: region.tableBottom + lineOffset,
-					});
-				}
-				transcript.push(...componentLines);
+		let transcript: string[];
+		let selectionRegions: TableCellSelectionRegion[];
+		let dock: string[];
+		if (cachedOnly) {
+			const transcriptCache = fullscreen.cachedTranscript;
+			const dockCache = fullscreen.cachedDock;
+			if (!transcriptCache || !dockCache || transcriptCache.width !== width || dockCache.width !== width) {
+				return false;
 			}
-			return fullscreen.dock.render(width);
-		});
+			transcript = transcriptCache.lines;
+			selectionRegions = transcriptCache.selectionRegions;
+			dock = dockCache.lines;
+		} else if (renderTarget) {
+			const fullscreenDock = fullscreen.dock;
+			const transcriptCache = fullscreen.cachedTranscript;
+			const dockCache = fullscreen.cachedDock;
+			if (!transcriptCache || !dockCache || transcriptCache.width !== width || dockCache.width !== width) {
+				return false;
+			}
+
+			let patch: FocusedRenderPatch | undefined;
+			if (fullscreenDock === renderTarget) {
+				const lines = withFullscreenImageFallback(() => fullscreenDock.render(width));
+				patch = { startLine: 0, previousLineCount: dockCache.lines.length, lines };
+			} else if (fullscreenDock instanceof Container && fullscreenDock.render === Container.prototype.render) {
+				patch = withFullscreenImageFallback(() => fullscreenDock.renderFocused(width, renderTarget));
+			}
+			if (patch) {
+				const previousPatchLines = dockCache.lines.slice(
+					patch.startLine,
+					patch.startLine + patch.previousLineCount,
+				);
+				if (previousPatchLines.some(isImageLine) || patch.lines.some(isImageLine)) {
+					return false;
+				}
+				dock = [...dockCache.lines];
+				dock.splice(patch.startLine, patch.previousLineCount, ...patch.lines);
+				fullscreen.cachedDock = { width, lines: dock };
+				transcript = transcriptCache.lines;
+				selectionRegions = transcriptCache.selectionRegions;
+			} else {
+				let transcriptPatch: FocusedRenderPatch | undefined;
+				let lineOffset = 0;
+				for (const component of fullscreen.scroll) {
+					const metadata = transcriptCache.componentMetadata.get(component);
+					if (!metadata || metadata.width !== width) {
+						return false;
+					}
+
+					let componentPatch: FocusedRenderPatch | undefined;
+					if (component === renderTarget) {
+						const lines = withFullscreenImageFallback(() => component.render(width));
+						componentPatch = { startLine: 0, previousLineCount: metadata.lineCount, lines };
+					} else if (component instanceof Container && component.render === Container.prototype.render) {
+						componentPatch = withFullscreenImageFallback(() => component.renderFocused(width, renderTarget));
+					}
+
+					if (componentPatch) {
+						transcriptPatch = {
+							...componentPatch,
+							startLine: lineOffset + componentPatch.startLine,
+						};
+						transcriptCache.componentMetadata.set(component, {
+							width,
+							lineCount: metadata.lineCount + componentPatch.lines.length - componentPatch.previousLineCount,
+							selectionRegions: component.getSelectionRegions?.() ?? [],
+						});
+						break;
+					}
+					lineOffset += metadata.lineCount;
+				}
+				if (!transcriptPatch) {
+					return false;
+				}
+
+				const previousPatchLines = transcriptCache.lines.slice(
+					transcriptPatch.startLine,
+					transcriptPatch.startLine + transcriptPatch.previousLineCount,
+				);
+				if (previousPatchLines.some(isImageLine) || transcriptPatch.lines.some(isImageLine)) {
+					return false;
+				}
+				transcript = [...transcriptCache.lines];
+				transcript.splice(transcriptPatch.startLine, transcriptPatch.previousLineCount, ...transcriptPatch.lines);
+				selectionRegions = [];
+				lineOffset = 0;
+				for (const component of fullscreen.scroll) {
+					const metadata = transcriptCache.componentMetadata.get(component);
+					if (!metadata) return false;
+					for (const region of metadata.selectionRegions) {
+						selectionRegions.push({
+							...region,
+							line: region.line + lineOffset,
+							tableTop: region.tableTop + lineOffset,
+							tableBottom: region.tableBottom + lineOffset,
+						});
+					}
+					lineOffset += metadata.lineCount;
+				}
+				fullscreen.cachedTranscript = {
+					width,
+					lines: transcript,
+					selectionRegions,
+					componentMetadata: transcriptCache.componentMetadata,
+				};
+				dock = dockCache.lines;
+			}
+		} else {
+			transcript = [];
+			selectionRegions = [];
+			const componentMetadata = new Map<Component, ChildRenderMetadata>();
+			for (const component of fullscreen.scroll) {
+				this.bindRenderRequester(component);
+			}
+			this.bindRenderRequester(fullscreen.dock);
+			dock = withFullscreenImageFallback(() => {
+				for (const component of fullscreen.scroll) {
+					const lineOffset = transcript.length;
+					const componentLines = component.render(width);
+					const componentSelectionRegions = component.getSelectionRegions?.() ?? [];
+					componentMetadata.set(component, {
+						width,
+						lineCount: componentLines.length,
+						selectionRegions: componentSelectionRegions,
+					});
+					for (const region of componentSelectionRegions) {
+						selectionRegions.push({
+							...region,
+							line: region.line + lineOffset,
+							tableTop: region.tableTop + lineOffset,
+							tableBottom: region.tableBottom + lineOffset,
+						});
+					}
+					transcript.push(...componentLines);
+				}
+				return fullscreen.dock.render(width);
+			});
+			fullscreen.cachedTranscript = { width, lines: transcript, selectionRegions, componentMetadata };
+			fullscreen.cachedDock = { width, lines: dock };
+		}
 
 		let frame = fullscreen.viewport.composeFrame(transcript, dock, height, selectionRegions);
 		this.overlaySelectionRegions.push(
@@ -1471,14 +1856,14 @@ export class TUI extends Container {
 		} else {
 			this.terminal.hideCursor();
 		}
+		return true;
 	}
 
-	private doRender(): void {
-		if (this.stopped) return;
+	private doRender(renderTarget?: Component): boolean {
+		if (this.stopped) return false;
 		if (this.fullscreen) {
 			this.preserveViewportOnNextRender = false;
-			this.renderFullscreen();
-			return;
+			return this.renderFullscreen(renderTarget);
 		}
 		// One-shot: consume here so it never leaks into a later render.
 		this.overlaySelectionRegions = [];
@@ -1488,6 +1873,12 @@ export class TUI extends Container {
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
+		if (
+			renderTarget !== undefined &&
+			(this.previousLines.length === 0 || widthChanged || heightChanged || this.overlayStack.length > 0)
+		) {
+			return false;
+		}
 		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
 		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
 		let viewportTop = prevViewportTop;
@@ -1498,8 +1889,29 @@ export class TUI extends Container {
 			return targetScreenRow - currentScreenRow;
 		};
 
-		// Render all components to get new lines
-		let newLines = this.render(width);
+		let focusedPatch: FocusedRenderPatch | undefined;
+		let newLines: string[];
+		if (renderTarget) {
+			focusedPatch = this.renderFocused(width, renderTarget);
+			if (!focusedPatch) {
+				return false;
+			}
+			const patchEnd = focusedPatch.startLine + focusedPatch.previousLineCount;
+			if (focusedPatch.startLine < 0 || patchEnd > this.previousLines.length) {
+				return false;
+			}
+			const previousPatchLines = this.previousLines.slice(focusedPatch.startLine, patchEnd);
+			if (previousPatchLines.some(isImageLine) || focusedPatch.lines.some(isImageLine)) {
+				return false;
+			}
+			newLines = [...this.previousLines];
+			newLines.splice(focusedPatch.startLine, focusedPatch.previousLineCount, ...focusedPatch.lines);
+		} else {
+			for (const child of this.children) {
+				this.bindRenderRequester(child);
+			}
+			newLines = this.render(width);
+		}
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.overlayStack.length > 0) {
@@ -1509,7 +1921,12 @@ export class TUI extends Container {
 		// Extract cursor position before applying line resets (marker must be found first)
 		const cursorPos = this.extractCursorPosition(newLines, height);
 
-		newLines = this.applyLineResets(newLines);
+		if (focusedPatch) {
+			const patchLines = newLines.slice(focusedPatch.startLine, focusedPatch.startLine + focusedPatch.lines.length);
+			newLines.splice(focusedPatch.startLine, focusedPatch.lines.length, ...this.applyLineResets(patchLines));
+		} else {
+			newLines = this.applyLineResets(newLines);
+		}
 
 		// Helper to clear the viewport and repaint the current screen. Do not
 		// clear terminal scrollback: users rely on it to read long prior messages.
@@ -1572,7 +1989,9 @@ export class TUI extends Container {
 				this.previousViewportTop = windowStart;
 				this.positionHardwareCursor(cursorPos, newLines.length);
 				this.previousLines = newLines;
-				this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+				if (!focusedPatch) {
+					this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+				}
 				this.previousWidth = width;
 				this.previousHeight = height;
 				return;
@@ -1603,7 +2022,9 @@ export class TUI extends Container {
 			this.previousViewportTop = Math.max(0, bufferLength - height);
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
-			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+			if (!focusedPatch) {
+				this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+			}
 			this.previousWidth = width;
 			this.previousHeight = height;
 		};
@@ -1620,14 +2041,14 @@ export class TUI extends Container {
 		if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
 			logRedraw("first render");
 			fullRender(false);
-			return;
+			return true;
 		}
 
 		// Width changes always need a full re-render because wrapping changes.
 		if (widthChanged) {
 			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
 			fullRender(true);
-			return;
+			return true;
 		}
 
 		// Height changes normally need a full re-render to keep the visible viewport aligned,
@@ -1636,7 +2057,7 @@ export class TUI extends Container {
 		if (heightChanged && !isTermuxSession()) {
 			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
 			fullRender(true);
-			return;
+			return true;
 		}
 
 		// Content shrunk below the working area and no overlays - re-render to clear empty rows
@@ -1645,22 +2066,40 @@ export class TUI extends Container {
 		if (this.clearOnShrink && newLines.length < this.maxLinesRendered && this.overlayStack.length === 0) {
 			logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
 			fullRender(true, preserveViewport);
-			return;
+			return true;
 		}
 
 		// Find first and last changed lines
 		let firstChanged = -1;
 		let lastChanged = -1;
-		const maxLines = Math.max(newLines.length, this.previousLines.length);
-		for (let i = 0; i < maxLines; i++) {
-			const oldLine = i < this.previousLines.length ? this.previousLines[i] : "";
-			const newLine = i < newLines.length ? newLines[i] : "";
-
-			if (oldLine !== newLine) {
-				if (firstChanged === -1) {
-					firstChanged = i;
+		if (focusedPatch) {
+			const newPatchEnd = focusedPatch.startLine + focusedPatch.lines.length;
+			const previousPatchEnd = focusedPatch.startLine + focusedPatch.previousLineCount;
+			const comparisonEnd = Math.max(newPatchEnd, previousPatchEnd);
+			for (let i = focusedPatch.startLine; i < comparisonEnd; i++) {
+				const oldLine = i < this.previousLines.length ? this.previousLines[i] : "";
+				const newLine = i < newLines.length ? newLines[i] : "";
+				if (oldLine !== newLine) {
+					if (firstChanged === -1) firstChanged = i;
+					lastChanged = i;
 				}
-				lastChanged = i;
+			}
+			if (focusedPatch.lines.length !== focusedPatch.previousLineCount) {
+				if (firstChanged === -1) firstChanged = focusedPatch.startLine;
+				lastChanged = newLines.length - 1;
+			}
+		} else {
+			const maxLines = Math.max(newLines.length, this.previousLines.length);
+			for (let i = 0; i < maxLines; i++) {
+				const oldLine = i < this.previousLines.length ? this.previousLines[i] : "";
+				const newLine = i < newLines.length ? newLines[i] : "";
+
+				if (oldLine !== newLine) {
+					if (firstChanged === -1) {
+						firstChanged = i;
+					}
+					lastChanged = i;
+				}
 			}
 		}
 		const appendedLines = newLines.length > this.previousLines.length;
@@ -1680,7 +2119,7 @@ export class TUI extends Container {
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousViewportTop = prevViewportTop;
 			this.previousHeight = height;
-			return;
+			return true;
 		}
 
 		// All changes are in deleted lines (nothing to render, just clear)
@@ -1693,7 +2132,7 @@ export class TUI extends Container {
 				if (targetRow < prevViewportTop) {
 					logRedraw(`deleted lines moved viewport up (${targetRow} < ${prevViewportTop})`);
 					fullRender(true, preserveViewport);
-					return;
+					return true;
 				}
 				const lineDiff = computeLineDiff(targetRow);
 				if (lineDiff > 0) buffer += `\x1b[${lineDiff}B`;
@@ -1704,7 +2143,7 @@ export class TUI extends Container {
 				if (extraLines > height) {
 					logRedraw(`extraLines > height (${extraLines} > ${height})`);
 					fullRender(true, preserveViewport);
-					return;
+					return true;
 				}
 				if (extraLines > 0) {
 					buffer += "\x1b[1B";
@@ -1723,11 +2162,13 @@ export class TUI extends Container {
 			}
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
-			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+			if (!focusedPatch) {
+				this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+			}
 			this.previousWidth = width;
 			this.previousHeight = height;
 			this.previousViewportTop = prevViewportTop;
-			return;
+			return true;
 		}
 
 		// Differential rendering can only touch what was actually visible.
@@ -1751,7 +2192,7 @@ export class TUI extends Container {
 			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
 			const preserveScrollback = newLines.length > height && newLines.length >= this.previousLines.length;
 			fullRender(true, preserveScrollback || preserveViewport);
-			return;
+			return true;
 		}
 
 		// Render from first changed line to end
@@ -1888,9 +2329,12 @@ export class TUI extends Container {
 		this.positionHardwareCursor(cursorPos, newLines.length);
 
 		this.previousLines = newLines;
-		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+		if (!focusedPatch) {
+			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+		}
 		this.previousWidth = width;
 		this.previousHeight = height;
+		return true;
 	}
 
 	/**

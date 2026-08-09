@@ -114,6 +114,7 @@ const MAX_RESULT_PROJECTION_DEPTH = 8;
 const MAX_RESULT_PROJECTION_ENTRIES = 256;
 const MAX_RESULT_PROJECTION_KEY_CHARS = 256;
 const MAX_SKILL_UNAVAILABLE_REASON_CHARS = 512;
+const MAX_ERROR_SOURCE_LINE_CHARS = 512;
 const MAX_WRITEV_BUFFERS = 1024;
 const CELL_LOCAL_RUNTIME_MODULE_SPECIFIERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 	["fs", new Set(["fs", "node:fs"])],
@@ -341,7 +342,87 @@ async function taggedBunWrite(destination: unknown, data: unknown, options?: unk
 	return Buffer.byteLength(text);
 }
 
-function normalizeError(error: unknown): BunWorkerError {
+interface BunBuildMessagePosition {
+	column: number;
+	length: number;
+	line: number;
+	lineText: string;
+}
+
+interface BunBuildMessage {
+	message: string;
+	position: BunBuildMessagePosition;
+}
+
+function bunBuildMessage(error: unknown): BunBuildMessage | undefined {
+	if (!isRecord(error) || typeof error.message !== "string" || !isRecord(error.position)) return undefined;
+	const { column, length, line, lineText } = error.position;
+	if (
+		typeof column !== "number" ||
+		!Number.isFinite(column) ||
+		typeof length !== "number" ||
+		!Number.isFinite(length) ||
+		typeof line !== "number" ||
+		!Number.isFinite(line) ||
+		typeof lineText !== "string"
+	) {
+		return undefined;
+	}
+	return {
+		message: error.message,
+		position: {
+			column: Math.max(1, Math.trunc(column)),
+			length: Math.max(1, Math.trunc(length)),
+			line: Math.max(1, Math.trunc(line)),
+			lineText,
+		},
+	};
+}
+
+function buildMessageSourceExcerpt(position: BunBuildMessagePosition): { caret: string; excerpt: string } {
+	const columnIndex = Math.min(position.lineText.length, position.column - 1);
+	const start = Math.min(
+		Math.max(0, columnIndex - Math.floor(MAX_ERROR_SOURCE_LINE_CHARS / 3)),
+		Math.max(0, position.lineText.length - MAX_ERROR_SOURCE_LINE_CHARS),
+	);
+	const end = Math.min(position.lineText.length, start + MAX_ERROR_SOURCE_LINE_CHARS);
+	const prefix = start > 0 ? "…" : "";
+	const suffix = end < position.lineText.length ? "…" : "";
+	const excerpt = `${prefix}${position.lineText.slice(start, end)}${suffix}`;
+	const caretColumn = prefix.length + Math.max(0, columnIndex - start);
+	const caretLength = Math.max(1, Math.min(position.length, Math.max(1, excerpt.length - caretColumn)));
+	return { caret: `${" ".repeat(caretColumn)}${"^".repeat(caretLength)}`, excerpt };
+}
+
+function shouldSuggestQuotedLines(source: string | undefined): boolean {
+	if (!source) return false;
+	if (source.includes("```")) return true;
+	let backtickCount = 0;
+	for (const character of source) {
+		if (character === "`") backtickCount += 1;
+	}
+	return backtickCount % 2 === 1;
+}
+
+function normalizeBuildMessage(error: unknown, source: string | undefined): BunWorkerError | undefined {
+	const buildMessage = bunBuildMessage(error);
+	if (!buildMessage) return undefined;
+	const { caret, excerpt } = buildMessageSourceExcerpt(buildMessage.position);
+	const hint = shouldSuggestQuotedLines(source)
+		? 'If backticks were intended as text, raw backticks can close a template literal; write the content as an array of quoted lines joined with "\\n" instead.'
+		: undefined;
+	const message = [
+		`${buildMessage.message} at line ${buildMessage.position.line}, column ${buildMessage.position.column}`,
+		excerpt,
+		caret,
+		...(hint ? [hint] : []),
+	].join("\n");
+	return { message, name: "SyntaxError", stack: `SyntaxError: ${message}` };
+}
+
+function normalizeError(error: unknown, source?: string): BunWorkerError {
+	const normalizedBuildMessage = normalizeBuildMessage(error, source);
+	if (normalizedBuildMessage) return normalizedBuildMessage;
 	if (error instanceof Error) {
 		return {
 			message: error.message,
@@ -349,7 +430,8 @@ function normalizeError(error: unknown): BunWorkerError {
 			...(error.stack ? { stack: error.stack } : {}),
 		};
 	}
-	return { message: String(error), name: "Error" };
+	const message = String(error);
+	return { message, name: "Error", stack: `Error: ${message}` };
 }
 
 interface InspectProjectionBudget {
@@ -1237,7 +1319,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 		send({
 			cellId: message.cellId,
 			durationMs: performance.now() - startedAt,
-			error: normalizeError(error),
+			error: normalizeError(error, message.code),
 			id: randomUUID(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			replyTo: message.id,

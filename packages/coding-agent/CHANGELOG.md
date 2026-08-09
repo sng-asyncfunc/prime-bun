@@ -20,6 +20,7 @@
 - Improved Bun notebook repository-search guidance to avoid repeated whole-tree scans.
 - Fixed Bun notebook audits failing on redundant preloaded-module imports and expected search no-match exits.
 - Reduced long-session Bun transcript growth by deduplicating large result metadata and guiding bounded repository inspection.
+- Fixed Bun notebook writes with Markdown code fences causing opaque syntax errors or retries from unqualified filesystem helpers.
 
 ## [0.7.1] - 2026-08-07
 

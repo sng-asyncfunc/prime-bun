@@ -1057,6 +1057,23 @@ response.answer;
 		expect(recovered).toMatchObject({ stateChanged: true, status: "ok", value: "42" });
 	});
 
+	it("renders non-Error thrown values with a non-empty traceback", async () => {
+		client.send({
+			cellId: "non-error-throw-cell",
+			code: 'throw "plain failure";',
+			id: "non-error-throw-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const failed = await client.waitForType("result", (message) => message.replyTo === "non-error-throw-execute");
+		expect(failed).toMatchObject({
+			error: { message: "plain failure", name: "Error", stack: "Error: plain failure" },
+			stateChanged: true,
+			status: "error",
+		});
+	});
+
 	it("reports parse failures without marking worker state changed", async () => {
 		client.send({
 			cellId: "parse-error-cell",
@@ -1068,9 +1085,64 @@ response.answer;
 
 		const failed = await client.waitForType("result", (message) => message.replyTo === "parse-error-execute");
 		expect(failed).toMatchObject({
+			error: { name: "SyntaxError" },
 			stateChanged: false,
 			status: "error",
 		});
+		if (failed.status !== "error") throw new Error("Expected a parse failure");
+		expect(failed.error.message).toContain("line 1, column");
+		expect(failed.error.message).toContain("const broken = ;");
+		expect(failed.error.message).not.toContain("array of quoted lines");
+		expect(failed.error.stack).toContain("SyntaxError:");
+	});
+
+	it("guides recovery when Markdown fences break a template literal", async () => {
+		client.send({
+			cellId: "fenced-template-error-cell",
+			code: [
+				"const content = `# Title",
+				"```ts",
+				"const answer = 42;",
+				"```",
+				"`;",
+				'await fs.writeFile("/tmp/ignored.md", content);',
+			].join("\n"),
+			id: "fenced-template-error-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const failed = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "fenced-template-error-execute",
+		);
+		expect(failed).toMatchObject({
+			error: { name: "SyntaxError" },
+			stateChanged: false,
+			status: "error",
+		});
+		if (failed.status !== "error") throw new Error("Expected a fenced-template parse failure");
+		expect(failed.error.message).toContain("line 2, column 4");
+		expect(failed.error.message).toContain("```ts");
+		expect(failed.error.message).toContain('array of quoted lines joined with "\\n"');
+		expect(failed.error.stack).toContain("SyntaxError:");
+		expect(failed.error.stack).toContain("line 2, column 4");
+	});
+
+	it("bounds source excerpts for parse failures on long lines", async () => {
+		client.send({
+			cellId: "long-parse-error-cell",
+			code: `const longValue = "${"x".repeat(2_000)}"; const broken = ;`,
+			id: "long-parse-error-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const failed = await client.waitForType("result", (message) => message.replyTo === "long-parse-error-execute");
+		if (failed.status !== "error") throw new Error("Expected a long-line parse failure");
+		expect(failed.error.message).toContain("…");
+		expect(failed.error.message).toContain("const broken = ;");
+		expect(failed.error.message.length).toBeLessThan(1_200);
 	});
 
 	it("snapshots supported bindings independently and restores them", async () => {

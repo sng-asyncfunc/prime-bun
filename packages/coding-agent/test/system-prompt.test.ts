@@ -72,6 +72,13 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("prefer `rg -n` and `rg --files`");
 		expect(prompt).toContain("Never use recursive `grep -rn`");
 		expect(prompt).toContain("Batch multiple filename or pattern probes into one search");
+		expect(prompt).toContain("text containing backticks or Markdown fences");
+		expect(prompt).toContain('array of ordinary quoted lines joined with "\\n"');
+		expect(prompt).toContain("exact file in one cell");
+		expect(prompt).toContain("Call filesystem methods through the preloaded `fs` namespace");
+		expect(prompt).toContain("`fs.existsSync`");
+		expect(prompt).toContain("`await fs.writeFile`");
+		expect(prompt).toContain("fully specified file contents directly");
 		expect(prompt).toContain("do not redeclare them as local variables");
 		expect(prompt).toContain("`rlmDoc`");
 		expect(prompt).toContain("check `fs.existsSync`");
@@ -400,6 +407,13 @@ describe("createJavaScriptToolDefinition", () => {
 		expect(tool.description).toContain("`.nothrow()` for expected non-zero exits");
 		expect(tool.description).toContain("Do not redeclare preloaded runtime globals");
 		expect(tool.description).toContain("Discover optional paths before reading them");
+		expect(tool.description).toContain("text containing backticks or Markdown fences");
+		expect(tool.description).toContain('array of ordinary quoted lines joined with "\\n"');
+		expect(tool.description).toContain("exact file in one cell");
+		expect(tool.description).toContain("Call filesystem methods through the preloaded `fs` namespace");
+		expect(tool.description).toContain("`fs.existsSync`");
+		expect(tool.description).toContain("`await fs.writeFile`");
+		expect(tool.description).toContain("fully specified file contents directly");
 		expect(tool.promptSnippet).toContain("persistent Bun notebook");
 		const codeSchema = tool.parameters.properties.code;
 		const codeDescription =
@@ -410,5 +424,12 @@ describe("createJavaScriptToolDefinition", () => {
 		expect(codeDescription).toContain("`.nothrow()` for expected non-zero exits");
 		expect(codeDescription).toContain("Do not redeclare preloaded runtime globals");
 		expect(codeDescription).toContain("Discover optional paths before reading them");
+		expect(codeDescription).toContain("text containing backticks or Markdown fences");
+		expect(codeDescription).toContain('array of ordinary quoted lines joined with "\\n"');
+		expect(codeDescription).toContain("exact file in one cell");
+		expect(codeDescription).toContain("Call filesystem methods through the preloaded `fs` namespace");
+		expect(codeDescription).toContain("`fs.existsSync`");
+		expect(codeDescription).toContain("`await fs.writeFile`");
+		expect(codeDescription).toContain("fully specified file contents directly");
 	});
 });

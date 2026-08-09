@@ -6,7 +6,9 @@ import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.js";
 import { withKernelBootPermit } from "../kernel/boot-gate.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
+import { type BunStructuredAction, validateBunStructuredActions } from "../kernel/bun-actions.js";
 import {
+	type ExecuteOptions,
 	type ExecuteResult,
 	type HostRequestHandlers,
 	type KernelAttachment,
@@ -22,11 +24,37 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
 const MAX_STRUCTURED_OUTPUT_DETAIL_CHARS = 16 * 1024;
 
+const javascriptActionSchema = Type.Object(
+	{
+		op: Type.Union([Type.Literal("read"), Type.Literal("search"), Type.Literal("shell"), Type.Literal("write")], {
+			description: "Routine operation to execute without generating JavaScript source.",
+		}),
+		path: Type.Optional(Type.String({ description: "File path for read/write, or search scope directory." })),
+		offset: Type.Optional(Type.Integer({ description: "One-based first line for read.", minimum: 1 })),
+		limit: Type.Optional(Type.Integer({ description: "Maximum lines for read (up to 2000).", minimum: 1 })),
+		pattern: Type.Optional(Type.String({ description: "Search pattern. Omit to list files." })),
+		glob: Type.Optional(Type.String({ description: "Optional search glob such as *.ts." })),
+		command: Type.Optional(Type.String({ description: "Configured-shell command for shell." })),
+		content: Type.Optional(Type.String({ description: "Exact UTF-8 file content for write." })),
+	},
+	{ additionalProperties: false },
+);
+
 const javascriptSchema = Type.Object({
-	code: Type.String({
-		description:
-			'JavaScript or TypeScript scratchpad code to execute in the persistent Bun notebook. TypeScript syntax is transpiled without type-checking, and top-level await is supported. Bun Shell `$`, `fs`, `path`, `os`, and `util` are preloaded; `sh` and `rlm` are reserved runtime APIs. Do not import `$` from `bun`; use it directly. Do not redeclare preloaded runtime globals; choose distinct local names. Bun Shell is not Bash and does not support process substitution `<(...)`; use ordinary JavaScript or `sh(command)` for shell-specific syntax. Use `.nothrow()` for expected non-zero exits such as search no-match; Bun Shell throws before JavaScript `||` fallbacks. Keep output bounded by retaining large inventories in variables and printing counts or small samples. When writing text containing backticks or Markdown fences, do not wrap the whole document in one template literal; build it as an array of ordinary quoted lines joined with "\\n" so you preserve the exact file in one cell. Call filesystem methods through the preloaded `fs` namespace—such as `fs.existsSync`, `await fs.readFile`, and `await fs.writeFile`; names like `existsSync` are not standalone globals. Construct fully specified file contents directly instead of scanning for a reference copy. Discover optional paths before reading them instead of relying on shell globs. Run target-project commands through that project\'s own environment. For repository search, prefer `rg -n` or `rg --files` with traversal-time globs and exclusions; avoid repeated recursive `grep` scans with post-pipe filters.',
-	}),
+	code: Type.Optional(
+		Type.String({
+			description:
+				"JavaScript or TypeScript for computation, branching, dependent operations, prepared JavaScript skills, or persistent notebook state. Top-level await works. Preloaded globals include fs, path, os, util, $, sh, require, and rlm; use them directly without redeclaring them. Keep printed output bounded and run target-project commands through that project's own environment.",
+		}),
+	),
+	actions: Type.Optional(
+		Type.Array(javascriptActionSchema, {
+			description:
+				"Batch independent routine work without JavaScript syntax. read uses path/offset/limit; search uses optional path/pattern/glob and lists files when pattern is omitted; shell uses command; write uses path/content. A non-zero shell exit is returned normally and stops later actions. Use code for dependencies or operations outside this surface.",
+			maxItems: 8,
+			minItems: 1,
+		}),
+	),
 });
 
 function createAbortError(): Error {
@@ -93,6 +121,28 @@ function executionFailure(error: unknown): NonNullable<ExecuteResult["error"]> {
 		.slice(0, 16_384)
 		.split("\n");
 	return { ename, evalue, traceback };
+}
+
+type ResolvedJavaScriptToolInput =
+	| { mode: "code"; code: string }
+	| { mode: "actions"; actions: BunStructuredAction[] }
+	| { mode: "error"; message: string };
+
+function resolveJavaScriptToolInput(params: JavaScriptToolInput): ResolvedJavaScriptToolInput {
+	const hasCode = typeof params.code === "string";
+	const hasActions = params.actions !== undefined;
+	if (Number(hasCode) + Number(hasActions) !== 1) {
+		return {
+			mode: "error",
+			message:
+				'Invalid JavaScript tool input: provide exactly one of "code" or "actions". Use "code" for computation or operations outside the structured action surface.',
+		};
+	}
+	if (hasCode) return { code: params.code as string, mode: "code" };
+	const validation = validateBunStructuredActions(params.actions);
+	return validation.ok
+		? { actions: validation.actions, mode: "actions" }
+		: { mode: "error", message: `Invalid JavaScript tool input: ${validation.message}` };
 }
 
 export type JavaScriptToolInput = Static<typeof javascriptSchema>;
@@ -308,12 +358,29 @@ export function createJavaScriptToolDefinition(
 		name: "javascript",
 		label: "Bun",
 		description:
-			'Execute JavaScript or TypeScript in a persistent Bun notebook. TypeScript syntax is transpiled without type-checking. Variables and loaded data persist across calls and are restored on a best-effort basis when a session resumes. Top-level await, Bun APIs, `sh`, Bun Shell, RLM, and prepared JavaScript skills are available as globals. Bun Shell `$`, `fs`, `path`, `os`, and `util` are preloaded; `sh` and `rlm` are reserved runtime APIs. Do not import `$` from `bun`; use the preloaded global directly. Do not redeclare preloaded runtime globals; choose distinct local names. Bun Shell is not Bash and does not support process substitution `<(...)`; use ordinary JavaScript or `sh(command)` for shell-specific syntax. Use `.nothrow()` for expected non-zero exits such as search no-match; Bun Shell throws before JavaScript `||` fallbacks. Keep output bounded by retaining large inventories in variables and printing counts or small samples. When writing text containing backticks or Markdown fences, do not wrap the whole document in one template literal; build it as an array of ordinary quoted lines joined with "\\n" so you preserve the exact file in one cell. Call filesystem methods through the preloaded `fs` namespace—such as `fs.existsSync`, `await fs.readFile`, and `await fs.writeFile`; names like `existsSync` are not standalone globals. Construct fully specified file contents directly instead of scanning for a reference copy. Discover optional paths before reading them instead of relying on shell globs. Run target-project commands through the target project\'s own environment. For repository search, prefer `rg -n` or `rg --files` with traversal-time globs and exclusions; avoid repeated recursive `grep` scans with post-pipe filters.',
-		promptSnippet: "javascript - persistent Bun notebook for JavaScript, TypeScript, shell orchestration, and RLM",
+			"Execute work in a persistent Bun notebook with two input modes. Batch independent routine reads, searches, shell commands, and exact writes as one to eight actions; direct `content` safely carries Markdown fences and backticks. Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state. Both modes share the notebook cwd, configured shell, output bounds, abort recovery, and file diffs. Run target-project commands through the target project's own environment.",
+		promptSnippet:
+			"javascript - persistent Bun notebook with structured actions for routine work and code for computation",
 		executionMode: "sequential",
 		parameters: javascriptSchema,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
 			const toolStartedAt = performance.now();
+			const input = resolveJavaScriptToolInput(params);
+			if (input.mode === "error") {
+				const failure = new Error(input.message);
+				failure.name = "InvalidToolInputError";
+				const normalized = executionFailure(failure);
+				return {
+					content: [{ type: "text", text: input.message }],
+					details: {
+						durationMs: Math.round(Math.max(0, performance.now() - toolStartedAt)),
+						error: normalized,
+						errorEname: normalized.ename,
+						status: "error" as const,
+					},
+					isError: true,
+				};
+			}
 			let hasWorkingMessage = false;
 			const setToolWorkingMessage = (message?: string) => {
 				setWorkingMessage(ctx, message);
@@ -329,7 +396,7 @@ export function createJavaScriptToolDefinition(
 				const rawProvisioningMs = Math.max(0, performance.now() - provisioningStartedAt);
 				let result: ExecuteResult;
 				try {
-					result = await manager.execute(params.code, {
+					const executionOptions: ExecuteOptions = {
 						onLateSentAgentMessage: options?.onLateSentAgentMessage
 							? (message) => options.onLateSentAgentMessage?.(toolCallId, message)
 							: undefined,
@@ -337,7 +404,11 @@ export function createJavaScriptToolDefinition(
 							onUpdate?.({ content: [{ type: "text", text: chunk }], details: { status: "ok" } });
 						},
 						signal,
-					});
+					};
+					result =
+						input.mode === "code"
+							? await manager.execute(input.code, executionOptions)
+							: await manager.executeActions(input.actions, executionOptions);
 				} catch (error) {
 					const failure = executionFailure(error);
 					const status = signal?.aborted || failure.ename === "AbortError" ? "aborted" : "error";

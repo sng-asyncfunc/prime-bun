@@ -271,6 +271,70 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 		]);
 	});
 
+	it("rejects invalid tool modes before provisioning the kernel", async () => {
+		const ensure = vi.fn();
+		const provisioner = { ensure } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+		const invalidInputs = [
+			{},
+			{ code: "42;", actions: [{ op: "read", path: "README.md" }] },
+			{ actions: Array.from({ length: 9 }, () => ({ op: "search", path: "." })) },
+			{
+				actions: [
+					{ op: "write", path: "a.md", content: "a" },
+					{ op: "write", path: "b.md", content: "b" },
+				],
+			},
+		];
+
+		const results = await Promise.all(
+			invalidInputs.map((input, index) =>
+				tool.execute(`invalid-${index}`, input as never, undefined, undefined, {} as ExtensionContext),
+			),
+		);
+
+		expect(results.every((result) => result.details?.status === "error")).toBe(true);
+		expect(results[0]?.content[0]).toMatchObject({ text: expect.stringContaining("exactly one"), type: "text" });
+		expect(results[1]?.content[0]).toMatchObject({ text: expect.stringContaining("exactly one"), type: "text" });
+		expect(results[2]?.content[0]).toMatchObject({ text: expect.stringContaining("1 to 8 actions"), type: "text" });
+		expect(results[3]?.content[0]).toMatchObject({
+			text: expect.stringContaining("at most one write"),
+			type: "text",
+		});
+		expect(ensure).not.toHaveBeenCalled();
+	});
+
+	it("routes validated structured actions through the existing kernel stream", async () => {
+		const execute = vi.fn<KernelManager["execute"]>().mockResolvedValue(executeResult());
+		const executeActions = vi
+			.fn<KernelManager["executeActions"]>()
+			.mockResolvedValue(executeResult({ stdout: "[1/1 read README.md lines 1-2]\n1: title" }));
+		const manager = {
+			execute,
+			executeActions,
+			status: { diagnostics: "", recovery: { available: false, checkpoint: "clean" }, state: "running" },
+		} as unknown as KernelManager;
+		const provisioner = { ensure: vi.fn(async () => manager) } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+		const actions = [{ op: "read", path: "README.md", offset: 1, limit: 2 }];
+
+		const result = await tool.execute(
+			"actions-call",
+			{ actions } as never,
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(executeActions).toHaveBeenCalledWith(
+			actions,
+			expect.objectContaining({ onStream: expect.any(Function), signal: undefined }),
+		);
+		expect(execute).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ details: { status: "ok" } });
+		expect(result.content).toEqual([{ type: "text", text: "[1/1 read README.md lines 1-2]\n1: title" }]);
+	});
+
 	it("keeps large output once in canonical content instead of duplicating raw details", async () => {
 		const largeResult = "x".repeat(20_000);
 		const manager = {

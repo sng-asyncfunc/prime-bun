@@ -54,11 +54,17 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Runtime: Bun 1.3.14 or newer");
 		expect(prompt).toContain("Installed JavaScript skill globals (prepared): `websearch`, `refine`.");
 		expect(prompt).toContain("Bun is the agent's long-lived JavaScript notebook");
+		expect(prompt).toContain(
+			"Batch independent routine reads, searches, shell commands, and exact writes through the `actions` input",
+		);
+		expect(prompt).toContain(
+			"Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state",
+		);
+		expect(prompt).toContain("Prefer a structured `shell` action over `$` or `sh()`");
 		const bunShellIndex = prompt.indexOf("await $`command`.quiet()");
 		const shIndex = prompt.indexOf("await sh(command)");
 		expect(bunShellIndex).toBeGreaterThanOrEqual(0);
 		expect(shIndex).toBeGreaterThan(bunShellIndex);
-		expect(prompt).toContain("Bun Shell `$` is the fast path for ordinary commands");
 		expect(prompt).toContain("Do not import `$` from `bun`");
 		expect(prompt).toContain("`sh(command)` uses the configured project shell and command prefix");
 		expect(prompt).toContain("await sh(command)");
@@ -397,39 +403,30 @@ describe("buildSystemPrompt", () => {
 });
 
 describe("createJavaScriptToolDefinition", () => {
-	test("describes target-project checks as target-environment work", () => {
+	test("exposes compact code and structured-action modes", () => {
 		const tool = createJavaScriptToolDefinition("/repo");
 
-		expect(tool.description).toContain("JavaScript or TypeScript");
-		expect(tool.description).toContain("Do not import `$` from `bun`");
+		expect(tool.description).toContain("two input modes");
+		expect(tool.description).toContain("Batch independent routine reads, searches, shell commands, and exact writes");
+		expect(tool.description).toContain("Use `code` for computation, branching, dependent operations");
+		expect(tool.description).toContain("one to eight actions");
 		expect(tool.description).toContain("target project's own environment");
-		expect(tool.description).toContain("prefer `rg -n` or `rg --files`");
-		expect(tool.description).toContain("`.nothrow()` for expected non-zero exits");
-		expect(tool.description).toContain("Do not redeclare preloaded runtime globals");
-		expect(tool.description).toContain("Discover optional paths before reading them");
-		expect(tool.description).toContain("text containing backticks or Markdown fences");
-		expect(tool.description).toContain('array of ordinary quoted lines joined with "\\n"');
-		expect(tool.description).toContain("exact file in one cell");
-		expect(tool.description).toContain("Call filesystem methods through the preloaded `fs` namespace");
-		expect(tool.description).toContain("`fs.existsSync`");
-		expect(tool.description).toContain("`await fs.writeFile`");
-		expect(tool.description).toContain("fully specified file contents directly");
 		expect(tool.promptSnippet).toContain("persistent Bun notebook");
-		const codeSchema = tool.parameters.properties.code;
+		const parameters = tool.parameters as unknown as {
+			properties: Record<string, { description?: unknown; items?: unknown; maxItems?: unknown; minItems?: unknown }>;
+			required?: string[];
+		};
+		expect(parameters.required ?? []).not.toContain("code");
+		const actionsSchema = parameters.properties.actions;
+		expect(actionsSchema).toMatchObject({ minItems: 1, maxItems: 8 });
+		expect(actionsSchema?.items).toBeDefined();
+		const codeSchema = parameters.properties.code;
 		const codeDescription =
-			"description" in codeSchema && typeof codeSchema.description === "string" ? codeSchema.description : "";
-		expect(codeDescription).toContain("target-project commands through that project's own environment");
-		expect(codeDescription).toContain("Do not import `$` from `bun`");
-		expect(codeDescription).toContain("prefer `rg -n` or `rg --files`");
-		expect(codeDescription).toContain("`.nothrow()` for expected non-zero exits");
-		expect(codeDescription).toContain("Do not redeclare preloaded runtime globals");
-		expect(codeDescription).toContain("Discover optional paths before reading them");
-		expect(codeDescription).toContain("text containing backticks or Markdown fences");
-		expect(codeDescription).toContain('array of ordinary quoted lines joined with "\\n"');
-		expect(codeDescription).toContain("exact file in one cell");
-		expect(codeDescription).toContain("Call filesystem methods through the preloaded `fs` namespace");
-		expect(codeDescription).toContain("`fs.existsSync`");
-		expect(codeDescription).toContain("`await fs.writeFile`");
-		expect(codeDescription).toContain("fully specified file contents directly");
+			codeSchema && "description" in codeSchema && typeof codeSchema.description === "string"
+				? codeSchema.description
+				: "";
+		expect(codeDescription).toContain("computation, branching, dependent operations");
+		expect(codeDescription).toContain("persistent notebook state");
+		expect(codeDescription.length).toBeLessThan(1_000);
 	});
 });

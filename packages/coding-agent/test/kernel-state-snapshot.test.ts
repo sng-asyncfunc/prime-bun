@@ -205,6 +205,40 @@ describe("snapshotValueSkipReason", () => {
 		expect(inspect(second)).toMatch(/custom prototype/i);
 	});
 
+	it("inspects a safe cyclic diamond graph once before promoting its cycle", () => {
+		const inspect = createSnapshotValueInspector();
+		let prototypeReads = 0;
+		const nodes = Array.from(
+			{ length: 12 },
+			() =>
+				new Proxy<Record<string, unknown>>(
+					{},
+					{
+						getPrototypeOf(target) {
+							prototypeReads += 1;
+							return Reflect.getPrototypeOf(target);
+						},
+					},
+				),
+		);
+		for (let index = 0; index < nodes.length - 1; index += 1) {
+			const node = nodes[index];
+			const next = nodes[index + 1];
+			if (!node || !next) throw new Error("cyclic diamond fixture is incomplete");
+			node.left = next;
+			node.right = next;
+		}
+		const first = nodes[0];
+		const last = nodes.at(-1);
+		if (!first || !last) throw new Error("cyclic diamond fixture is empty");
+		last.back = first;
+
+		expect(inspect(first)).toBeUndefined();
+		expect(prototypeReads).toBe(nodes.length);
+		expect(inspect(last)).toBeUndefined();
+		expect(prototypeReads).toBe(nodes.length);
+	});
+
 	it("accepts the characterized structured-clone allowlist, including cycles", () => {
 		const cycle: { self?: unknown; values: Map<string, Set<number>> } = {
 			values: new Map([["numbers", new Set([1, 2, 3])]]),

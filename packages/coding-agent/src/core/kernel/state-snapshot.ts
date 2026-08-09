@@ -217,13 +217,17 @@ function isUnsignedIntegerString(value: string): boolean {
 }
 
 const INSPECTION_VISITING = Symbol("inspection-visiting");
+const INSPECTION_PROVISIONAL_SAFE = Symbol("inspection-provisional-safe");
 const INSPECTION_SAFE = Symbol("inspection-safe");
-type InspectionState = typeof INSPECTION_VISITING | typeof INSPECTION_SAFE | string;
+type InspectionState = typeof INSPECTION_SAFE | string;
+type TraversalState = typeof INSPECTION_VISITING | typeof INSPECTION_PROVISIONAL_SAFE;
 
 interface InspectionTraversal {
 	cycleMembers: WeakSet<object>;
+	provisionalSafe: Set<object>;
 	stack: object[];
 	stackIndexes: WeakMap<object, number>;
+	states: WeakMap<object, TraversalState>;
 }
 
 function inspectSnapshotObject(
@@ -327,7 +331,10 @@ function inspectSnapshotValue(
 
 	const object = value as object;
 	const previousState = inspected.get(object);
-	if (previousState === INSPECTION_VISITING) {
+	if (previousState === INSPECTION_SAFE) return undefined;
+	if (typeof previousState === "string") return previousState;
+	const traversalState = traversal.states.get(object);
+	if (traversalState === INSPECTION_VISITING) {
 		const cycleStart = traversal.stackIndexes.get(object);
 		if (cycleStart !== undefined) {
 			for (let index = cycleStart; index < traversal.stack.length; index += 1) {
@@ -337,9 +344,8 @@ function inspectSnapshotValue(
 		}
 		return undefined;
 	}
-	if (previousState === INSPECTION_SAFE) return undefined;
-	if (typeof previousState === "string") return previousState;
-	inspected.set(object, INSPECTION_VISITING);
+	if (traversalState === INSPECTION_PROVISIONAL_SAFE) return undefined;
+	traversal.states.set(object, INSPECTION_VISITING);
 	traversal.stackIndexes.set(object, traversal.stack.length);
 	traversal.stack.push(object);
 
@@ -352,20 +358,42 @@ function inspectSnapshotValue(
 		traversal.stack.pop();
 		traversal.stackIndexes.delete(object);
 	}
-	if (reason) inspected.set(object, reason);
-	else if (traversal.cycleMembers.has(object)) inspected.delete(object);
-	else inspected.set(object, INSPECTION_SAFE);
+	if (reason) {
+		inspected.set(object, reason);
+		traversal.states.delete(object);
+	} else if (traversal.cycleMembers.has(object)) {
+		traversal.provisionalSafe.add(object);
+		traversal.states.set(object, INSPECTION_PROVISIONAL_SAFE);
+	} else {
+		inspected.set(object, INSPECTION_SAFE);
+		traversal.states.delete(object);
+	}
 	return reason;
 }
 
 export function createSnapshotValueInspector(): (value: unknown) => string | undefined {
 	const inspected = new WeakMap<object, InspectionState>();
-	const traversal: InspectionTraversal = {
-		cycleMembers: new WeakSet<object>(),
-		stack: [],
-		stackIndexes: new WeakMap<object, number>(),
+	let activeTraversal: InspectionTraversal | undefined;
+	return (value) => {
+		if (activeTraversal) return inspectSnapshotValue(value, inspected, activeTraversal, "$binding");
+		const traversal: InspectionTraversal = {
+			cycleMembers: new WeakSet<object>(),
+			provisionalSafe: new Set<object>(),
+			stack: [],
+			stackIndexes: new WeakMap<object, number>(),
+			states: new WeakMap<object, TraversalState>(),
+		};
+		activeTraversal = traversal;
+		try {
+			const reason = inspectSnapshotValue(value, inspected, traversal, "$binding");
+			if (!reason) {
+				for (const object of traversal.provisionalSafe) inspected.set(object, INSPECTION_SAFE);
+			}
+			return reason;
+		} finally {
+			activeTraversal = undefined;
+		}
 	};
-	return (value) => inspectSnapshotValue(value, inspected, traversal, "$binding");
 }
 
 export function snapshotValueSkipReason(value: unknown): string | undefined {

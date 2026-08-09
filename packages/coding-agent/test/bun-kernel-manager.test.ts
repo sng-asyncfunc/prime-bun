@@ -391,6 +391,47 @@ __primeDisplay(${JSON.stringify(AGENT_MESSAGE_DISPLAY_MIME)}, {
 		expect(recovered).toMatchObject({ status: "ok", result: "42" });
 	});
 
+	it("checkpoints mutations made before a failed cell for abort recovery", async () => {
+		const manager = createManager({
+			snapshot: {
+				debounceMs: 25,
+				manifestPath: join(directory, "failed-cell-persistent.json"),
+				path: join(directory, "failed-cell-persistent.bin"),
+			},
+		});
+		await manager.execute("let durableErrorState = 1;");
+		await expect.poll(() => manager.status.recovery.checkpoint, { timeout: 5_000 }).toBe("ready");
+
+		await expect(manager.execute('durableErrorState = 2; throw new Error("after mutation");')).resolves.toMatchObject(
+			{ status: "error" },
+		);
+		const controller = new AbortController();
+		const execution = manager.execute("while (true) {}", { signal: controller.signal });
+		setTimeout(() => controller.abort(), 100);
+		await expect(execution).resolves.toMatchObject({ status: "aborted" });
+
+		await expect(manager.execute("durableErrorState;")).resolves.toMatchObject({
+			result: "2",
+			status: "ok",
+		});
+	});
+
+	it("keeps a ready recovery checkpoint clean after a parse failure", async () => {
+		const manager = createManager({
+			snapshot: {
+				debounceMs: 25,
+				manifestPath: join(directory, "parse-error-persistent.json"),
+				path: join(directory, "parse-error-persistent.bin"),
+			},
+		});
+		await manager.execute("const parseErrorBaseline = 1;");
+		await expect.poll(() => manager.status.recovery.checkpoint, { timeout: 5_000 }).toBe("ready");
+
+		await expect(manager.execute("const broken = ;")).resolves.toMatchObject({ status: "error" });
+
+		expect(manager.status.recovery.checkpoint).toBe("ready");
+	});
+
 	it("keeps skill path resolution aligned with the worker's current directory", async () => {
 		const firstDirectory = join(directory, "first");
 		const secondDirectory = join(directory, "second");

@@ -1149,6 +1149,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			id: randomUUID(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			replyTo: message.id,
+			stateChanged: false,
 			status: "error",
 			type: "result",
 		});
@@ -1163,6 +1164,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			id: randomUUID(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			replyTo: message.id,
+			stateChanged: false,
 			status: "error",
 			type: "result",
 		});
@@ -1173,6 +1175,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 	activeCell = { cellId: message.cellId, source: message.code };
 	lastCell = activeCell;
 	const startedAt = performance.now();
+	let userCodeStarted = false;
 	try {
 		const transformed = transformJavaScriptCell(transpileCell(message.code));
 		const conflictingBinding = transformed.bindingNames.find((name) => runtimeBindingNames.has(name));
@@ -1180,6 +1183,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			throw new SyntaxError(`${conflictingBinding} conflicts with a runtime global and cannot be redeclared`);
 		}
 		const executor = new AsyncFunction("__primePersist", transformed.code);
+		userCodeStarted = true;
 		const result = await cellContext.run(activeCell, () => executor(persistBinding));
 		flushCellStreams(message.cellId);
 		send({
@@ -1189,6 +1193,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			id: randomUUID(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			replyTo: message.id,
+			stateChanged: true,
 			status: "ok",
 			type: "result",
 			...(result === undefined ? {} : { value: boundedInspect(result, message.maxResultChars ?? 65_536) }),
@@ -1202,6 +1207,7 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			id: randomUUID(),
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			replyTo: message.id,
+			stateChanged: userCodeStarted,
 			status: "error",
 			type: "result",
 		});

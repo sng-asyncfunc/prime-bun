@@ -188,6 +188,11 @@ interface ActiveExecution {
 	fatalDisplayError?: string;
 }
 
+interface KernelExecutionOutcome {
+	result: ExecuteResult;
+	stateChanged: boolean;
+}
+
 interface Deferred<T> {
 	promise: Promise<T>;
 	resolve: (value: T) => void;
@@ -741,24 +746,28 @@ export class KernelManager {
 			async () => {
 				if (opts.signal?.aborted) return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
 				let checkpointMs = 0;
-				let result: ExecuteResult | undefined;
+				let executionOutcome: KernelExecutionOutcome | undefined;
 				if (this.recoverySnapshotDirty) {
 					const checkpointStartedAt = performance.now();
 					try {
 						await this.requireRecoveryCheckpoint(opts.signal);
 					} catch (error) {
 						if (!opts.signal?.aborted) throw error;
-						result = { durationMs: 0, status: "aborted", stderr: "", stdout: "" };
+						executionOutcome = {
+							result: { durationMs: 0, status: "aborted", stderr: "", stdout: "" },
+							stateChanged: false,
+						};
 					}
 					checkpointMs = elapsedMilliseconds(checkpointStartedAt);
 				}
-				result ??= await this.executeInner(code, opts);
-				if (result.status === "ok") {
+				executionOutcome ??= await this.executeInner(code, opts);
+				const { result, stateChanged } = executionOutcome;
+				if (stateChanged) {
 					this.recoverySnapshotDirty = true;
 					this.recoveryCheckpointStatus = "dirty";
 					if (this.options.snapshot) this.persistentSnapshotDirty = true;
-					this.scheduleSnapshot();
 				}
+				if (this.options.snapshot && this.persistentSnapshotDirty) this.scheduleSnapshot();
 				const executionMs = Number.isFinite(result.durationMs) ? Math.max(0, result.durationMs) : 0;
 				const totalMs = Math.max(
 					elapsedMilliseconds(totalStartedAt),
@@ -782,7 +791,7 @@ export class KernelManager {
 		);
 	}
 
-	private async executeInner(code: string, opts: ExecuteOptions): Promise<ExecuteResult> {
+	private async executeInner(code: string, opts: ExecuteOptions): Promise<KernelExecutionOutcome> {
 		if (this.state !== "running") throw new Error("Bun kernel is not running");
 		const requestId = randomUUID();
 		const cellId = randomUUID();
@@ -830,46 +839,57 @@ export class KernelManager {
 		);
 		try {
 			const outcome = await Promise.race([response, aborted.promise.then(() => ({ kind: "aborted" as const }))]);
-			if (outcome.kind === "aborted") return this.executionResult(execution, "aborted");
+			if (outcome.kind === "aborted") {
+				return { result: this.executionResult(execution, "aborted"), stateChanged: false };
+			}
 			if (outcome.kind === "error") {
 				if (execution.aborting) {
 					await aborted.promise;
-					return this.executionResult(execution, "aborted");
+					return { result: this.executionResult(execution, "aborted"), stateChanged: false };
 				}
 				throw outcome.error;
 			}
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			if (execution.aborting) {
 				await aborted.promise;
-				return this.executionResult(execution, "aborted");
+				return { result: this.executionResult(execution, "aborted"), stateChanged: false };
 			}
 			if (outcome.message.status === "error") {
-				return this.executionResult(
-					execution,
-					"error",
-					{
-						ename: outcome.message.error.name,
-						evalue: outcome.message.error.message,
-						traceback: outcome.message.error.stack?.split("\n") ?? [],
-					},
-					undefined,
-					outcome.message.durationMs,
-				);
+				return {
+					result: this.executionResult(
+						execution,
+						"error",
+						{
+							ename: outcome.message.error.name,
+							evalue: outcome.message.error.message,
+							traceback: outcome.message.error.stack?.split("\n") ?? [],
+						},
+						undefined,
+						outcome.message.durationMs,
+					),
+					stateChanged: outcome.message.stateChanged,
+				};
 			}
 			if (execution.fatalDisplayError) {
-				return this.executionResult(
-					execution,
-					"error",
-					{
-						ename: "AttachmentTooLargeError",
-						evalue: execution.fatalDisplayError,
-						traceback: [execution.fatalDisplayError],
-					},
-					outcome.message.value,
-					outcome.message.durationMs,
-				);
+				return {
+					result: this.executionResult(
+						execution,
+						"error",
+						{
+							ename: "AttachmentTooLargeError",
+							evalue: execution.fatalDisplayError,
+							traceback: [execution.fatalDisplayError],
+						},
+						outcome.message.value,
+						outcome.message.durationMs,
+					),
+					stateChanged: outcome.message.stateChanged,
+				};
 			}
-			return this.executionResult(execution, "ok", undefined, outcome.message.value, outcome.message.durationMs);
+			return {
+				result: this.executionResult(execution, "ok", undefined, outcome.message.value, outcome.message.durationMs),
+				stateChanged: outcome.message.stateChanged,
+			};
 		} finally {
 			opts.signal?.removeEventListener("abort", onAbort);
 			if (this.activeExecution === execution) this.activeExecution = undefined;

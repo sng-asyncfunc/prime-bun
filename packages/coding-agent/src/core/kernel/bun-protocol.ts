@@ -1,4 +1,4 @@
-export const BUN_WORKER_PROTOCOL_VERSION = 4;
+export const BUN_WORKER_PROTOCOL_VERSION = 5;
 
 interface BunWorkerProtocolMessage {
 	id: string;
@@ -99,6 +99,7 @@ export interface BunWorkerSuccessResultMessage extends BunWorkerResponseMessage 
 	cellId: string;
 	status: "ok";
 	durationMs: number;
+	stateChanged: boolean;
 	value?: string;
 	bindingNames: string[];
 }
@@ -109,6 +110,7 @@ export interface BunWorkerErrorResultMessage extends BunWorkerResponseMessage {
 	cellId: string;
 	status: "error";
 	durationMs: number;
+	stateChanged: boolean;
 	error: BunWorkerError;
 }
 

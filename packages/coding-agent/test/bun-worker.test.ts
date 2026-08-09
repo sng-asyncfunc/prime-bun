@@ -216,7 +216,7 @@ describe("Bun worker", () => {
 			type: "execute",
 		});
 		const first = await client.waitForType("result", (message) => message.replyTo === "execute-1");
-		expect(first).toMatchObject({ status: "ok", value: "2" });
+		expect(first).toMatchObject({ stateChanged: true, status: "ok", value: "2" });
 
 		client.send({
 			cellId: "cell-2",
@@ -904,7 +904,7 @@ response.answer;
 	it("reports cell errors without poisoning the next execution", async () => {
 		client.send({
 			cellId: "error-cell",
-			code: 'throw new TypeError("broken cell");',
+			code: 'globalThis.workerErrorMutation = 1; throw new TypeError("broken cell");',
 			id: "error-execute",
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			type: "execute",
@@ -912,6 +912,7 @@ response.answer;
 		const failed = await client.waitForType("result", (message) => message.replyTo === "error-execute");
 		expect(failed).toMatchObject({
 			error: { message: "broken cell", name: "TypeError" },
+			stateChanged: true,
 			status: "error",
 		});
 
@@ -923,7 +924,23 @@ response.answer;
 			type: "execute",
 		});
 		const recovered = await client.waitForType("result", (message) => message.replyTo === "recovery-execute");
-		expect(recovered).toMatchObject({ status: "ok", value: "42" });
+		expect(recovered).toMatchObject({ stateChanged: true, status: "ok", value: "42" });
+	});
+
+	it("reports parse failures without marking worker state changed", async () => {
+		client.send({
+			cellId: "parse-error-cell",
+			code: "const broken = ;",
+			id: "parse-error-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const failed = await client.waitForType("result", (message) => message.replyTo === "parse-error-execute");
+		expect(failed).toMatchObject({
+			stateChanged: false,
+			status: "error",
+		});
 	});
 
 	it("snapshots supported bindings independently and restores them", async () => {

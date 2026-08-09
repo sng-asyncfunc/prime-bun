@@ -1278,6 +1278,52 @@ const snapshotProxyAlias = sharedSnapshotProxy;
 		}
 	});
 
+	it("skips every root into a cyclic graph with an unsafe descendant", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-unsafe-cycle-snapshot-"));
+		const path = join(directory, "state.bin");
+		const manifestPath = join(directory, "state.json");
+		try {
+			client.send({
+				cellId: "unsafe-cycle-source",
+				code: `
+class UnsafeCycleValue { constructor() { this.value = 1; } }
+const cycleA = {};
+const cycleB = { back: cycleA };
+cycleA.child = cycleB;
+cycleA.unsafe = new UnsafeCycleValue();
+`,
+				id: "unsafe-cycle-source-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "unsafe-cycle-source-execute");
+
+			client.send({
+				id: "unsafe-cycle-snapshot",
+				includeRuntimeState: false,
+				manifestPath,
+				maxBytes: 1024 * 1024,
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "snapshot",
+			});
+			const snapshot = await client.waitForType(
+				"snapshot_result",
+				(message) => message.replyTo === "unsafe-cycle-snapshot",
+			);
+			expect(snapshot.skipped).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "cycleA" }),
+					expect.objectContaining({ name: "cycleB" }),
+				]),
+			);
+			expect(snapshot.saved).not.toContain("cycleA");
+			expect(snapshot.saved).not.toContain("cycleB");
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
 	it("keeps small bindings when a larger binding exceeds the snapshot cap", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "prime-bun-mixed-cap-snapshot-"));
 		const path = join(directory, "state.bin");

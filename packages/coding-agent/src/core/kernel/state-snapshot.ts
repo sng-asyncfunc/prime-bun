@@ -220,9 +220,16 @@ const INSPECTION_VISITING = Symbol("inspection-visiting");
 const INSPECTION_SAFE = Symbol("inspection-safe");
 type InspectionState = typeof INSPECTION_VISITING | typeof INSPECTION_SAFE | string;
 
+interface InspectionTraversal {
+	cycleMembers: WeakSet<object>;
+	stack: object[];
+	stackIndexes: WeakMap<object, number>;
+}
+
 function inspectSnapshotObject(
 	object: object,
 	inspected: WeakMap<object, InspectionState>,
+	traversal: InspectionTraversal,
 	path: string,
 ): string | undefined {
 	if (Object.getOwnPropertySymbols(object).length > 0) {
@@ -259,11 +266,11 @@ function inspectSnapshotObject(
 		let index = 0;
 		for (const [key, entryValue] of object as Map<unknown, unknown>) {
 			if (!isSnapshotSafePrimitive(key)) {
-				const keyReason = inspectSnapshotValue(key, inspected, `${path}.mapKey${index}`);
+				const keyReason = inspectSnapshotValue(key, inspected, traversal, `${path}.mapKey${index}`);
 				if (keyReason) return keyReason;
 			}
 			if (!isSnapshotSafePrimitive(entryValue)) {
-				const valueReason = inspectSnapshotValue(entryValue, inspected, `${path}.mapValue${index}`);
+				const valueReason = inspectSnapshotValue(entryValue, inspected, traversal, `${path}.mapValue${index}`);
 				if (valueReason) return valueReason;
 			}
 			index += 1;
@@ -275,7 +282,7 @@ function inspectSnapshotObject(
 		let index = 0;
 		for (const entryValue of object as Set<unknown>) {
 			if (!isSnapshotSafePrimitive(entryValue)) {
-				const reason = inspectSnapshotValue(entryValue, inspected, `${path}.setValue${index}`);
+				const reason = inspectSnapshotValue(entryValue, inspected, traversal, `${path}.setValue${index}`);
 				if (reason) return reason;
 			}
 			index += 1;
@@ -290,7 +297,7 @@ function inspectSnapshotObject(
 			if (!isUnsignedIntegerString(key)) return `${path}: custom array properties are not snapshot-safe`;
 			const entryValue = (array as unknown as Record<string, unknown>)[key];
 			if (isSnapshotSafePrimitive(entryValue)) continue;
-			const reason = inspectSnapshotValue(entryValue, inspected, `${path}[${key}]`);
+			const reason = inspectSnapshotValue(entryValue, inspected, traversal, `${path}[${key}]`);
 			if (reason) return reason;
 		}
 		return undefined;
@@ -300,7 +307,7 @@ function inspectSnapshotObject(
 	}
 	for (const [key, entryValue] of Object.entries(object)) {
 		if (isSnapshotSafePrimitive(entryValue)) continue;
-		const reason = inspectSnapshotValue(entryValue, inspected, `${path}.${key}`);
+		const reason = inspectSnapshotValue(entryValue, inspected, traversal, `${path}.${key}`);
 		if (reason) return reason;
 	}
 	return undefined;
@@ -309,6 +316,7 @@ function inspectSnapshotObject(
 function inspectSnapshotValue(
 	value: unknown,
 	inspected: WeakMap<object, InspectionState>,
+	traversal: InspectionTraversal,
 	path: string,
 ): string | undefined {
 	if (isSnapshotSafePrimitive(value)) return undefined;
@@ -319,23 +327,45 @@ function inspectSnapshotValue(
 
 	const object = value as object;
 	const previousState = inspected.get(object);
-	if (previousState === INSPECTION_VISITING || previousState === INSPECTION_SAFE) return undefined;
+	if (previousState === INSPECTION_VISITING) {
+		const cycleStart = traversal.stackIndexes.get(object);
+		if (cycleStart !== undefined) {
+			for (let index = cycleStart; index < traversal.stack.length; index += 1) {
+				const cycleMember = traversal.stack[index];
+				if (cycleMember) traversal.cycleMembers.add(cycleMember);
+			}
+		}
+		return undefined;
+	}
+	if (previousState === INSPECTION_SAFE) return undefined;
 	if (typeof previousState === "string") return previousState;
 	inspected.set(object, INSPECTION_VISITING);
+	traversal.stackIndexes.set(object, traversal.stack.length);
+	traversal.stack.push(object);
 
 	let reason: string | undefined;
 	try {
-		reason = inspectSnapshotObject(object, inspected, path);
+		reason = inspectSnapshotObject(object, inspected, traversal, path);
 	} catch (error) {
 		reason = `${path}: inspection failed: ${error instanceof Error ? error.message : String(error)}`;
+	} finally {
+		traversal.stack.pop();
+		traversal.stackIndexes.delete(object);
 	}
-	inspected.set(object, reason ?? INSPECTION_SAFE);
+	if (reason) inspected.set(object, reason);
+	else if (traversal.cycleMembers.has(object)) inspected.delete(object);
+	else inspected.set(object, INSPECTION_SAFE);
 	return reason;
 }
 
 export function createSnapshotValueInspector(): (value: unknown) => string | undefined {
 	const inspected = new WeakMap<object, InspectionState>();
-	return (value) => inspectSnapshotValue(value, inspected, "$binding");
+	const traversal: InspectionTraversal = {
+		cycleMembers: new WeakSet<object>(),
+		stack: [],
+		stackIndexes: new WeakMap<object, number>(),
+	};
+	return (value) => inspectSnapshotValue(value, inspected, traversal, "$binding");
 }
 
 export function snapshotValueSkipReason(value: unknown): string | undefined {

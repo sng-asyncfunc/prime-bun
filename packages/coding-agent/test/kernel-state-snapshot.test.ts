@@ -191,6 +191,20 @@ describe("snapshotValueSkipReason", () => {
 		expect(prototypeReads).toBe(1);
 	});
 
+	it("does not cache a cycle member safe before an unsafe sibling is inspected", () => {
+		class UnsafeCycleValue {
+			value = 1;
+		}
+		const inspect = createSnapshotValueInspector();
+		const first: Record<string, unknown> = {};
+		const second: Record<string, unknown> = { back: first };
+		first.child = second;
+		first.unsafe = new UnsafeCycleValue();
+
+		expect(inspect(first)).toMatch(/custom prototype/i);
+		expect(inspect(second)).toMatch(/custom prototype/i);
+	});
+
 	it("accepts the characterized structured-clone allowlist, including cycles", () => {
 		const cycle: { self?: unknown; values: Map<string, Set<number>> } = {
 			values: new Map([["numbers", new Set([1, 2, 3])]]),

@@ -6,7 +6,7 @@ import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 
 const RECENT_MODELS_LIMIT = 20;
-export const DEFAULT_IDLE_EVICTION_MINUTES = 90;
+export const DEFAULT_IDLE_EVICTION_MINUTES = 30;
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -128,7 +128,7 @@ export interface Settings {
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	defaultServiceTier?: ServiceTier;
 	rlmMaxDepth?: number; // default for new sessions; unset falls through to RLM_MAX_DEPTH, then 1
-	idleEvictionMinutes?: number | "off"; // global daemon policy; default: 90
+	idleEvictionMinutes?: number | "off"; // global daemon policy; default: 30
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";

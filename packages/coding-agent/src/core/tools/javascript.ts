@@ -23,7 +23,7 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 const javascriptSchema = Type.Object({
 	code: Type.String({
 		description:
-			"JavaScript or TypeScript scratchpad code to execute in the persistent Bun notebook. TypeScript syntax is transpiled without type-checking, and top-level await is supported. Bun Shell `$` is preloaded. Do not import `$` from `bun`; use it directly. Run target-project commands through that project's own environment.",
+			"JavaScript or TypeScript scratchpad code to execute in the persistent Bun notebook. TypeScript syntax is transpiled without type-checking, and top-level await is supported. Bun Shell `$` is preloaded. Do not import `$` from `bun`; use it directly. Run target-project commands through that project's own environment. For repository search, prefer `rg -n` or `rg --files` with traversal-time globs and exclusions; avoid repeated recursive `grep` scans with post-pipe filters.",
 	}),
 });
 
@@ -300,7 +300,7 @@ export function createJavaScriptToolDefinition(
 		name: "javascript",
 		label: "Bun",
 		description:
-			"Execute JavaScript or TypeScript in a persistent Bun notebook. TypeScript syntax is transpiled without type-checking. Variables and loaded data persist across calls and are restored on a best-effort basis when a session resumes. Top-level await, Bun APIs, `sh`, Bun Shell, RLM, and prepared JavaScript skills are available as globals. Do not import `$` from `bun`; use the preloaded global directly. Run target-project commands through the target project's own environment.",
+			"Execute JavaScript or TypeScript in a persistent Bun notebook. TypeScript syntax is transpiled without type-checking. Variables and loaded data persist across calls and are restored on a best-effort basis when a session resumes. Top-level await, Bun APIs, `sh`, Bun Shell, RLM, and prepared JavaScript skills are available as globals. Do not import `$` from `bun`; use the preloaded global directly. Run target-project commands through the target project's own environment. For repository search, prefer `rg -n` or `rg --files` with traversal-time globs and exclusions; avoid repeated recursive `grep` scans with post-pipe filters.",
 		promptSnippet: "javascript - persistent Bun notebook for JavaScript, TypeScript, shell orchestration, and RLM",
 		executionMode: "sequential",
 		parameters: javascriptSchema,

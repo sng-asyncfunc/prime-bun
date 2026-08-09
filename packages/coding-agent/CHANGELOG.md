@@ -16,6 +16,8 @@
 - Fixed Bun notebook checkpoints duplicating aliased state and redundant recovery/persistence serialization during long sessions.
 - Improved Bun notebook long-session memory, namespace scaling, large-checkpoint cleanup, and failed-cell recovery.
 - Fixed redundant Bun Shell imports failing the first JavaScript notebook call.
+- Changed idle daemon workers to expire after 30 minutes by default, reducing memory retained across repeated sessions.
+- Improved Bun notebook repository-search guidance to avoid repeated whole-tree scans.
 
 ## [0.7.1] - 2026-08-07
 

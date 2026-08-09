@@ -67,6 +67,9 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("await sh(command).json()");
 		expect(prompt).toContain("await installPackage('pkg')");
 		expect(prompt).toContain("process.chdir(dir)");
+		expect(prompt).toContain("prefer `rg -n` and `rg --files`");
+		expect(prompt).toContain("Never use recursive `grep -rn`");
+		expect(prompt).toContain("Batch multiple filename or pattern probes into one search");
 		expect(prompt).toContain("JavaScript state persists across cells");
 		expect(prompt).toContain("Preloaded globals: `fs`, `path`, `os`, `util`, and `require`");
 		expect(prompt).toContain("Static imports and literal `require()` bindings persist across cells");
@@ -387,11 +390,13 @@ describe("createJavaScriptToolDefinition", () => {
 		expect(tool.description).toContain("JavaScript or TypeScript");
 		expect(tool.description).toContain("Do not import `$` from `bun`");
 		expect(tool.description).toContain("target project's own environment");
+		expect(tool.description).toContain("prefer `rg -n` or `rg --files`");
 		expect(tool.promptSnippet).toContain("persistent Bun notebook");
 		const codeSchema = tool.parameters.properties.code;
 		const codeDescription =
 			"description" in codeSchema && typeof codeSchema.description === "string" ? codeSchema.description : "";
 		expect(codeDescription).toContain("target-project commands through that project's own environment");
 		expect(codeDescription).toContain("Do not import `$` from `bun`");
+		expect(codeDescription).toContain("prefer `rg -n` or `rg --files`");
 	});
 });

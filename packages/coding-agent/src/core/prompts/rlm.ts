@@ -20,6 +20,8 @@ const JAVASCRIPT_CONTROL_PROMPT = [
 	"",
 	"Use JavaScript and Bun APIs for reading, searching, and transforming data. Assign read/search results to named variables so you can revisit, filter, and compose them without re-reading.",
 	"",
+	"For repository search, prefer `rg -n` and `rg --files`: they respect ignore rules and accept globs or exclusions before traversal. Inside a Git repository, fall back to `git grep -n` when ripgrep is unavailable. Never use recursive `grep -rn` and then pipe through `grep -v node_modules`; post-pipe filters still traverse ignored dependency trees. Batch multiple filename or pattern probes into one search instead of rescanning the whole tree in a loop.",
+	"",
 	"Preloaded globals: `fs`, `path`, `os`, `util`, and `require`. Bun and web globals such as `Bun`, `$`, `fetch`, `process`, `Buffer`, and `crypto` are also ready. Use them directly without importing them.",
 	"",
 	"Each `sh` call runs in a throw-away shell, so shell-level `cd`, `export`, `source`, and variables do not carry to later calls. Keep dependent shell steps in one `sh` call, or use persistent runtime equivalents: `process.chdir(dir)` and `process.env.NAME = 'value'`.",

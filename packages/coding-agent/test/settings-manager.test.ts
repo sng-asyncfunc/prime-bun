@@ -503,9 +503,9 @@ describe("SettingsManager", () => {
 		});
 	});
 	describe("idle worker eviction", () => {
-		it("defaults to 90 minutes and treats none as off", () => {
+		it("defaults to 30 minutes and treats none as off", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
-			expect(manager.getIdleEvictionMinutes()).toBe(90);
+			expect(manager.getIdleEvictionMinutes()).toBe(30);
 
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ idleEvictionMinutes: "none" }));
 			const disabled = SettingsManager.create(projectDir, agentDir);

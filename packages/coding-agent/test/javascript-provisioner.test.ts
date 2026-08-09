@@ -279,12 +279,6 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 			{},
 			{ code: "42;", actions: [{ op: "read", path: "README.md" }] },
 			{ actions: Array.from({ length: 9 }, () => ({ op: "search", path: "." })) },
-			{
-				actions: [
-					{ op: "write", path: "a.md", content: "a" },
-					{ op: "write", path: "b.md", content: "b" },
-				],
-			},
 		];
 
 		const results = await Promise.all(
@@ -297,10 +291,6 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 		expect(results[0]?.content[0]).toMatchObject({ text: expect.stringContaining("exactly one"), type: "text" });
 		expect(results[1]?.content[0]).toMatchObject({ text: expect.stringContaining("exactly one"), type: "text" });
 		expect(results[2]?.content[0]).toMatchObject({ text: expect.stringContaining("1 to 8 actions"), type: "text" });
-		expect(results[3]?.content[0]).toMatchObject({
-			text: expect.stringContaining("at most one write"),
-			type: "text",
-		});
 		expect(ensure).not.toHaveBeenCalled();
 	});
 
@@ -359,6 +349,59 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 		expect(result.details).not.toHaveProperty("stderr");
 		expect(result.details).not.toHaveProperty("result");
 		expect(result.details).toMatchObject({ status: "ok" });
+	});
+
+	it("bounds oversized code output with a head-tail redirect", async () => {
+		const largeResult = `HEAD-${"x".repeat(100_000)}-TAIL`;
+		const manager = {
+			execute: vi
+				.fn<KernelManager["execute"]>()
+				.mockResolvedValue(executeResult({ result: largeResult, stdout: "" })),
+			status: { diagnostics: "", recovery: { available: false, checkpoint: "clean" }, state: "running" },
+		} as unknown as KernelManager;
+		const provisioner = { ensure: vi.fn(async () => manager) } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+
+		const result = await tool.execute(
+			"oversized-output-call",
+			{ code: "largeResult;" },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+		expect(text).toContain("HEAD-");
+		expect(text).toContain("-TAIL");
+		expect(text).toContain("output truncated at 24 KiB");
+		expect(text).toContain("use actions for routine reads/searches");
+		expect(text.length).toBeLessThanOrEqual(24_576);
+	});
+
+	it("keeps the full traceback after bounding oversized error output", async () => {
+		const traceback = ["Error: expected failure", "    at important-frame.ts:42:7"];
+		const manager = {
+			execute: vi.fn<KernelManager["execute"]>().mockResolvedValue(
+				executeResult({
+					error: { ename: "Error", evalue: "expected failure", traceback },
+					status: "error",
+					stdout: `HEAD-${"x".repeat(100_000)}-TAIL`,
+				}),
+			),
+			status: { diagnostics: "", recovery: { available: false, checkpoint: "clean" }, state: "running" },
+		} as unknown as KernelManager;
+		const provisioner = { ensure: vi.fn(async () => manager) } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+
+		const result = await tool.execute("oversized-error-call", { code: "fail();" }, undefined, undefined, {
+			ui: { setWorkingMessage: vi.fn() },
+		} as unknown as ExtensionContext);
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+		expect(text).toContain("output truncated at 24 KiB");
+		expect(text).toContain(traceback.join("\n"));
+		expect(text.indexOf("output truncated")).toBeLessThan(text.indexOf("Error: expected failure"));
+		expect(result).toMatchObject({ details: { status: "error" }, isError: true });
 	});
 
 	it("returns bounded kernel status when execution is blocked by recovery", async () => {

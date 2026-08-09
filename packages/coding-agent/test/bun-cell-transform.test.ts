@@ -52,6 +52,16 @@ plain + renamed + value + rest.extra + first + tail[1];
 		});
 	});
 
+	it("drops a redundant destructuring alias for an existing runtime global", () => {
+		const transformed = transformJavaScriptCell("const { $ } = globalThis; const answer = 42; answer;", {
+			runtimeGlobalNames: new Set(["$"]),
+		});
+
+		expect(transformed.bindingNames).toEqual(["answer"]);
+		expect(transformed.code).not.toContain("const { $ }");
+		expect(transformed.code).toContain("const answer = 42;");
+	});
+
 	it("persists named function and class declarations", async () => {
 		const execution = compileCell(`
 function double(value) { return value * 2; }

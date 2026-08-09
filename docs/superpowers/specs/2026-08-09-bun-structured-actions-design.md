@@ -91,7 +91,7 @@ The schema is deliberately flat. Runtime validation enforces the operation-speci
 
 - exactly one of `code` or `actions` is present;
 - one through eight actions are allowed;
-- no more than one `write` is allowed per call;
+- multiple independent `write` actions may share a call;
 - `read` requires `path`; `offset` and `limit` are positive integers;
 - `search` accepts an optional scope `path`, optional `pattern`, and optional `glob`; an omitted pattern means file listing;
 - `shell` requires a non-empty `command`;
@@ -113,19 +113,21 @@ Classification: the public tool input extension is backward-compatible; the priv
 ### Per-operation behavior
 
 - `read` streams a numbered line window from `offset` (default 1) for `limit` lines (default 200, maximum 2,000).
-- `search` invokes ripgrep with argument arrays rather than interpolated shell source. Exit code 1 is a successful zero-match result. If ripgrep is unavailable, Git-backed repositories fall back to `git grep` or `git ls-files`.
+- `search` invokes ripgrep with argument arrays rather than interpolated shell source. Exit code 1 is a successful zero-match or zero-file result. If ripgrep is unavailable, Git-backed repositories fall back to `git grep` or `git ls-files`.
 - `shell` uses the existing configured-shell runner and always returns `exitCode`, `stdout`, and `stderr`. A non-zero exit is reported normally and stops later actions without turning the cell into an error.
-- `write` reads the prior content, writes UTF-8 bytes directly, and emits the existing `KernelDiffDisplay`. A failed write stops later actions.
+- `write` creates missing parent directories, reads bounded prior content, writes UTF-8 bytes directly, and emits the existing `KernelDiffDisplay` when the combined old and new content is at most 64 KiB. Larger replacements emit only a byte-delta summary so session history does not duplicate the file. A failed write stops later actions.
 
 Read and search failures are reported per action and do not stop independent later probes. Validation failures stop before the kernel starts. Abort kills and recovers the worker through the existing execution boundary, including active child processes.
 
 ### Bounds
 
 - Maximum eight actions per call.
-- Maximum one write per call.
+- Multiple independent writes may share a batch, up to the eight-action limit; each write emits its own diff and the batch stops on the first write failure.
 - Maximum 8 KiB displayed output per action using a head/tail truncation marker.
+- Maximum 24 KiB model-visible output per call across action bodies or ordinary code output; action headers are preserved and later bodies are elided when the batch budget is exhausted.
 - Maximum 1 MiB structured write content; larger generated files use `{ code }` or a project-native command.
-- Existing 64 KiB cell output, 1 MiB protocol result, and 16 KiB structured-detail duplication limits remain in force.
+- Maximum 64 KiB combined old and new content in persisted structured-write diff details; larger replacements retain only the normal tool arguments and a byte-delta result summary.
+- The existing 64 KiB worker capture, 1 MiB protocol result, and 16 KiB structured-detail duplication limits remain in force behind the tighter display bound. Error tracebacks remain intact after bounded code output.
 - Structured actions retain no raw write content after the call completes beyond the normal session tool arguments.
 
 Each output section begins with a stable action header containing its index, operation, and compact target. This lets the model and TUI associate bounded output with the action without duplicating it in result metadata.
@@ -152,6 +154,8 @@ The system and tool descriptions lead with a short mode choice:
 - use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent state; and
 - prefer structured `shell` over Bun Shell `$` when no JavaScript composition is needed.
 
+The fallback guidance explicitly rejects `child_process` and `execSync`, whose throw-on-nonzero behavior recreates the expected-search-miss failure that structured `search` avoids.
+
 One concise example covers each mode. The duplicated long code-field guidance is shortened; detailed raw-code rules remain in the system prompt for fallback use.
 
 ## Verification and Acceptance
@@ -159,12 +163,13 @@ One concise example covers each mode. The duplicated long code-field guidance is
 Test-first coverage must prove:
 
 - exactly-one-mode and per-operation validation;
-- action-count, write-count, offset/limit, and write-size caps;
+- action-count, offset/limit, write-size, and persisted-diff caps;
 - search no-match returns a successful `0 matches` result;
 - shell non-zero returns a structured exit result and stops later actions without a cell error;
 - a Markdown file containing triple backticks, quotes, and `${...}` round-trips byte-for-byte and emits a diff;
 - read windows are numbered and bounded;
 - action output uses head/tail truncation;
+- whole action batches and ordinary code output stay within the 24 KiB display budget while preserving action headers and error tracebacks;
 - abort during a batch recovers the worker;
 - action calls leave `list_names` unchanged;
 - old `{ code }` execution remains unchanged; and
@@ -173,11 +178,11 @@ Test-first coverage must prove:
 Live acceptance reruns the exact audit prompt three times with DeepSeek V4 Flash. The feature passes only if:
 
 1. all three runs produce a final answer;
-2. the known ShellError, Buffer-shape, `.nothrow()` placement, fenced-write, and runtime-global classes occur zero times;
+2. the known ShellError, Buffer-shape, `.nothrow()` placement, fenced-write, runtime-global, and `child_process` expected-search-miss classes occur zero times;
 3. each run has at most one cell error overall;
 4. at least half of routine read/search/list probes use structured actions;
 5. each run stays at or below 25 assistant turns; and
-6. each run stays at or below 160,000 tool-result characters.
+6. no single model-visible call exceeds 25,000 characters; 120,000 cumulative tool-result characters remains an advisory observation target because model-chosen call count is stochastic and hidden refusal would interrupt valid work.
 
 If adoption stays below 50%, refine the schema description and examples but do not add more operations. If the threshold still fails, park the structured surface rather than expanding it.
 
@@ -193,4 +198,8 @@ If adoption stays below 50%, refine the schema description and examples but do n
 
 ## Fable5 Gate
 
-Fable5 returned `SATISFIED_PROCEED` and ranked the designs `hybrid > prompt-only > generic dataflow`. It approved the four-operation flat schema, direct in-kernel execution, eight-action and one-write caps, bounded per-action output, action-aware TUI, and three-run DeepSeek acceptance gate. It explicitly rejected a general reference DSL and restoring a multi-tool toolbox.
+Fable5 returned `SATISFIED_PROCEED` and ranked the designs `hybrid > prompt-only > generic dataflow`. It approved the four-operation flat schema, direct in-kernel execution, eight-action and initial one-write caps, bounded per-action output, action-aware TUI, and three-run DeepSeek acceptance gate. It explicitly rejected a general reference DSL and restoring a multi-tool toolbox. Mixed-workflow dogfooding later showed that the one-write cap itself created an avoidable validation error when DeepSeek batched two independent files, so the cap was removed while retaining sequential writes, per-file diffs, and stop-on-write-failure behavior.
+
+After the first post-implementation run, Fable5 returned `BLOCKED_FIX_LIST`. Transcript verification showed the 57.7 KiB spike came from freeform `execSync` code rather than an action batch, so it rejected a second tool and heuristic code rejection. It required one 24 KiB display budget across both modes, preserved action headers and error tracebacks, and a targeted `child_process` prohibition before rerunning live acceptance.
+
+The final varied DeepSeek V4 Flash matrix covered repository auditing, fenced Markdown creation, exact multi-file edits, mixed read/search/shell/write work, and redundant runtime-global destructuring. It completed 55 tool calls with zero execution errors; the final audit used only the `javascript` tool name, produced no `child_process` calls, stayed below 13.6 KiB for every result, and returned a KEEP/REMOVE answer without editing files. That audit reached 139,521 cumulative result characters rather than the 120,000 advisory target; Fable5 ruled this a measured follow-up because the enforced per-call invariant held with 47% headroom, while a hidden cumulative refusal would terminate otherwise-valid work.

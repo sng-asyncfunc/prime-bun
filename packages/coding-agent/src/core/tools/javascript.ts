@@ -23,6 +23,9 @@ import type { JavaScriptSkillRuntimeInfo } from "../skills.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
 const MAX_STRUCTURED_OUTPUT_DETAIL_CHARS = 16 * 1024;
+const MAX_CALL_OUTPUT_CHARS = 24 * 1024;
+const CALL_OUTPUT_TRUNCATION_MARKER =
+	"\n[... output truncated at 24 KiB — use actions for routine reads/searches; keep large results in variables and print slices ...]\n";
 
 const javascriptActionSchema = Type.Object(
 	{
@@ -41,18 +44,18 @@ const javascriptActionSchema = Type.Object(
 );
 
 const javascriptSchema = Type.Object({
-	code: Type.Optional(
-		Type.String({
-			description:
-				"JavaScript or TypeScript for computation, branching, dependent operations, prepared JavaScript skills, or persistent notebook state. Top-level await works. Preloaded globals include fs, path, os, util, $, sh, require, and rlm; use them directly without redeclaring them. Keep printed output bounded and run target-project commands through that project's own environment.",
-		}),
-	),
 	actions: Type.Optional(
 		Type.Array(javascriptActionSchema, {
 			description:
-				"Batch independent routine work without JavaScript syntax. read uses path/offset/limit; search uses optional path/pattern/glob and lists files when pattern is omitted; shell uses command; write uses path/content. A non-zero shell exit is returned normally and stops later actions. Use code for dependencies or operations outside this surface.",
+				"DEFAULT MODE for independent routine work; do not generate JavaScript for operations this covers. Batch read (path/offset/limit), search (optional path/pattern/glob; omit pattern to list files), shell (command), and write (path/content). A non-zero shell exit is returned normally and stops later actions. Use code only for dependencies or operations outside this surface.",
 			maxItems: 8,
 			minItems: 1,
+		}),
+	),
+	code: Type.Optional(
+		Type.String({
+			description:
+				"Use JavaScript or TypeScript only for computation, branching, dependent operations, prepared JavaScript skills, or persistent notebook state. Do not import child_process or call execSync; use actions or sh for commands. Top-level await works. Preloaded globals include fs, path, os, util, $, sh, require, and rlm; use them directly without redeclaring them. Keep printed output bounded and run target-project commands through that project's own environment.",
 		}),
 	),
 });
@@ -121,6 +124,14 @@ function executionFailure(error: unknown): NonNullable<ExecuteResult["error"]> {
 		.slice(0, 16_384)
 		.split("\n");
 	return { ename, evalue, traceback };
+}
+
+function boundCodeOutput(value: string): string {
+	if (value.length <= MAX_CALL_OUTPUT_CHARS) return value;
+	const available = MAX_CALL_OUTPUT_CHARS - CALL_OUTPUT_TRUNCATION_MARKER.length;
+	const headChars = Math.ceil(available / 2);
+	const tailChars = available - headChars;
+	return `${value.slice(0, headChars)}${CALL_OUTPUT_TRUNCATION_MARKER}${value.slice(-tailChars)}`;
 }
 
 type ResolvedJavaScriptToolInput =
@@ -358,7 +369,7 @@ export function createJavaScriptToolDefinition(
 		name: "javascript",
 		label: "Bun",
 		description:
-			"Execute work in a persistent Bun notebook with two input modes. Batch independent routine reads, searches, shell commands, and exact writes as one to eight actions; direct `content` safely carries Markdown fences and backticks. Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state. Both modes share the notebook cwd, configured shell, output bounds, abort recovery, and file diffs. Run target-project commands through the target project's own environment.",
+			"Execute work in a persistent Bun notebook with two input modes. The tool name is `javascript`; `code` is only an input field, never a tool name. Default to `actions` for independent routine reads, searches, shell commands, and exact writes; batch one to eight actions, and use direct `content` to safely carry Markdown fences and backticks. Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state. Both modes share the notebook cwd, configured shell, output bounds, abort recovery, and file diffs. Run target-project commands through the target project's own environment.",
 		promptSnippet:
 			"javascript - persistent Bun notebook with structured actions for routine work and code for computation",
 		executionMode: "sequential",
@@ -428,6 +439,7 @@ export function createJavaScriptToolDefinition(
 				let text = result.stdout;
 				if (result.stderr) text += `${text ? "\n" : ""}${result.stderr}`;
 				if (result.result) text += `${text ? "\n" : ""}${result.result}`;
+				if (input.mode === "code") text = boundCodeOutput(text);
 				if (result.status === "error" && result.error) {
 					text += `${text ? "\n" : ""}${result.error.traceback.join("\n")}`;
 				}

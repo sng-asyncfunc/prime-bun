@@ -67,15 +67,18 @@ describe("Bun structured actions", () => {
 		});
 	});
 
-	it("allows at most one write per batch", () => {
+	it("allows multiple independent writes in one batch", () => {
 		const result = validateBunStructuredActions([
 			{ op: "write", path: "a.md", content: "a" },
 			{ op: "write", path: "b.md", content: "b" },
 		]);
 
 		expect(result).toEqual({
-			ok: false,
-			message: "Structured action batches support at most one write; received 2.",
+			ok: true,
+			actions: [
+				{ op: "write", path: "a.md", content: "a" },
+				{ op: "write", path: "b.md", content: "b" },
+			],
 		});
 	});
 
@@ -111,6 +114,17 @@ describe("Bun structured actions", () => {
 		);
 
 		expect(result.output).toContain("0 matches");
+		expect(result.output).not.toContain("ERROR");
+	});
+
+	it("reports an empty file listing as a normal zero-file result", async () => {
+		const directory = await temporaryDirectory();
+
+		const result = await executeBunStructuredActions([{ op: "search", path: directory }], {
+			runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+		});
+
+		expect(result.output).toContain("0 files");
 		expect(result.output).not.toContain("ERROR");
 	});
 
@@ -157,6 +171,56 @@ describe("Bun structured actions", () => {
 		expect(result.output).toContain(`wrote ${Buffer.byteLength(content)} bytes`);
 	});
 
+	it("writes multiple files and returns one diff per file", async () => {
+		const directory = await temporaryDirectory();
+		const first = join(directory, "first.txt");
+		const second = join(directory, "second.txt");
+
+		const result = await executeBunStructuredActions(
+			[
+				{ op: "write", path: first, content: "first\n" },
+				{ op: "write", path: second, content: "second\n" },
+			],
+			{ runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+		);
+
+		expect(await readFile(first, "utf8")).toBe("first\n");
+		expect(await readFile(second, "utf8")).toBe("second\n");
+		expect(result.diffs).toEqual([
+			{ path: first, oldStr: "", newStr: "first\n", startLine: 1 },
+			{ path: second, oldStr: "", newStr: "second\n", startLine: 1 },
+		]);
+	});
+
+	it("creates missing parent directories for an exact write", async () => {
+		const directory = await temporaryDirectory();
+		const target = join(directory, "nested", "deeper", "result.txt");
+
+		const result = await executeBunStructuredActions([{ op: "write", path: target, content: "created\n" }], {
+			runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+		});
+
+		expect(await readFile(target, "utf8")).toBe("created\n");
+		expect(result.diffs).toEqual([{ path: target, oldStr: "", newStr: "created\n", startLine: 1 }]);
+	});
+
+	it("omits persisted diff content for a large replacement", async () => {
+		const directory = await temporaryDirectory();
+		const target = join(directory, "large.txt");
+		const oldContent = `OLD-${"a".repeat(40_000)}`;
+		const newContent = `NEW-${"b".repeat(40_000)}`;
+		await writeFile(target, oldContent, "utf8");
+
+		const result = await executeBunStructuredActions([{ op: "write", path: target, content: newContent }], {
+			runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+		});
+
+		expect(await readFile(target, "utf8")).toBe(newContent);
+		expect(result.diffs).toEqual([]);
+		expect(result.output).toContain("diff omitted");
+		expect(result.output).toContain("replaced 40004 bytes with 40004 bytes");
+	});
+
 	it("continues independent reads after a read failure", async () => {
 		const directory = await temporaryDirectory();
 		const present = join(directory, "present.txt");
@@ -187,5 +251,26 @@ describe("Bun structured actions", () => {
 		expect(result.output).toContain("-TAIL");
 		expect(result.output).toContain("action output truncated at 8192 chars");
 		expect(result.output.length).toBeLessThan(8_500);
+	});
+
+	it("bounds the whole batch while preserving every action header", async () => {
+		const actions = Array.from({ length: 8 }, (_, index) => ({
+			command: `probe-${index + 1}`,
+			op: "shell" as const,
+		}));
+
+		const result = await executeBunStructuredActions(actions, {
+			runShell: async (command) => ({
+				exitCode: 0,
+				stderr: "",
+				stdout: `HEAD-${command}-${"x".repeat(12_000)}-TAIL-${command}`,
+			}),
+		});
+
+		for (const [index, action] of actions.entries()) {
+			expect(result.output).toContain(`[${index + 1}/8 shell ${action.command}]`);
+		}
+		expect(result.output).toContain("24 KiB call output budget");
+		expect(result.output.length).toBeLessThanOrEqual(24_576);
 	});
 });

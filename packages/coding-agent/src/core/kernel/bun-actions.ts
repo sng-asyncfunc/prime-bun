@@ -1,15 +1,21 @@
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 
 const MAX_ACTIONS = 8;
-const MAX_WRITES = 1;
 const MAX_READ_LINES = 2_000;
 const MAX_WRITE_CONTENT_CHARS = 1_000_000;
+const MAX_PERSISTED_WRITE_DIFF_BYTES = 64 * 1024;
 const MAX_ACTION_OUTPUT_CHARS = 8_192;
+const MAX_BATCH_OUTPUT_CHARS = 24_576;
 const MAX_ACTION_TARGET_CHARS = 240;
 const MAX_SEARCH_BUFFER_BYTES = 16 * 1024 * 1024;
+
+const BATCH_ELISION_BODY = "[body elided: 24 KiB call output budget reached — re-run this action alone for detail]";
+const BATCH_TRUNCATION_MARKER =
+	"\n[... action output truncated by 24 KiB call output budget; re-run this action alone for detail ...]\n";
 
 const ACTION_OPERATIONS = new Set(["read", "search", "shell", "write"]);
 
@@ -51,6 +57,11 @@ interface ExecutableResult {
 	missing: boolean;
 }
 
+interface ActionOutputSection {
+	header: string;
+	body: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -87,7 +98,6 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 	}
 
 	const actions: BunStructuredAction[] = [];
-	let writes = 0;
 	for (const [index, candidate] of value.entries()) {
 		const number = index + 1;
 		if (!isRecord(candidate)) {
@@ -125,7 +135,6 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 			}
 		}
 		if (typedOp === "write") {
-			writes += 1;
 			if ((candidate.content as string).length > MAX_WRITE_CONTENT_CHARS) {
 				return {
 					ok: false,
@@ -134,13 +143,6 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 			}
 		}
 		actions.push(actionFromRecord(candidate, typedOp));
-	}
-
-	if (writes > MAX_WRITES) {
-		return {
-			ok: false,
-			message: `Structured action batches support at most one write; received ${writes}.`,
-		};
 	}
 	return { ok: true, actions };
 }
@@ -169,6 +171,17 @@ function boundActionOutput(value: string): string {
 	return `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}`;
 }
 
+function boundBatchActionBody(value: string, maxChars: number): string {
+	if (value.length <= maxChars) return value;
+	if (maxChars <= BATCH_ELISION_BODY.length || maxChars <= BATCH_TRUNCATION_MARKER.length) {
+		return BATCH_ELISION_BODY.slice(0, maxChars);
+	}
+	const available = maxChars - BATCH_TRUNCATION_MARKER.length;
+	const headChars = Math.ceil(available / 2);
+	const tailChars = available - headChars;
+	return `${value.slice(0, headChars)}${BATCH_TRUNCATION_MARKER}${value.slice(-tailChars)}`;
+}
+
 function actionHeader(action: BunStructuredAction, index: number, total: number): string {
 	switch (action.op) {
 		case "read": {
@@ -189,9 +202,26 @@ function actionHeader(action: BunStructuredAction, index: number, total: number)
 	}
 }
 
-function actionSection(action: BunStructuredAction, index: number, total: number, body: string): string {
-	const bounded = boundActionOutput(body.trimEnd());
-	return bounded ? `${actionHeader(action, index, total)}\n${bounded}` : actionHeader(action, index, total);
+function actionSection(action: BunStructuredAction, index: number, total: number, body: string): ActionOutputSection {
+	return { body: boundActionOutput(body.trimEnd()), header: actionHeader(action, index, total) };
+}
+
+function renderActionSections(sections: readonly ActionOutputSection[], trailers: readonly string[]): string {
+	if (sections.length === 0) return trailers.join("\n\n");
+	const separators = Math.max(0, sections.length + trailers.length - 1) * 2;
+	const fixedChars =
+		sections.reduce((total, section) => total + section.header.length + 1 + BATCH_ELISION_BODY.length, 0) +
+		trailers.reduce((total, trailer) => total + trailer.length, 0) +
+		separators;
+	let extraChars = Math.max(0, MAX_BATCH_OUTPUT_CHARS - fixedChars);
+	const rendered = sections.map((section) => {
+		const bodyAllowance =
+			BATCH_ELISION_BODY.length + Math.min(extraChars, Math.max(0, section.body.length - BATCH_ELISION_BODY.length));
+		const body = boundBatchActionBody(section.body || BATCH_ELISION_BODY, bodyAllowance);
+		extraChars -= Math.max(0, body.length - BATCH_ELISION_BODY.length);
+		return `${section.header}\n${body}`;
+	});
+	return [...rendered, ...trailers].join("\n\n");
 }
 
 async function readLines(path: string, offset: number, limit: number): Promise<string> {
@@ -247,7 +277,7 @@ async function runSearch(action: BunStructuredAction): Promise<string> {
 		result = await executeFile("git", gitArgs);
 	}
 	if (result.missing) throw new Error("Neither ripgrep nor git is available for structured search");
-	if (result.exitCode === 1 && action.pattern !== undefined && !result.stdout.trim()) return "0 matches";
+	if (result.exitCode === 1 && !result.stdout.trim()) return action.pattern === undefined ? "0 files" : "0 matches";
 	if (result.exitCode !== 0) {
 		throw new Error(`search exited with code ${result.exitCode}: ${result.stderr.trim() || "no stderr"}`);
 	}
@@ -256,11 +286,15 @@ async function runSearch(action: BunStructuredAction): Promise<string> {
 	return action.pattern === undefined ? "0 files" : "0 matches";
 }
 
-async function oldFileContent(path: string): Promise<string> {
+async function oldFileForDiff(path: string, newContentBytes: number): Promise<{ bytes: number; content?: string }> {
 	try {
-		return await readFile(path, "utf8");
+		const file = await stat(path);
+		if (!file.isFile() || file.size + newContentBytes > MAX_PERSISTED_WRITE_DIFF_BYTES) {
+			return { bytes: file.size };
+		}
+		return { bytes: file.size, content: await readFile(path, "utf8") };
 	} catch (error) {
-		if (errorCode(error) === "ENOENT") return "";
+		if (errorCode(error) === "ENOENT") return { bytes: 0, content: "" };
 		throw error;
 	}
 }
@@ -272,7 +306,8 @@ export async function executeBunStructuredActions(
 	const validation = validateBunStructuredActions(actions);
 	if (!validation.ok) throw new Error(validation.message);
 
-	const sections: string[] = [];
+	const sections: ActionOutputSection[] = [];
+	const trailers: string[] = [];
 	const diffs: BunActionDiff[] = [];
 	for (const [zeroBasedIndex, action] of validation.actions.entries()) {
 		const index = zeroBasedIndex + 1;
@@ -296,19 +331,32 @@ export async function executeBunStructuredActions(
 					].join("\n");
 					sections.push(actionSection(action, index, validation.actions.length, body));
 					if (result.exitCode !== 0) {
-						sections.push(`[batch stopped after shell exit ${result.exitCode}]`);
-						return { diffs, output: sections.join("\n\n") };
+						trailers.push(`[batch stopped after shell exit ${result.exitCode}]`);
+						return { diffs, output: renderActionSections(sections, trailers) };
 					}
 					break;
 				}
 				case "write": {
 					const path = action.path as string;
 					const content = action.content as string;
-					const oldStr = await oldFileContent(path);
+					const newContentBytes = Buffer.byteLength(content);
+					const oldFile = await oldFileForDiff(path, newContentBytes);
+					await mkdir(dirname(path), { recursive: true });
 					await writeFile(path, content, "utf8");
-					diffs.push({ newStr: content, oldStr, path, startLine: 1 });
+					if (oldFile.content !== undefined && oldFile.bytes + newContentBytes <= MAX_PERSISTED_WRITE_DIFF_BYTES) {
+						diffs.push({ newStr: content, oldStr: oldFile.content, path, startLine: 1 });
+					}
+					const diffSummary =
+						oldFile.content === undefined
+							? `\n[diff omitted: replaced ${oldFile.bytes} bytes with ${newContentBytes} bytes; persisted diff limit is ${MAX_PERSISTED_WRITE_DIFF_BYTES} bytes]`
+							: "";
 					sections.push(
-						actionSection(action, index, validation.actions.length, `wrote ${Buffer.byteLength(content)} bytes`),
+						actionSection(
+							action,
+							index,
+							validation.actions.length,
+							`wrote ${newContentBytes} bytes${diffSummary}`,
+						),
 					);
 					break;
 				}
@@ -316,10 +364,10 @@ export async function executeBunStructuredActions(
 		} catch (error) {
 			sections.push(actionSection(action, index, validation.actions.length, `ERROR: ${errorMessage(error)}`));
 			if (action.op === "write") {
-				sections.push("[batch stopped after write failure]");
+				trailers.push("[batch stopped after write failure]");
 				break;
 			}
 		}
 	}
-	return { diffs, output: sections.join("\n\n") };
+	return { diffs, output: renderActionSections(sections, trailers) };
 }

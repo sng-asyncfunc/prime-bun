@@ -17,6 +17,10 @@ export interface TransformedJavaScriptCell {
 	bindingRecipes: Record<string, ModuleBindingRecipe>;
 }
 
+export interface TransformJavaScriptCellOptions {
+	runtimeGlobalNames?: ReadonlySet<string>;
+}
+
 export interface ModuleBindingRecipe {
 	type: "module";
 	loader: "import" | "require";
@@ -141,6 +145,34 @@ function literalModuleRecipes(declaration: VariableDeclaration): Record<string, 
 		}
 	}
 	return recipes;
+}
+
+function isRedundantRuntimeGlobalAlias(
+	declaration: VariableDeclaration,
+	runtimeGlobalNames: ReadonlySet<string> | undefined,
+): boolean {
+	if (declaration.kind !== "const" || !runtimeGlobalNames || declaration.declarations.length === 0) return false;
+	return declaration.declarations.every((declarator) => {
+		if (
+			declarator.init?.type !== "Identifier" ||
+			declarator.init.name !== "globalThis" ||
+			declarator.id.type !== "ObjectPattern" ||
+			declarator.id.properties.length === 0
+		) {
+			return false;
+		}
+		return declarator.id.properties.every((property) => {
+			if (
+				property.type === "RestElement" ||
+				property.computed ||
+				property.key.type !== "Identifier" ||
+				property.value.type !== "Identifier"
+			) {
+				return false;
+			}
+			return property.key.name === property.value.name && runtimeGlobalNames.has(property.value.name);
+		});
+	});
 }
 
 function importedBindingExpression(namespace: string, exportName: string, specifier: string): string {
@@ -318,7 +350,10 @@ if (${didReturn}) {${persistenceSource(bindings)}
 	};
 }
 
-export function transformJavaScriptCell(source: string): TransformedJavaScriptCell {
+export function transformJavaScriptCell(
+	source: string,
+	options: TransformJavaScriptCellOptions = {},
+): TransformedJavaScriptCell {
 	const program = parseCell(source);
 	const edits: SourceEdit[] = [];
 	const bindingNames: string[] = [];
@@ -359,6 +394,13 @@ export function transformJavaScriptCell(source: string): TransformedJavaScriptCe
 			case "VariableDeclaration":
 			case "FunctionDeclaration":
 			case "ClassDeclaration": {
+				if (
+					statement.type === "VariableDeclaration" &&
+					isRedundantRuntimeGlobalAlias(statement, options.runtimeGlobalNames)
+				) {
+					edits.push({ start: statement.start, end: statement.end, text: "" });
+					break;
+				}
 				const names = declarationBindings(statement);
 				const recipes = statement.type === "VariableDeclaration" ? literalModuleRecipes(statement) : {};
 				bindingNames.push(...names);

@@ -55,8 +55,12 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Installed JavaScript skill globals (prepared): `websearch`, `refine`.");
 		expect(prompt).toContain("Bun is the agent's long-lived JavaScript notebook");
 		expect(prompt).toContain(
-			"Batch independent routine reads, searches, shell commands, and exact writes through the `actions` input",
+			"Default to the `actions` input for independent routine reads, searches, shell commands, and exact writes",
 		);
+		expect(prompt).toContain(
+			'{"actions":[{"op":"search","path":"src","pattern":"TODO","glob":"*.ts"},{"op":"read","path":"package.json"}]}',
+		);
+		expect(prompt).toContain("The only callable tool name is `javascript`; never emit a tool call named `code`");
 		expect(prompt).toContain(
 			"Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state",
 		);
@@ -67,6 +71,8 @@ describe("buildRlmPrompt", () => {
 		expect(shIndex).toBeGreaterThan(bunShellIndex);
 		expect(prompt).toContain("Do not import `$` from `bun`");
 		expect(prompt).toContain("`sh(command)` uses the configured project shell and command prefix");
+		expect(prompt).toContain("Do not use `child_process` (`execSync`, `spawnSync`, `exec`) in the notebook");
+		expect(prompt).toContain("including expected search misses");
 		expect(prompt).toContain("await sh(command)");
 		expect(prompt).toContain("{ exitCode, stdout, stderr }");
 		expect(prompt).toContain("await sh(command).text()");
@@ -78,6 +84,8 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("prefer `rg -n` and `rg --files`");
 		expect(prompt).toContain("Never use recursive `grep -rn`");
 		expect(prompt).toContain("Batch multiple filename or pattern probes into one search");
+		expect(prompt).toContain("Unless the user asks for an exhaustive review, use at most 20 `javascript` calls");
+		expect(prompt).toContain("synthesize the requested answer before the budget is exhausted");
 		expect(prompt).toContain("text containing backticks or Markdown fences");
 		expect(prompt).toContain('array of ordinary quoted lines joined with "\\n"');
 		expect(prompt).toContain("exact file in one cell");
@@ -183,6 +191,9 @@ describe("buildRlmPrompt", () => {
 			allowRecursion: false,
 		});
 		expect(withEdit).toContain("await edit({ path: 'pkg/file.ts', oldStr, newStr })");
+		expect(withEdit).toContain("read the exact target first");
+		expect(withEdit).toContain("ordinary quoted strings with `\\n` escapes instead of template literals");
+		expect(withEdit).toContain("reread the affected window after editing");
 
 		const withoutEdit = buildRlmPrompt({
 			cwd: "/repo",
@@ -321,7 +332,9 @@ describe("buildSystemPrompt", () => {
 			messagesPath: "/repo/session.jsonl",
 		});
 
-		expect(prompt).toContain("You are a general purpose agent that uses code to solve tasks.");
+		expect(prompt).toContain(
+			"You are a general purpose agent that uses tools, structured actions, and code to solve tasks.",
+		);
 		expect(prompt).toContain("await rlm('sub-task')");
 		expect(prompt).toContain("returns at admission, not completion");
 		expect(prompt).toContain("recover direct child handles");
@@ -367,7 +380,9 @@ describe("buildSystemPrompt", () => {
 			prompt.indexOf("# Continual Harness State"),
 		);
 		expect(prompt.indexOf("# Continual Harness State")).toBeLessThan(prompt.indexOf("custom append"));
-		expect(prompt).not.toContain("You are a general purpose agent that uses code to solve tasks.");
+		expect(prompt).not.toContain(
+			"You are a general purpose agent that uses tools, structured actions, and code to solve tasks.",
+		);
 	});
 
 	test("appends project context and deduplicated guidelines", () => {
@@ -407,7 +422,10 @@ describe("createJavaScriptToolDefinition", () => {
 		const tool = createJavaScriptToolDefinition("/repo");
 
 		expect(tool.description).toContain("two input modes");
-		expect(tool.description).toContain("Batch independent routine reads, searches, shell commands, and exact writes");
+		expect(tool.description).toContain("The tool name is `javascript`; `code` is only an input field");
+		expect(tool.description).toContain(
+			"Default to `actions` for independent routine reads, searches, shell commands",
+		);
 		expect(tool.description).toContain("Use `code` for computation, branching, dependent operations");
 		expect(tool.description).toContain("one to eight actions");
 		expect(tool.description).toContain("target project's own environment");
@@ -417,6 +435,7 @@ describe("createJavaScriptToolDefinition", () => {
 			required?: string[];
 		};
 		expect(parameters.required ?? []).not.toContain("code");
+		expect(Object.keys(parameters.properties)[0]).toBe("actions");
 		const actionsSchema = parameters.properties.actions;
 		expect(actionsSchema).toMatchObject({ minItems: 1, maxItems: 8 });
 		expect(actionsSchema?.items).toBeDefined();
@@ -427,6 +446,7 @@ describe("createJavaScriptToolDefinition", () => {
 				: "";
 		expect(codeDescription).toContain("computation, branching, dependent operations");
 		expect(codeDescription).toContain("persistent notebook state");
+		expect(codeDescription).toContain("Do not import child_process or call execSync");
 		expect(codeDescription.length).toBeLessThan(1_000);
 	});
 });

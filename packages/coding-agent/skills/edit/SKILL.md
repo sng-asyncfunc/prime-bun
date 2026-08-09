@@ -14,6 +14,10 @@ Call directly from the kernel:
 await edit({ path: "pkg/file.ts", oldStr, newStr });
 ```
 
-Use exact old/new strings. Template literals are useful for multiline snippets.
-Returns a short confirmation; raises if `oldStr` is
-missing or matches more than once (widen the snippet to make it unique).
+Read the target first and use exact old/new strings copied from the file. Include
+enough surrounding lines to make `oldStr` unique. For snippets containing
+backticks, `${...}`, or Markdown fences, use ordinary quoted strings with `\n`
+escapes or arrays of quoted lines joined with `"\n"`; do not use a template
+literal. Preserve unchanged text exactly and reread the affected window after
+editing. Returns a short confirmation; raises if `oldStr` is missing or matches
+more than once (widen the snippet to make it unique).

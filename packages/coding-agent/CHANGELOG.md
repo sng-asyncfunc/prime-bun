@@ -22,6 +22,11 @@
 - Reduced long-session Bun transcript growth by deduplicating large result metadata and guiding bounded repository inspection.
 - Fixed Bun notebook writes with Markdown code fences causing opaque syntax errors or retries from unqualified filesystem helpers.
 - Added bounded structured read, search, shell, and write actions to the Bun notebook so models can batch routine work without generating fragile JavaScript.
+- Bounded each Bun tool call to 24 KiB of displayed output while preserving action headers, head/tail context, and error tracebacks.
+- Fixed redundant `globalThis` destructuring of preloaded Bun globals and allowed multiple independent structured writes in one batch.
+- Improved exact-edit guidance for multiline content containing backticks, template expressions, and Markdown fences.
+- Fixed structured writes creating nested files and duplicating large replacement diffs into session history.
+- Fixed empty structured file listings being reported as errors.
 
 ## [0.7.1] - 2026-08-07
 

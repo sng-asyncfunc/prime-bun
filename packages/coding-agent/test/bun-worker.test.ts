@@ -903,6 +903,30 @@ const native = await $\`printf %s bun-shell\`;
 		expect(followingResult.value).toContain("descriptorWritable: false");
 	});
 
+	it("accepts redundant destructuring of the preloaded Bun Shell global", async () => {
+		client.send({
+			cellId: "redundant-shell-global-alias-cell",
+			code: [
+				"const { $ } = globalThis;",
+				"const redundantAliasResult = await $`printf alias-ok`.quiet();",
+				"redundantAliasResult.stdout.toString();",
+			].join("\n"),
+			id: "redundant-shell-global-alias-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const result = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "redundant-shell-global-alias-execute",
+		);
+		expect(result).toMatchObject({
+			bindingNames: ["redundantAliasResult"],
+			status: "ok",
+			value: '"alias-ok"',
+		});
+	});
+
 	it("accepts canonical imports of preloaded Node modules as cell-local bindings", async () => {
 		client.send({
 			cellId: "redundant-node-import-cell",

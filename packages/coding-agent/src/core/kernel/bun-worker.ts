@@ -1276,7 +1276,9 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 	const startedAt = performance.now();
 	let userCodeStarted = false;
 	try {
-		const transformed = transformJavaScriptCell(transpileCell(message.code));
+		const transformed = transformJavaScriptCell(transpileCell(message.code), {
+			runtimeGlobalNames: runtimeBindingNames,
+		});
 		const cellLocalRuntimeBindings = new Set(
 			transformed.bindingNames.filter(
 				(name) =>

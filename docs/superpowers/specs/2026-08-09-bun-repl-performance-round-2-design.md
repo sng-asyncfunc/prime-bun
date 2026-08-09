@@ -26,7 +26,7 @@ Not yet. It would add schemas and choice cost to every model request even though
 
 ### Which aliases are safe?
 
-Only operations already represented exactly by structured actions: `shell`/`bash`, `read`/`read_file`, `search`/`grep`, and `write`/`write_file`. A hidden top-level `edit` alias remains deliberately excluded because guessing its many provider-specific shapes could corrupt files. Instead, the advertised structured-action schema gains a native exact `edit` operation with unique-match enforcement.
+Only operations already represented exactly by structured actions: `edit`, `shell`/`bash`, `read`/`read_file`, `search`/`grep`, and `write`/`write_file`. The advertised structured-action schema uses unique-match enforcement for edits, and the hidden alias accepts only exact, unambiguous edit field shapes.
 
 ### Should `sh()` mimic Bun Shell?
 
@@ -72,7 +72,7 @@ The alias and tool-result additions are backward-compatible library API extensio
 ## Non-Goals
 
 - No visible multi-tool toolbox.
-- No top-level `edit` alias or heuristic repair of ambiguous edit shapes.
+- No heuristic repair of ambiguous edit shapes.
 - No heuristic repair of arbitrary JavaScript source.
 - No hard global tool-call cutoff or cumulative output refusal while individual calls remain bounded.
 - No new supervisor watchdog unless the existing replacement election fails live verification.

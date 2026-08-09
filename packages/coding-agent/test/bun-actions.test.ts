@@ -119,6 +119,43 @@ describe("Bun structured actions", () => {
 		});
 	});
 
+	it("accepts files-only and count search output modes", () => {
+		expect(
+			validateBunStructuredActions([
+				{ op: "search", path: "src", pattern: "KernelManager", outputMode: "files_with_matches" },
+				{ op: "search", path: "src", pattern: "KernelManager", outputMode: "count" },
+			]),
+		).toEqual({
+			ok: true,
+			actions: [
+				{ op: "search", path: "src", pattern: "KernelManager", outputMode: "files_with_matches" },
+				{ op: "search", path: "src", pattern: "KernelManager", outputMode: "count" },
+			],
+		});
+	});
+
+	it("normalizes an empty search pattern to a file listing", () => {
+		expect(
+			validateBunStructuredActions([
+				{ op: "search", path: "src", pattern: "", glob: "*.ts", outputMode: "files_with_matches" },
+			]),
+		).toEqual({
+			ok: true,
+			actions: [{ op: "search", path: "src", glob: "*.ts" }],
+		});
+	});
+
+	it("rejects unknown search output modes", () => {
+		expect(
+			validateBunStructuredActions([
+				{ op: "search", path: "src", pattern: "KernelManager", outputMode: "summaries" },
+			]),
+		).toEqual({
+			ok: false,
+			message: 'Action 1 (search) "outputMode" must be content, files_with_matches, or count.',
+		});
+	});
+
 	it("caps structured write content at one million characters", () => {
 		const result = validateBunStructuredActions([{ op: "write", path: "large.txt", content: "x".repeat(1_000_001) }]);
 
@@ -154,6 +191,39 @@ describe("Bun structured actions", () => {
 		expect(result.output).not.toContain("ERROR");
 	});
 
+	it("returns only matching paths for files-only searches", async () => {
+		const directory = await temporaryDirectory();
+		const matchingFile = join(directory, "matching.txt");
+		const otherFile = join(directory, "other.txt");
+		await writeFile(matchingFile, "needle one\nneedle two\n", "utf8");
+		await writeFile(otherFile, "unrelated\n", "utf8");
+
+		const result = await executeBunStructuredActions(
+			[{ op: "search", path: directory, pattern: "needle", outputMode: "files_with_matches" }],
+			{ runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+		);
+
+		expect(result.output).toContain(matchingFile);
+		expect(result.output).not.toContain(otherFile);
+		expect(result.output).not.toContain("needle one");
+	});
+
+	it("returns per-file matching-line counts for count searches", async () => {
+		const directory = await temporaryDirectory();
+		const firstFile = join(directory, "first.txt");
+		const secondFile = join(directory, "second.txt");
+		await writeFile(firstFile, "needle\nneedle\n", "utf8");
+		await writeFile(secondFile, "needle\n", "utf8");
+
+		const result = await executeBunStructuredActions(
+			[{ op: "search", path: directory, pattern: "needle", outputMode: "count" }],
+			{ runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+		);
+
+		expect(result.output).toContain(`${firstFile}:2`);
+		expect(result.output).toContain(`${secondFile}:1`);
+	});
+
 	it("reports an empty file listing as a normal zero-file result", async () => {
 		const directory = await temporaryDirectory();
 
@@ -163,6 +233,19 @@ describe("Bun structured actions", () => {
 
 		expect(result.output).toContain("0 files");
 		expect(result.output).not.toContain("ERROR");
+	});
+
+	it("lists empty files when an empty pattern requests file discovery", async () => {
+		const directory = await temporaryDirectory();
+		const emptyFile = join(directory, "empty.txt");
+		await writeFile(emptyFile, "", "utf8");
+
+		const result = await executeBunStructuredActions(
+			[{ op: "search", path: directory, pattern: "", outputMode: "files_with_matches" }],
+			{ runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+		);
+
+		expect(result.output).toContain(emptyFile);
 	});
 
 	it("reports non-zero shell output normally and stops later actions", async () => {

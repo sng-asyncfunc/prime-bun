@@ -31,6 +31,9 @@
 - Changed the daemon session catalog to retire after two idle minutes and transparently restart on demand.
 - Fixed source-mode daemon workers failing after changing to a project directory when tsx was launched with a relative config path.
 - Improved read-only audits with a 12-call inspection budget and unambiguous structured-action inference.
+- Added compact matching-file and per-file matching-line-count search output for Bun notebook repository audits.
+- Fixed Bun shell `.text()` results being silently lost when models destructure a nonexistent `stdout` property.
+- Changed JSON print-mode message updates to emit linear deltas instead of repeating the accumulated assistant message.
 
 ## [0.7.1] - 2026-08-07
 

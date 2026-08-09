@@ -1,5 +1,6 @@
 import {
 	type ClassDeclaration,
+	type Expression,
 	type FunctionDeclaration,
 	type ImportDeclaration,
 	type ModuleDeclaration,
@@ -9,6 +10,7 @@ import {
 	type ReturnStatement,
 	type Statement,
 	type VariableDeclaration,
+	type VariableDeclarator,
 } from "acorn";
 
 export interface TransformedJavaScriptCell {
@@ -173,6 +175,40 @@ function isRedundantRuntimeGlobalAlias(
 			return property.key.name === property.value.name && runtimeGlobalNames.has(property.value.name);
 		});
 	});
+}
+
+function isBunShellChain(expression: Expression): boolean {
+	if (expression.type === "TaggedTemplateExpression") {
+		return expression.tag.type === "Identifier" && expression.tag.name === "$";
+	}
+	if (expression.type === "CallExpression" && expression.callee.type === "MemberExpression") {
+		return expression.callee.object.type !== "Super" && isBunShellChain(expression.callee.object);
+	}
+	if (expression.type === "MemberExpression") {
+		return expression.object.type !== "Super" && isBunShellChain(expression.object);
+	}
+	if (expression.type === "ChainExpression") return isBunShellChain(expression.expression);
+	return false;
+}
+
+function awaitedTextStdoutBinding(declarator: VariableDeclarator): string | undefined {
+	if (declarator.id.type !== "ObjectPattern" || declarator.id.properties.length !== 1) return undefined;
+	const property = declarator.id.properties[0];
+	if (property.type === "RestElement" || property.computed || property.value.type !== "Identifier") return undefined;
+	const key =
+		property.key.type === "Identifier"
+			? property.key.name
+			: property.key.type === "Literal"
+				? literalString(property.key.value)
+				: undefined;
+	if (key !== "stdout") return undefined;
+	const initializer = declarator.init;
+	if (initializer?.type !== "AwaitExpression" || initializer.argument.type !== "CallExpression") return undefined;
+	const call = initializer.argument;
+	if (call.arguments.length !== 0 || call.callee.type !== "MemberExpression" || call.callee.computed) return undefined;
+	if (call.callee.property.type !== "Identifier" || call.callee.property.name !== "text") return undefined;
+	if (call.callee.object.type === "Super" || !isBunShellChain(call.callee.object)) return undefined;
+	return property.value.name;
 }
 
 function importedBindingExpression(namespace: string, exportName: string, specifier: string): string {
@@ -400,6 +436,12 @@ export function transformJavaScriptCell(
 				) {
 					edits.push({ start: statement.start, end: statement.end, text: "" });
 					break;
+				}
+				if (statement.type === "VariableDeclaration") {
+					for (const declarator of statement.declarations) {
+						const binding = awaitedTextStdoutBinding(declarator);
+						if (binding) edits.push({ start: declarator.id.start, end: declarator.id.end, text: binding });
+					}
 				}
 				const names = declarationBindings(statement);
 				const recipes = statement.type === "VariableDeclaration" ? literalModuleRecipes(statement) : {};

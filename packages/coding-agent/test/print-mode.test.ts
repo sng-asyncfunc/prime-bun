@@ -8,8 +8,9 @@ import {
 	createSessionSlashCommandResultMessage,
 } from "../src/core/messages.js";
 import type { SessionShutdownEvent } from "../src/index.js";
+import { CompactAssistantStreamReconstructor } from "../src/modes/daemon/compact-session-stream.js";
 import { selectHeadlessTerminalResult } from "../src/modes/headless-completion.js";
-import { runPrintMode } from "../src/modes/print-mode.js";
+import { compactJsonSessionEvent, runPrintMode } from "../src/modes/print-mode.js";
 
 const output = vi.hoisted(() => ({ write: vi.fn(), flush: vi.fn(async () => {}) }));
 vi.mock("../src/core/output-guard.js", () => ({
@@ -131,6 +132,114 @@ afterEach(() => {
 });
 
 describe("runPrintMode", () => {
+	it("emits message updates as linear deltas without accumulated assistant copies", () => {
+		const partial = createAssistantMessage({ text: "hello world" });
+
+		expect(
+			compactJsonSessionEvent({
+				type: "message_update",
+				message: partial,
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " world", partial },
+			}),
+		).toEqual({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " world" },
+		});
+	});
+
+	it("preserves tool identity when compacting a tool-call start", () => {
+		const partial: AssistantMessage = {
+			...createAssistantMessage(),
+			content: [{ type: "toolCall", id: "call-1", name: "javascript", arguments: {} }],
+		};
+
+		expect(
+			compactJsonSessionEvent({
+				type: "message_update",
+				message: partial,
+				assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial },
+			}),
+		).toEqual({
+			type: "message_update",
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+			contentStart: { type: "toolCall", id: "call-1", name: "javascript", arguments: {} },
+		});
+	});
+
+	it("round-trips a streamed tool call from compact JSON deltas", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		const activeSessionId = "print-mode-test";
+		const initial = createAssistantMessage();
+		const emptyToolCall = { type: "toolCall" as const, id: "call-1", name: "javascript", arguments: {} };
+		const completeToolCall = {
+			...emptyToolCall,
+			arguments: { actions: [{ op: "read", path: "README.md" }] },
+		};
+		reconstructor.seed(activeSessionId, structuredClone(initial));
+
+		const updates = [
+			{
+				type: "message_update" as const,
+				message: { ...initial, content: [emptyToolCall] },
+				assistantMessageEvent: {
+					type: "toolcall_start" as const,
+					contentIndex: 0,
+					partial: { ...initial, content: [emptyToolCall] },
+				},
+			},
+			{
+				type: "message_update" as const,
+				message: { ...initial, content: [emptyToolCall] },
+				assistantMessageEvent: {
+					type: "toolcall_delta" as const,
+					contentIndex: 0,
+					delta: '{"actions":[{"op":"read",',
+					partial: { ...initial, content: [emptyToolCall] },
+				},
+			},
+			{
+				type: "message_update" as const,
+				message: { ...initial, content: [completeToolCall] },
+				assistantMessageEvent: {
+					type: "toolcall_delta" as const,
+					contentIndex: 0,
+					delta: '"path":"README.md"}]}',
+					partial: { ...initial, content: [completeToolCall] },
+				},
+			},
+			{
+				type: "message_update" as const,
+				message: { ...initial, content: [completeToolCall] },
+				assistantMessageEvent: {
+					type: "toolcall_end" as const,
+					contentIndex: 0,
+					toolCall: completeToolCall,
+					partial: { ...initial, content: [completeToolCall] },
+				},
+			},
+		];
+
+		let reconstructed: ReturnType<CompactAssistantStreamReconstructor["reconstruct"]>;
+		for (const update of updates) {
+			const compact = compactJsonSessionEvent(update);
+			if (compact.type !== "message_update") throw new Error("Expected a compact message update");
+			reconstructed = reconstructor.reconstruct({
+				type: "assistant_stream_delta",
+				activeSessionId,
+				assistantMessageEvent: compact.assistantMessageEvent,
+				...(compact.contentStart ? { contentStart: compact.contentStart } : {}),
+			});
+		}
+
+		if (reconstructed?.type !== "session_event" || reconstructed.event.type !== "message_update") {
+			throw new Error("Expected a reconstructed message update");
+		}
+		if (reconstructed.event.message.role !== "assistant") {
+			throw new Error("Expected a reconstructed assistant message");
+		}
+		expect(reconstructed.event.message.content).toEqual([completeToolCall]);
+	});
+
 	it("emits session_shutdown in text mode", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;

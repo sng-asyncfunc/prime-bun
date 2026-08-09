@@ -62,6 +62,39 @@ plain + renamed + value + rest.extra + first + tail[1];
 		expect(transformed.code).toContain("const answer = 42;");
 	});
 
+	it("lowers stdout destructuring of awaited text calls to the returned string", async () => {
+		const source = `
+const $ = () => ({ text: async () => "ok\\n" });
+const { stdout: output } = await $\`printf ok\`.text();
+output.trim();
+`;
+		const transformed = transformJavaScriptCell(source);
+		const execution = compileCell(source);
+
+		expect(transformed.code).toContain("const output = await $`printf ok`.text();");
+		expect(transformed.code).not.toContain("{ stdout: output }");
+		expect(transformed.bindingNames).toEqual(["$", "output"]);
+		expect(await execution.result).toBe("ok");
+		expect(execution.bindings.get("output")).toBe("ok\n");
+	});
+
+	it("leaves ambiguous or non-text destructuring unchanged", () => {
+		const source = `
+const { stdout: withStderr, stderr } = await command.text();
+const { stdout: withArgument } = await command.text("utf8");
+const { value: differentProperty } = await command.text();
+const { stdout: notAwaited } = command.text();
+const { stdout: arbitraryTextMethod } = await command.text();
+`;
+		const transformed = transformJavaScriptCell(source);
+
+		expect(transformed.code).toContain("const { stdout: withStderr, stderr } = await command.text();");
+		expect(transformed.code).toContain('const { stdout: withArgument } = await command.text("utf8");');
+		expect(transformed.code).toContain("const { value: differentProperty } = await command.text();");
+		expect(transformed.code).toContain("const { stdout: notAwaited } = command.text();");
+		expect(transformed.code).toContain("const { stdout: arbitraryTextMethod } = await command.text();");
+	});
+
 	it("persists named function and class declarations", async () => {
 		const execution = compileCell(`
 function double(value) { return value * 2; }

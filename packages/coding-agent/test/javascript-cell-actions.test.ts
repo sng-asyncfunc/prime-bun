@@ -15,7 +15,13 @@ function stripAnsi(text: string): string {
 const ACTIONS = [
 	{ op: "read" as const, path: "README.md", offset: 3, limit: 5 },
 	{ op: "read" as const, path: "package.json" },
-	{ op: "search" as const, path: "src", pattern: "KernelManager", glob: "*.ts" },
+	{
+		op: "search" as const,
+		path: "src",
+		pattern: "KernelManager",
+		glob: "*.ts",
+		outputMode: "files_with_matches" as const,
+	},
 	{ op: "shell" as const, command: "npm run check" },
 ];
 
@@ -58,7 +64,7 @@ describe("JavaScriptCellComponent structured actions", () => {
 
 		expect(output).toContain("› read README.md lines 3-7");
 		expect(output).toContain("read package.json lines 1-200");
-		expect(output).toContain('search "KernelManager" in src glob "*.ts"');
+		expect(output).toContain('search "KernelManager" in src glob "*.ts" files only');
 		expect(output).toContain("shell npm run check");
 	});
 
@@ -141,6 +147,8 @@ describe("JavaScriptCellComponent structured actions", () => {
 			getJavaScriptActionsFromArgs({
 				actions: [
 					{ op: "read", path: "README.md", offset: 2 },
+					{ op: "search", path: "src", pattern: "KernelManager", outputMode: "files_with_matches" },
+					{ op: "search", path: "src", pattern: "", outputMode: "files_with_matches" },
 					{ op: "edit", path: "README.md", oldStr: "before", newStr: "after" },
 					{ op: "unknown", path: "ignored" },
 					"partial",
@@ -149,6 +157,8 @@ describe("JavaScriptCellComponent structured actions", () => {
 			}),
 		).toEqual([
 			{ op: "read", path: "README.md", offset: 2 },
+			{ op: "search", path: "src", pattern: "KernelManager", outputMode: "files_with_matches" },
+			{ op: "search", path: "src" },
 			{ op: "edit", path: "README.md", oldStr: "before", newStr: "after" },
 			{ op: "write", path: "notes.md" },
 		]);

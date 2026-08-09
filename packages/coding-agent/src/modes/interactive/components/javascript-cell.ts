@@ -142,14 +142,23 @@ export function getJavaScriptActionsFromArgs(args: unknown): BunStructuredAction
 		const record = candidate as Record<string, unknown>;
 		if (typeof record.op !== "string" || !STRUCTURED_ACTION_OPERATIONS.has(record.op)) return [];
 		const op = record.op as BunStructuredAction["op"];
+		const pattern = typeof record.pattern === "string" && record.pattern !== "" ? record.pattern : undefined;
+		const outputMode =
+			pattern !== undefined &&
+			(record.outputMode === "content" ||
+				record.outputMode === "files_with_matches" ||
+				record.outputMode === "count")
+				? record.outputMode
+				: undefined;
 		return [
 			{
 				op,
 				...(typeof record.path === "string" ? { path: record.path } : {}),
 				...(typeof record.offset === "number" ? { offset: record.offset } : {}),
 				...(typeof record.limit === "number" ? { limit: record.limit } : {}),
-				...(typeof record.pattern === "string" ? { pattern: record.pattern } : {}),
+				...(pattern !== undefined ? { pattern } : {}),
 				...(typeof record.glob === "string" ? { glob: record.glob } : {}),
+				...(outputMode !== undefined ? { outputMode } : {}),
 				...(typeof record.command === "string" ? { command: record.command } : {}),
 				...(typeof record.content === "string" ? { content: record.content } : {}),
 				...(typeof record.oldStr === "string" ? { oldStr: record.oldStr } : {}),
@@ -182,7 +191,9 @@ function structuredActionIntent(action: BunStructuredAction): string {
 			const scope = action.path ?? ".";
 			const query = action.pattern === undefined ? "list files" : `search ${JSON.stringify(action.pattern)}`;
 			const glob = action.glob === undefined ? "" : ` glob ${JSON.stringify(action.glob)}`;
-			return `${query} in ${scope}${glob}`;
+			const mode =
+				action.outputMode === "files_with_matches" ? " files only" : action.outputMode === "count" ? " count" : "";
+			return `${query} in ${scope}${glob}${mode}`;
 		}
 		case "shell":
 			return `shell ${action.command ?? ""}`;

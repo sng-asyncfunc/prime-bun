@@ -22,7 +22,7 @@ type AgentSessionEvent =
 
 `session_action_update` emits literal queued actions separately from active scheduler work whenever either projection changes. `compaction_start` and `compaction_end` cover both manual and automatic compaction.
 
-Base events from [`AgentEvent`](../../agent/src/types.ts):
+Base events come from [`AgentEvent`](../../agent/src/types.ts). JSON print mode compacts `message_update` because the full partial assistant message otherwise grows and is serialized again for every token:
 
 ```typescript
 type AgentEvent =
@@ -34,13 +34,19 @@ type AgentEvent =
   | { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }
   // Message lifecycle
   | { type: "message_start"; message: AgentMessage }
-  | { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent }
+  | {
+      type: "message_update";
+      assistantMessageEvent: Omit<AssistantMessageEvent, "partial">;
+      contentStart?: ToolCall;
+    }
   | { type: "message_end"; message: AgentMessage }
   // Tool execution
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
 ```
+
+`message_start` and `message_end` retain complete messages. Each `message_update` contains only the new assistant stream event; `contentStart` supplies tool-call identity on `toolcall_start`. Consumers can therefore reconstruct live content from the start event plus text, thinking, and tool-call deltas without processing quadratic output.
 
 ## Message Types
 
@@ -69,7 +75,7 @@ Followed by events as they occur:
 {"type":"agent_start"}
 {"type":"turn_start"}
 {"type":"message_start","message":{"role":"assistant","content":[],...}}
-{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_delta","delta":"Hello",...}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
 {"type":"message_end","message":{...}}
 {"type":"turn_end","message":{...},"toolResults":[]}
 {"type":"agent_end","messages":[...]}

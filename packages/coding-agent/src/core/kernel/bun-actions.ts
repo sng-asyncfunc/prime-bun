@@ -18,6 +18,9 @@ const BATCH_TRUNCATION_MARKER =
 	"\n[... action output truncated by 24 KiB call output budget; re-run this action alone for detail ...]\n";
 
 const ACTION_OPERATIONS = new Set(["edit", "read", "search", "shell", "write"]);
+const SEARCH_OUTPUT_MODES = new Set(["content", "files_with_matches", "count"]);
+
+export type BunSearchOutputMode = "content" | "files_with_matches" | "count";
 
 export type BunStructuredAction = {
 	op: "edit" | "read" | "search" | "shell" | "write";
@@ -26,6 +29,7 @@ export type BunStructuredAction = {
 	limit?: number;
 	pattern?: string;
 	glob?: string;
+	outputMode?: BunSearchOutputMode;
 	command?: string;
 	content?: string;
 	oldStr?: string;
@@ -77,14 +81,22 @@ function optionalString(record: Record<string, unknown>, key: string): string | 
 	return typeof value === "string" ? value : undefined;
 }
 
+function searchOutputMode(value: unknown): BunSearchOutputMode | undefined {
+	return typeof value === "string" && SEARCH_OUTPUT_MODES.has(value) ? (value as BunSearchOutputMode) : undefined;
+}
+
 function actionFromRecord(record: Record<string, unknown>, op: BunStructuredAction["op"]): BunStructuredAction {
+	const pattern = optionalString(record, "pattern");
+	const normalizedPattern = op === "search" && pattern === "" ? undefined : pattern;
+	const outputMode = searchOutputMode(record.outputMode);
 	return {
 		op,
 		...(optionalString(record, "path") !== undefined ? { path: optionalString(record, "path") } : {}),
 		...(positiveInteger(record.offset) ? { offset: record.offset } : {}),
 		...(positiveInteger(record.limit) ? { limit: record.limit } : {}),
-		...(optionalString(record, "pattern") !== undefined ? { pattern: optionalString(record, "pattern") } : {}),
+		...(normalizedPattern !== undefined ? { pattern: normalizedPattern } : {}),
 		...(optionalString(record, "glob") !== undefined ? { glob: optionalString(record, "glob") } : {}),
+		...(op === "search" && normalizedPattern !== undefined && outputMode !== undefined ? { outputMode } : {}),
 		...(optionalString(record, "command") !== undefined ? { command: optionalString(record, "command") } : {}),
 		...(optionalString(record, "content") !== undefined ? { content: optionalString(record, "content") } : {}),
 		...(optionalString(record, "oldStr") !== undefined ? { oldStr: optionalString(record, "oldStr") } : {}),
@@ -146,6 +158,12 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 			if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
 				return { ok: false, message: `Action ${number} (${typedOp}) "${key}" must be a string.` };
 			}
+		}
+		if (typedOp === "search" && candidate.outputMode !== undefined && !searchOutputMode(candidate.outputMode)) {
+			return {
+				ok: false,
+				message: `Action ${number} (search) "outputMode" must be content, files_with_matches, or count.`,
+			};
 		}
 		if (typedOp === "write") {
 			if ((candidate.content as string).length > MAX_WRITE_CONTENT_CHARS) {
@@ -218,7 +236,9 @@ function actionHeader(action: BunStructuredAction, index: number, total: number)
 			const scope = action.path ?? ".";
 			const query = action.pattern ? `pattern ${JSON.stringify(action.pattern)}` : "files";
 			const glob = action.glob ? ` glob ${JSON.stringify(action.glob)}` : "";
-			return `[${index}/${total} search ${compactTarget(`${query}${glob} in ${scope}`)}]`;
+			const mode =
+				action.outputMode === "files_with_matches" ? " files only" : action.outputMode === "count" ? " count" : "";
+			return `[${index}/${total} search ${compactTarget(`${query}${glob} in ${scope}${mode}`)}]`;
 		}
 		case "shell":
 			return `[${index}/${total} shell ${compactTarget(action.command ?? "")}]`;
@@ -293,12 +313,28 @@ async function runSearch(action: BunStructuredAction): Promise<string> {
 	if (action.pattern === undefined) {
 		rgArgs.push("--files", "--", scope);
 	} else {
-		rgArgs.push("-n", "--no-heading", "--color=never", "-e", action.pattern, "--", scope);
+		switch (action.outputMode ?? "content") {
+			case "files_with_matches":
+				rgArgs.push("-l", "--color=never", "-e", action.pattern, "--", scope);
+				break;
+			case "count":
+				rgArgs.push("-c", "--color=never", "-e", action.pattern, "--", scope);
+				break;
+			case "content":
+				rgArgs.push("-n", "--no-heading", "--color=never", "-e", action.pattern, "--", scope);
+				break;
+		}
 	}
 	let result = await executeFile("rg", rgArgs);
 	if (result.missing) {
-		const gitArgs =
-			action.pattern === undefined ? ["ls-files", "--", scope] : ["grep", "-n", "-e", action.pattern, "--", scope];
+		let gitArgs: string[];
+		if (action.pattern === undefined) {
+			gitArgs = ["ls-files", "--", scope];
+		} else {
+			const modeFlag =
+				action.outputMode === "files_with_matches" ? "-l" : action.outputMode === "count" ? "-c" : "-n";
+			gitArgs = ["grep", modeFlag, "-e", action.pattern, "--", scope];
+		}
 		result = await executeFile("git", gitArgs);
 	}
 	if (result.missing) throw new Error("Neither ripgrep nor git is available for structured search");

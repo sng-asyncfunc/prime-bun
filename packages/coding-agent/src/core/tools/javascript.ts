@@ -46,6 +46,11 @@ const javascriptActionSchema = Type.Object(
 		limit: Type.Optional(Type.Integer({ description: "Maximum lines for read (up to 2000).", minimum: 1 })),
 		pattern: Type.Optional(Type.String({ description: "Search pattern. Omit to list files." })),
 		glob: Type.Optional(Type.String({ description: "Optional search glob such as *.ts." })),
+		outputMode: Type.Optional(
+			Type.Union([Type.Literal("content"), Type.Literal("files_with_matches"), Type.Literal("count")], {
+				description: "Search output shape: matching lines, matching file paths, or per-file matching-line counts.",
+			}),
+		),
 		command: Type.Optional(Type.String({ description: "Configured-shell command for shell." })),
 		content: Type.Optional(Type.String({ description: "Exact UTF-8 file content for write." })),
 		oldStr: Type.Optional(
@@ -60,7 +65,7 @@ const javascriptSchema = Type.Object({
 	actions: Type.Optional(
 		Type.Array(javascriptActionSchema, {
 			description:
-				"DEFAULT MODE for independent routine work; do not generate JavaScript for operations this covers. Batch edit (path/oldStr/newStr), read (path/offset/limit), search (optional path/pattern/glob; omit pattern to list files), shell (command), and write (path/content). A failed edit/write or non-zero shell exit stops later actions. Use code only for dependencies or operations outside this surface.",
+				"DEFAULT MODE for independent routine work; do not generate JavaScript for operations this covers. Batch edit (path/oldStr/newStr), read (path/offset/limit), search (optional path/pattern/glob/outputMode; use files_with_matches or count to keep broad searches compact; omit pattern to list files), shell (command), and write (path/content). A failed edit/write or non-zero shell exit stops later actions. Use code only for dependencies or operations outside this surface.",
 			maxItems: 8,
 			minItems: 1,
 		}),
@@ -188,7 +193,9 @@ function inferStructuredActionOp(record: Record<string, unknown>): BunStructured
 	if (Object.hasOwn(record, "command")) candidates.push("shell");
 	if (Object.hasOwn(record, "oldStr") || Object.hasOwn(record, "newStr")) candidates.push("edit");
 	if (Object.hasOwn(record, "content")) candidates.push("write");
-	if (Object.hasOwn(record, "pattern") || Object.hasOwn(record, "glob")) candidates.push("search");
+	if (Object.hasOwn(record, "pattern") || Object.hasOwn(record, "glob") || Object.hasOwn(record, "outputMode")) {
+		candidates.push("search");
+	}
 	if (candidates.length === 0 && ["path", "offset", "limit"].some((key) => Object.hasOwn(record, key))) {
 		candidates.push("read");
 	}
@@ -279,13 +286,30 @@ function searchAlias(args: unknown): Record<string, unknown> | undefined {
 	const pattern = aliasStringField(record, ["pattern", "query"]);
 	const path = aliasStringField(record, ["path"]);
 	const glob = aliasStringField(record, ["glob"]);
-	if (!pattern.ok || !path.ok || !glob.ok) return undefined;
-	if (pattern.value === undefined && path.value === undefined && glob.value === undefined) return undefined;
+	const outputMode = aliasStringField(record, ["outputMode", "output_mode"]);
+	if (!pattern.ok || !path.ok || !glob.ok || !outputMode.ok) return undefined;
+	if (
+		outputMode.value !== undefined &&
+		outputMode.value !== "content" &&
+		outputMode.value !== "files_with_matches" &&
+		outputMode.value !== "count"
+	) {
+		return undefined;
+	}
+	if (
+		pattern.value === undefined &&
+		path.value === undefined &&
+		glob.value === undefined &&
+		outputMode.value === undefined
+	) {
+		return undefined;
+	}
 	return actionAlias({
 		op: "search",
 		...(pattern.value !== undefined ? { pattern: pattern.value } : {}),
 		...(path.value !== undefined ? { path: path.value } : {}),
 		...(glob.value !== undefined ? { glob: glob.value } : {}),
+		...(outputMode.value !== undefined ? { outputMode: outputMode.value } : {}),
 	});
 }
 

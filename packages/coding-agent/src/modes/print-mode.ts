@@ -6,7 +6,8 @@
  * - `pi --mode json "prompt"` - JSON event stream
  */
 
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, ImageContent } from "@earendil-works/pi-ai";
+import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.js";
 import { type AgentAutonomousStatus, type AutonomousLimitReason, autonomousLimitReason } from "../core/autonomous.js";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.js";
@@ -27,6 +28,35 @@ export interface PrintModeOptions {
 	initialMessage?: string;
 	/** Images to attach to the initial message */
 	initialImages?: ImageContent[];
+}
+
+type MessageUpdateEvent = Extract<AgentSessionEvent, { type: "message_update" }>;
+type WithoutPartial<T> = T extends { partial: AssistantMessage } ? Omit<T, "partial"> : T;
+type CompactAssistantMessageEvent = WithoutPartial<MessageUpdateEvent["assistantMessageEvent"]>;
+
+export type CompactJsonMessageUpdate = {
+	type: "message_update";
+	assistantMessageEvent: CompactAssistantMessageEvent;
+	contentStart?: AssistantMessage["content"][number];
+};
+
+export function compactJsonSessionEvent(
+	event: AgentSessionEvent,
+): Exclude<AgentSessionEvent, MessageUpdateEvent> | CompactJsonMessageUpdate {
+	if (event.type !== "message_update") return event;
+	const { partial: _partial, ...assistantMessageEvent } = event.assistantMessageEvent as AssistantMessageEvent & {
+		partial?: AssistantMessage;
+	};
+	const content =
+		event.message.role === "assistant" && assistantMessageEvent.type === "toolcall_start"
+			? event.message.content[assistantMessageEvent.contentIndex]
+			: undefined;
+	const contentStart = content?.type === "toolCall" ? { ...content, arguments: {} } : undefined;
+	return {
+		type: "message_update",
+		assistantMessageEvent: assistantMessageEvent as CompactAssistantMessageEvent,
+		...(contentStart ? { contentStart } : {}),
+	};
 }
 
 function describeAutonomousLimit(status: AgentAutonomousStatus, reason: AutonomousLimitReason): string {
@@ -103,7 +133,7 @@ async function runPrintModeWithConnectionInternal(
 
 		unsubscribe = connection.subscribe((event) => {
 			if (mode === "json" && event.type === "session_event") {
-				writeRawStdout(`${JSON.stringify(event.event)}\n`);
+				writeRawStdout(`${JSON.stringify(compactJsonSessionEvent(event.event))}\n`);
 			}
 			if (event.type === "extension_error") {
 				console.error(`Extension error (${event.extensionPath}): ${event.error}`);

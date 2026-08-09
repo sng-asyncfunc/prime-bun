@@ -131,7 +131,7 @@ export function getJavaScriptCodeFromArgs(args: unknown): string {
 	return typeof code === "string" ? code : "";
 }
 
-const STRUCTURED_ACTION_OPERATIONS = new Set(["read", "search", "shell", "write"]);
+const STRUCTURED_ACTION_OPERATIONS = new Set(["edit", "read", "search", "shell", "write"]);
 
 export function getJavaScriptActionsFromArgs(args: unknown): BunStructuredAction[] {
 	if (!args || typeof args !== "object" || !("actions" in args)) return [];
@@ -152,6 +152,8 @@ export function getJavaScriptActionsFromArgs(args: unknown): BunStructuredAction
 				...(typeof record.glob === "string" ? { glob: record.glob } : {}),
 				...(typeof record.command === "string" ? { command: record.command } : {}),
 				...(typeof record.content === "string" ? { content: record.content } : {}),
+				...(typeof record.oldStr === "string" ? { oldStr: record.oldStr } : {}),
+				...(typeof record.newStr === "string" ? { newStr: record.newStr } : {}),
 			},
 		];
 	});
@@ -165,6 +167,12 @@ function summarizeStructuredActions(actions: readonly BunStructuredAction[]): st
 
 function structuredActionIntent(action: BunStructuredAction): string {
 	switch (action.op) {
+		case "edit": {
+			const oldBytes = action.oldStr === undefined ? undefined : Buffer.byteLength(action.oldStr);
+			const newBytes = action.newStr === undefined ? undefined : Buffer.byteLength(action.newStr);
+			const sizes = oldBytes === undefined || newBytes === undefined ? "" : ` (${oldBytes}→${newBytes} bytes)`;
+			return `edit ${action.path ?? ""}${sizes}`;
+		}
 		case "read": {
 			const offset = action.offset ?? 1;
 			const limit = action.limit ?? 200;

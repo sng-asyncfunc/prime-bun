@@ -129,6 +129,33 @@ function cloneUsage(usage: AssistantMessage["usage"]): AssistantMessage["usage"]
 	return { ...usage, cost: { ...usage.cost } };
 }
 
+function normalizeAssistantToolCalls(
+	message: AssistantMessage,
+	tools: readonly AgentTool<any>[] | undefined,
+): AssistantMessage {
+	if (!tools?.length) return message;
+	const exactNames = new Set(tools.map((tool) => tool.name));
+	let changed = false;
+	const content = message.content.map((part) => {
+		if (part.type !== "toolCall" || exactNames.has(part.name)) return part;
+		for (const tool of tools) {
+			const normalize = tool.compatibilityAliases?.[part.name];
+			if (!normalize) continue;
+			let mapped: Record<string, unknown> | undefined;
+			try {
+				mapped = normalize(part.arguments);
+			} catch {
+				return part;
+			}
+			if (!mapped) return part;
+			changed = true;
+			return { ...part, name: tool.name, arguments: mapped };
+		}
+		return part;
+	});
+	return changed ? { ...message, content } : message;
+}
+
 function createAbortedAssistantMessage(
 	config: AgentLoopConfig,
 	partialMessage: AssistantMessage | null,
@@ -571,6 +598,7 @@ async function streamAssistantResponse(
 							throw error;
 						}
 					}
+					finalMessage = normalizeAssistantToolCalls(finalMessage, context.tools);
 					if (addedPartial) {
 						context.messages[context.messages.length - 1] = finalMessage;
 					} else {
@@ -585,7 +613,10 @@ async function streamAssistantResponse(
 			}
 		}
 
-		const finalMessage = await maybePromiseWithAbort(response.result(), signal);
+		const finalMessage = normalizeAssistantToolCalls(
+			await maybePromiseWithAbort(response.result(), signal),
+			context.tools,
+		);
 		if (addedPartial) {
 			context.messages[context.messages.length - 1] = finalMessage;
 		} else {
@@ -887,7 +918,7 @@ async function executePreparedToolCall(
 				throw error;
 			}
 		}
-		return { result, isError: false };
+		return { result, isError: result.isError ?? false };
 	} catch (error) {
 		acceptingUpdates = false;
 		await raceWithAbort(

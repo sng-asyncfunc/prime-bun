@@ -50,6 +50,8 @@ export interface ShellResult {
 export interface ShellPromise extends Promise<ShellResult> {
 	text(): Promise<string>;
 	json<T = unknown>(): Promise<T>;
+	nothrow(): ShellPromise;
+	quiet(): ShellPromise;
 }
 
 interface PrimeWorkerGlobals {
@@ -702,6 +704,8 @@ function runShell(command: string): ShellPromise {
 	const shellPromise = promise as ShellPromise;
 	shellPromise.text = async () => (await promise).stdout;
 	shellPromise.json = async <T = unknown>() => JSON.parse((await promise).stdout) as T;
+	shellPromise.nothrow = () => shellPromise;
+	shellPromise.quiet = () => shellPromise;
 	return shellPromise;
 }
 
@@ -1348,6 +1352,8 @@ function structuredActionSource(actions: readonly BunStructuredAction[]): string
 			...(action.glob !== undefined ? { glob: action.glob.slice(0, 512) } : {}),
 			...(action.command !== undefined ? { command: action.command.slice(0, 512) } : {}),
 			...(action.content !== undefined ? { contentChars: action.content.length } : {}),
+			...(action.oldStr !== undefined ? { oldStrChars: action.oldStr.length } : {}),
+			...(action.newStr !== undefined ? { newStrChars: action.newStr.length } : {}),
 		})),
 	);
 }
@@ -1630,3 +1636,4 @@ lineReader.on("line", (line) => {
 		sendProtocolError(undefined, error);
 	}
 });
+lineReader.on("close", shutdown);

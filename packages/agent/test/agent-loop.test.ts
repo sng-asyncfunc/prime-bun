@@ -844,6 +844,121 @@ describe("agentLoop with AgentMessage", () => {
 		expect(executed).toEqual([[{ oldText: "before", newText: "after" }]]);
 	});
 
+	it("should preserve an error encoded by a successful tool execution", async () => {
+		const toolSchema = Type.Object({});
+		const encodedResult = {
+			content: [{ type: "text" as const, text: "runtime failed" }],
+			details: { status: "error" },
+			isError: true,
+		};
+		const tool: AgentTool<typeof toolSchema, { status: string }> = {
+			name: "runtime",
+			label: "Runtime",
+			description: "Runtime tool",
+			parameters: toolSchema,
+			execute: async () => encodedResult,
+		};
+		let callIndex = 0;
+		const events: AgentEvent[] = [];
+		const stream = agentLoop(
+			[createUserMessage("run")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			() => {
+				const mockStream = new MockAssistantStream();
+				queueMicrotask(() => {
+					mockStream.push({
+						type: "done",
+						reason: callIndex === 0 ? "toolUse" : "stop",
+						message:
+							callIndex++ === 0
+								? createAssistantMessage(
+										[{ type: "toolCall", id: "runtime-1", name: "runtime", arguments: {} }],
+										"toolUse",
+									)
+								: createAssistantMessage([{ type: "text", text: "done" }]),
+					});
+				});
+				return mockStream;
+			},
+		);
+		for await (const event of stream) events.push(event);
+
+		const messages = await stream.result();
+		const executionEnd = events.find(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> => event.type === "tool_execution_end",
+		);
+		const toolResult = messages.find((message) => message.role === "toolResult");
+		expect(executionEnd?.isError).toBe(true);
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") expect(toolResult.isError).toBe(true);
+	});
+
+	it("should normalize a non-advertised compatibility alias before persistence and execution", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "canonical",
+			label: "Canonical",
+			description: "Canonical tool",
+			parameters: toolSchema,
+			compatibilityAliases: {
+				legacy: (args) => {
+					const value = (args as { input?: unknown })?.input;
+					return typeof value === "string" ? { value: `mapped:${value}` } : undefined;
+				},
+			},
+			execute: async (_toolCallId, params) => {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: params.value }],
+					details: { value: params.value },
+				};
+			},
+		};
+		let callIndex = 0;
+		const events: AgentEvent[] = [];
+		const stream = agentLoop(
+			[createUserMessage("run")],
+			{ systemPrompt: "", messages: [], tools: [tool] },
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			() => {
+				const mockStream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const first = callIndex++ === 0;
+					mockStream.push({
+						type: "done",
+						reason: first ? "toolUse" : "stop",
+						message: first
+							? createAssistantMessage(
+									[{ type: "toolCall", id: "alias-1", name: "legacy", arguments: { input: "value" } }],
+									"toolUse",
+								)
+							: createAssistantMessage([{ type: "text", text: "done" }]),
+					});
+				});
+				return mockStream;
+			},
+		);
+		for await (const event of stream) events.push(event);
+
+		const messages = await stream.result();
+		const assistantCall = messages.flatMap((message) =>
+			message.role === "assistant" ? message.content.filter((part) => part.type === "toolCall") : [],
+		)[0];
+		const executionNames = events.flatMap((event) =>
+			event.type === "tool_execution_start" || event.type === "tool_execution_end" ? [event.toolName] : [],
+		);
+		const toolResult = messages.find((message) => message.role === "toolResult");
+		expect(executed).toEqual(["mapped:value"]);
+		expect(assistantCall).toMatchObject({ name: "canonical", arguments: { value: "mapped:value" } });
+		expect(executionNames).toEqual(["canonical", "canonical"]);
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") expect(toolResult.toolName).toBe("canonical");
+	});
+
 	it("should emit tool_execution_end in completion order but persist tool results in source order", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		let firstResolved = false;

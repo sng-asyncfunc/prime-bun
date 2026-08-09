@@ -6,9 +6,11 @@ import {
 	isOwnedSessionWorkerProcess,
 	maybeRunOwnedSessionWorkerFrontend,
 } from "./cli/owned-session-worker.js";
+import { anchorCliSubprocessTsconfig } from "./cli/subprocess-launch.js";
 import { APP_NAME } from "./config.js";
 
 export async function runCli(): Promise<void> {
+	anchorCliSubprocessTsconfig();
 	try {
 		enableCompileCache?.();
 	} catch {

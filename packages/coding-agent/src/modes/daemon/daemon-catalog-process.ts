@@ -8,6 +8,7 @@ import { deleteSessionFile } from "../../core/session-file-actions.js";
 import { readSessionInfo, type SessionInfo, SessionManager } from "../../core/session-manager.js";
 
 export const DAEMON_CATALOG_ROLE_ENV = "PRIME_AGENT_INTERNAL_DAEMON_CATALOG";
+export const DAEMON_CATALOG_IDLE_TIMEOUT_MS = 120_000;
 
 interface SessionInfoWire extends Omit<SessionInfo, "created" | "modified"> {
 	created: string;
@@ -295,6 +296,7 @@ async function handleCatalogRequest(request: CatalogRequest): Promise<void> {
 export class DaemonCatalogClient {
 	private child?: ChildProcess;
 	private starting?: Promise<void>;
+	private idleStopTimer?: ReturnType<typeof setTimeout>;
 	private readonly pending = new Map<
 		string,
 		{
@@ -305,7 +307,10 @@ export class DaemonCatalogClient {
 		}
 	>();
 
-	constructor(private readonly onDiagnostic: (message: string) => void) {}
+	constructor(
+		private readonly onDiagnostic: (message: string) => void,
+		private readonly idleTimeoutMs = DAEMON_CATALOG_IDLE_TIMEOUT_MS,
+	) {}
 
 	async start(): Promise<void> {
 		if (this.child?.connected) {
@@ -317,7 +322,8 @@ export class DaemonCatalogClient {
 		this.starting = this.spawnCatalog().finally(() => {
 			this.starting = undefined;
 		});
-		return this.starting;
+		await this.starting;
+		this.scheduleIdleStop();
 	}
 
 	async list(cwd?: string, sessionDir?: string, callbacks?: CatalogListCallbacks): Promise<SessionInfo[]> {
@@ -381,13 +387,19 @@ export class DaemonCatalogClient {
 	}
 
 	async stop(): Promise<void> {
+		this.clearIdleStopTimer();
 		const child = this.child;
 		if (!child) {
 			return;
 		}
 		await this.request({ type: "request", id: randomUUID(), command: "shutdown" }).catch(() => undefined);
-		child.disconnect();
-		this.child = undefined;
+		this.clearIdleStopTimer();
+		if (child.connected) {
+			child.disconnect();
+		}
+		if (this.child === child) {
+			this.child = undefined;
+		}
 	}
 
 	private async spawnCatalog(): Promise<void> {
@@ -435,7 +447,9 @@ export class DaemonCatalogClient {
 	}
 
 	private async request<T = void>(request: CatalogRequest, callbacks?: CatalogListCallbacks): Promise<T> {
+		this.clearIdleStopTimer();
 		await this.start();
+		this.clearIdleStopTimer();
 		const child = this.child;
 		if (!child?.connected) {
 			throw new Error("Daemon catalog is not connected");
@@ -466,6 +480,7 @@ export class DaemonCatalogClient {
 					clearTimeout(pending.timeout);
 					this.pending.delete(request.id);
 				}
+				this.scheduleIdleStop();
 				rejectRequest(error);
 			});
 		});
@@ -494,12 +509,14 @@ export class DaemonCatalogClient {
 		} else {
 			pending.reject(new Error(value.error));
 		}
+		this.scheduleIdleStop();
 	}
 
 	private handleClose(child: ChildProcess, error: Error): void {
 		if (this.child !== child) {
 			return;
 		}
+		this.clearIdleStopTimer();
 		this.child = undefined;
 		this.onDiagnostic(error.message);
 		for (const [id, pending] of this.pending) {
@@ -507,5 +524,29 @@ export class DaemonCatalogClient {
 			pending.reject(error);
 			this.pending.delete(id);
 		}
+	}
+
+	private clearIdleStopTimer(): void {
+		if (!this.idleStopTimer) {
+			return;
+		}
+		clearTimeout(this.idleStopTimer);
+		this.idleStopTimer = undefined;
+	}
+
+	private scheduleIdleStop(): void {
+		this.clearIdleStopTimer();
+		if (this.pending.size > 0 || !this.child?.connected) {
+			return;
+		}
+		this.idleStopTimer = setTimeout(() => {
+			this.idleStopTimer = undefined;
+			void this.stop().catch((error) => {
+				this.onDiagnostic(
+					`Failed to stop idle daemon catalog: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
+		}, this.idleTimeoutMs);
+		this.idleStopTimer.unref?.();
 	}
 }

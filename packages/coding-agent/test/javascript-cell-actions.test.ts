@@ -115,11 +115,33 @@ describe("JavaScriptCellComponent structured actions", () => {
 		expect(output).toContain("after");
 	});
 
+	it("renders structured edits and their completed diff", () => {
+		const output = new JavaScriptCellComponent(
+			actionState({
+				actions: [{ op: "edit", path: "notes.md", oldStr: "before", newStr: "after" }],
+				details: {
+					durationMs: 12,
+					status: "ok",
+					diffs: [{ path: "notes.md", oldStr: "before", newStr: "after", startLine: 3 }],
+				},
+				expanded: true,
+			}),
+		)
+			.render(100)
+			.map(stripAnsi)
+			.join("\n");
+
+		expect(output).toContain("edit notes.md (6→5 bytes)");
+		expect(output).toMatch(/\+1\s+-1/);
+		expect(output).toContain("after");
+	});
+
 	it("parses recognized partial action arguments without throwing", () => {
 		expect(
 			getJavaScriptActionsFromArgs({
 				actions: [
 					{ op: "read", path: "README.md", offset: 2 },
+					{ op: "edit", path: "README.md", oldStr: "before", newStr: "after" },
 					{ op: "unknown", path: "ignored" },
 					"partial",
 					{ op: "write", path: "notes.md" },
@@ -127,6 +149,7 @@ describe("JavaScriptCellComponent structured actions", () => {
 			}),
 		).toEqual([
 			{ op: "read", path: "README.md", offset: 2 },
+			{ op: "edit", path: "README.md", oldStr: "before", newStr: "after" },
 			{ op: "write", path: "notes.md" },
 		]);
 		expect(getJavaScriptActionsFromArgs({ actions: "streaming" })).toEqual([]);

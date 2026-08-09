@@ -108,6 +108,21 @@ class BunWorkerTestClient {
 		this.protocolInput.write(`${JSON.stringify(message)}\n`);
 	}
 
+	closeProtocolInput(): void {
+		this.protocolInput.end();
+	}
+
+	async waitForExit(timeoutMs = 1_000): Promise<void> {
+		if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error("Timed out waiting for Bun worker exit")), timeoutMs);
+			this.child.once("exit", () => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
+	}
+
 	async waitForType<T extends MessageType>(
 		type: T,
 		predicate: (message: MessageOfType<T>) => boolean = () => true,
@@ -1016,6 +1031,30 @@ const data = await sh("printf '{\\"answer\\":42}'").json();
 		requireSuccess(result);
 		expect(result.value).toContain('text: "shell-text"');
 		expect(result.value).toContain("answer: 42");
+	});
+
+	it("accepts Bun Shell-style no-op consumers on the configured shell promise", async () => {
+		client.send({
+			cellId: "shell-compatibility-cell",
+			code: `
+const failed = await sh("exit 7").nothrow();
+const quietText = await sh("printf quiet").quiet().text();
+({ exitCode: failed.exitCode, quietText });
+`,
+			id: "shell-compatibility-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const result = await client.waitForType("result", (message) => message.replyTo === "shell-compatibility-execute");
+		requireSuccess(result);
+		expect(result.value).toContain("exitCode: 7");
+		expect(result.value).toContain('quietText: "quiet"');
+	});
+
+	it("exits when the host closes the protocol input pipe", async () => {
+		client.closeProtocolInput();
+		await client.waitForExit();
 	});
 
 	it("round-trips host requests and emits structured displays", async () => {

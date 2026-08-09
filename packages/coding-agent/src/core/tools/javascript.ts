@@ -29,16 +29,29 @@ const CALL_OUTPUT_TRUNCATION_MARKER =
 
 const javascriptActionSchema = Type.Object(
 	{
-		op: Type.Union([Type.Literal("read"), Type.Literal("search"), Type.Literal("shell"), Type.Literal("write")], {
-			description: "Routine operation to execute without generating JavaScript source.",
-		}),
-		path: Type.Optional(Type.String({ description: "File path for read/write, or search scope directory." })),
+		op: Type.Union(
+			[
+				Type.Literal("edit"),
+				Type.Literal("read"),
+				Type.Literal("search"),
+				Type.Literal("shell"),
+				Type.Literal("write"),
+			],
+			{
+				description: "Routine operation to execute without generating JavaScript source.",
+			},
+		),
+		path: Type.Optional(Type.String({ description: "File path for edit/read/write, or search scope directory." })),
 		offset: Type.Optional(Type.Integer({ description: "One-based first line for read.", minimum: 1 })),
 		limit: Type.Optional(Type.Integer({ description: "Maximum lines for read (up to 2000).", minimum: 1 })),
 		pattern: Type.Optional(Type.String({ description: "Search pattern. Omit to list files." })),
 		glob: Type.Optional(Type.String({ description: "Optional search glob such as *.ts." })),
 		command: Type.Optional(Type.String({ description: "Configured-shell command for shell." })),
 		content: Type.Optional(Type.String({ description: "Exact UTF-8 file content for write." })),
+		oldStr: Type.Optional(
+			Type.String({ description: "Exact, unique existing text to replace for edit; include enough context." }),
+		),
+		newStr: Type.Optional(Type.String({ description: "Exact replacement text for edit; may be empty." })),
 	},
 	{ additionalProperties: false },
 );
@@ -47,7 +60,7 @@ const javascriptSchema = Type.Object({
 	actions: Type.Optional(
 		Type.Array(javascriptActionSchema, {
 			description:
-				"DEFAULT MODE for independent routine work; do not generate JavaScript for operations this covers. Batch read (path/offset/limit), search (optional path/pattern/glob; omit pattern to list files), shell (command), and write (path/content). A non-zero shell exit is returned normally and stops later actions. Use code only for dependencies or operations outside this surface.",
+				"DEFAULT MODE for independent routine work; do not generate JavaScript for operations this covers. Batch edit (path/oldStr/newStr), read (path/offset/limit), search (optional path/pattern/glob; omit pattern to list files), shell (command), and write (path/content). A failed edit/write or non-zero shell exit stops later actions. Use code only for dependencies or operations outside this surface.",
 			maxItems: 8,
 			minItems: 1,
 		}),
@@ -157,6 +170,145 @@ function resolveJavaScriptToolInput(params: JavaScriptToolInput): ResolvedJavaSc
 }
 
 export type JavaScriptToolInput = Static<typeof javascriptSchema>;
+
+interface AliasField<T> {
+	ok: boolean;
+	value?: T;
+}
+
+function aliasRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function inferStructuredActionOp(record: Record<string, unknown>): BunStructuredAction["op"] | undefined {
+	if (Object.hasOwn(record, "op")) return undefined;
+	const candidates: BunStructuredAction["op"][] = [];
+	if (Object.hasOwn(record, "command")) candidates.push("shell");
+	if (Object.hasOwn(record, "oldStr") || Object.hasOwn(record, "newStr")) candidates.push("edit");
+	if (Object.hasOwn(record, "content")) candidates.push("write");
+	if (Object.hasOwn(record, "pattern") || Object.hasOwn(record, "glob")) candidates.push("search");
+	if (candidates.length === 0 && ["path", "offset", "limit"].some((key) => Object.hasOwn(record, key))) {
+		candidates.push("read");
+	}
+	return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function prepareJavaScriptArguments(args: unknown): JavaScriptToolInput {
+	const record = aliasRecord(args);
+	if (!record || !Array.isArray(record.actions)) return args as JavaScriptToolInput;
+	let changed = false;
+	const actions = record.actions.map((candidate) => {
+		const action = aliasRecord(candidate);
+		if (!action) return candidate;
+		const op = inferStructuredActionOp(action);
+		if (!op) return candidate;
+		changed = true;
+		return { ...action, op };
+	});
+	return (changed ? { ...record, actions } : args) as JavaScriptToolInput;
+}
+
+function aliasStringField(
+	record: Record<string, unknown>,
+	keys: readonly string[],
+	options: { allowEmpty?: boolean; required?: boolean } = {},
+): AliasField<string> {
+	let resolved: string | undefined;
+	for (const key of keys) {
+		if (!Object.hasOwn(record, key)) continue;
+		const value = record[key];
+		if (typeof value !== "string" || (!options.allowEmpty && !value.trim())) return { ok: false };
+		if (resolved !== undefined && resolved !== value) return { ok: false };
+		resolved = value;
+	}
+	return options.required && resolved === undefined ? { ok: false } : { ok: true, value: resolved };
+}
+
+function aliasPositiveIntegerField(record: Record<string, unknown>, key: string): AliasField<number> {
+	if (!Object.hasOwn(record, key)) return { ok: true };
+	const value = record[key];
+	return typeof value === "number" && Number.isInteger(value) && value > 0 ? { ok: true, value } : { ok: false };
+}
+
+function actionAlias(action: BunStructuredAction): Record<string, unknown> {
+	return { actions: [action] };
+}
+
+function editAlias(args: unknown): Record<string, unknown> | undefined {
+	const record = aliasRecord(args);
+	if (!record) return undefined;
+	const path = aliasStringField(record, ["path", "file_path", "filePath"], { required: true });
+	const oldStr = aliasStringField(record, ["oldStr", "old_string", "oldText", "old_text"], { required: true });
+	const newStr = aliasStringField(record, ["newStr", "new_string", "newText", "new_text"], {
+		allowEmpty: true,
+		required: true,
+	});
+	if (!path.ok || !path.value || !oldStr.ok || !oldStr.value || !newStr.ok || newStr.value === undefined) {
+		return undefined;
+	}
+	return actionAlias({ op: "edit", path: path.value, oldStr: oldStr.value, newStr: newStr.value });
+}
+
+function shellAlias(args: unknown): Record<string, unknown> | undefined {
+	const record = aliasRecord(args);
+	if (!record) return undefined;
+	const command = aliasStringField(record, ["command", "cmd"], { required: true });
+	return command.ok && command.value ? actionAlias({ op: "shell", command: command.value }) : undefined;
+}
+
+function readAlias(args: unknown): Record<string, unknown> | undefined {
+	const record = aliasRecord(args);
+	if (!record) return undefined;
+	const path = aliasStringField(record, ["path", "file_path", "filePath"], { required: true });
+	const offset = aliasPositiveIntegerField(record, "offset");
+	const limit = aliasPositiveIntegerField(record, "limit");
+	if (!path.ok || !path.value || !offset.ok || !limit.ok) return undefined;
+	return actionAlias({
+		op: "read",
+		path: path.value,
+		...(offset.value !== undefined ? { offset: offset.value } : {}),
+		...(limit.value !== undefined ? { limit: limit.value } : {}),
+	});
+}
+
+function searchAlias(args: unknown): Record<string, unknown> | undefined {
+	const record = aliasRecord(args);
+	if (!record) return undefined;
+	const pattern = aliasStringField(record, ["pattern", "query"]);
+	const path = aliasStringField(record, ["path"]);
+	const glob = aliasStringField(record, ["glob"]);
+	if (!pattern.ok || !path.ok || !glob.ok) return undefined;
+	if (pattern.value === undefined && path.value === undefined && glob.value === undefined) return undefined;
+	return actionAlias({
+		op: "search",
+		...(pattern.value !== undefined ? { pattern: pattern.value } : {}),
+		...(path.value !== undefined ? { path: path.value } : {}),
+		...(glob.value !== undefined ? { glob: glob.value } : {}),
+	});
+}
+
+function writeAlias(args: unknown): Record<string, unknown> | undefined {
+	const record = aliasRecord(args);
+	if (!record) return undefined;
+	const path = aliasStringField(record, ["path", "file_path", "filePath"], { required: true });
+	const content = aliasStringField(record, ["content"], { allowEmpty: true, required: true });
+	if (!path.ok || !path.value || !content.ok || content.value === undefined) return undefined;
+	return actionAlias({ op: "write", path: path.value, content: content.value });
+}
+
+const javascriptCompatibilityAliases: NonNullable<ToolDefinition<typeof javascriptSchema>["compatibilityAliases"]> = {
+	bash: shellAlias,
+	edit: editAlias,
+	grep: searchAlias,
+	read: readAlias,
+	read_file: readAlias,
+	search: searchAlias,
+	shell: shellAlias,
+	write: writeAlias,
+	write_file: writeAlias,
+};
 
 export interface JavaScriptToolTimings extends KernelExecutionTimings {
 	provisioningMs: number;
@@ -368,10 +520,15 @@ export function createJavaScriptToolDefinition(
 	return {
 		name: "javascript",
 		label: "Bun",
+		compatibilityAliases: javascriptCompatibilityAliases,
 		description:
-			"Execute work in a persistent Bun notebook with two input modes. The tool name is `javascript`; `code` is only an input field, never a tool name. Default to `actions` for independent routine reads, searches, shell commands, and exact writes; batch one to eight actions, and use direct `content` to safely carry Markdown fences and backticks. Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state. Both modes share the notebook cwd, configured shell, output bounds, abort recovery, and file diffs. Run target-project commands through the target project's own environment.",
+			"Execute work in a persistent Bun notebook with two input modes. The tool name is `javascript`; `code` is only an input field, never a tool name. Default to `actions` for independent routine edits, reads, searches, shell commands, and exact writes; batch one to eight actions, and use direct `oldStr`, `newStr`, or `content` strings to safely carry Markdown fences and backticks. Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state. Both modes share the notebook cwd, configured shell, output bounds, abort recovery, and file diffs. Run target-project commands through the target project's own environment.",
 		promptSnippet:
 			"javascript - persistent Bun notebook with structured actions for routine work and code for computation",
+		promptGuidelines: [
+			"For read-only repository exploration and audits, plan first, batch independent actions, and stop after at most 12 JavaScript calls; answer from collected evidence instead of pursuing exhaustive coverage.",
+		],
+		prepareArguments: prepareJavaScriptArguments,
 		executionMode: "sequential",
 		parameters: javascriptSchema,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {

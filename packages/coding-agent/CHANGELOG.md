@@ -16,17 +16,21 @@
 - Fixed Bun notebook checkpoints duplicating aliased state and redundant recovery/persistence serialization during long sessions.
 - Improved Bun notebook long-session memory, namespace scaling, large-checkpoint cleanup, and failed-cell recovery.
 - Fixed redundant Bun Shell imports failing the first JavaScript notebook call.
-- Changed idle daemon workers to expire after 30 minutes by default, reducing memory retained across repeated sessions.
+- Changed idle daemon workers to expire after 5 minutes by default, reducing memory retained across repeated sessions.
 - Improved Bun notebook repository-search guidance to avoid repeated whole-tree scans.
 - Fixed Bun notebook audits failing on redundant preloaded-module imports and expected search no-match exits.
 - Reduced long-session Bun transcript growth by deduplicating large result metadata and guiding bounded repository inspection.
-- Fixed Bun notebook writes with Markdown code fences causing opaque syntax errors or retries from unqualified filesystem helpers.
+- Fixed Bun notebook edits and writes with Markdown code fences causing opaque syntax errors or generated-code retries.
 - Added bounded structured read, search, shell, and write actions to the Bun notebook so models can batch routine work without generating fragile JavaScript.
 - Bounded each Bun tool call to 24 KiB of displayed output while preserving action headers, head/tail context, and error tracebacks.
 - Fixed redundant `globalThis` destructuring of preloaded Bun globals and allowed multiple independent structured writes in one batch.
 - Improved exact-edit guidance for multiline content containing backticks, template expressions, and Markdown fences.
 - Fixed structured writes creating nested files and duplicating large replacement diffs into session history.
 - Fixed empty structured file listings being reported as errors.
+- Fixed common edit, shell, read, search, and write tool-name mismatches by routing them through bounded Bun notebook actions without advertising duplicate tools.
+- Changed the daemon session catalog to retire after two idle minutes and transparently restart on demand.
+- Fixed source-mode daemon workers failing after changing to a project directory when tsx was launched with a relative config path.
+- Improved read-only audits with a 12-call inspection budget and unambiguous structured-action inference.
 
 ## [0.7.1] - 2026-08-07
 

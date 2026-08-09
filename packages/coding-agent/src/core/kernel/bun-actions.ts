@@ -17,10 +17,10 @@ const BATCH_ELISION_BODY = "[body elided: 24 KiB call output budget reached — 
 const BATCH_TRUNCATION_MARKER =
 	"\n[... action output truncated by 24 KiB call output budget; re-run this action alone for detail ...]\n";
 
-const ACTION_OPERATIONS = new Set(["read", "search", "shell", "write"]);
+const ACTION_OPERATIONS = new Set(["edit", "read", "search", "shell", "write"]);
 
 export type BunStructuredAction = {
-	op: "read" | "search" | "shell" | "write";
+	op: "edit" | "read" | "search" | "shell" | "write";
 	path?: string;
 	offset?: number;
 	limit?: number;
@@ -28,6 +28,8 @@ export type BunStructuredAction = {
 	glob?: string;
 	command?: string;
 	content?: string;
+	oldStr?: string;
+	newStr?: string;
 };
 
 export type BunStructuredActionValidation =
@@ -85,6 +87,8 @@ function actionFromRecord(record: Record<string, unknown>, op: BunStructuredActi
 		...(optionalString(record, "glob") !== undefined ? { glob: optionalString(record, "glob") } : {}),
 		...(optionalString(record, "command") !== undefined ? { command: optionalString(record, "command") } : {}),
 		...(optionalString(record, "content") !== undefined ? { content: optionalString(record, "content") } : {}),
+		...(optionalString(record, "oldStr") !== undefined ? { oldStr: optionalString(record, "oldStr") } : {}),
+		...(optionalString(record, "newStr") !== undefined ? { newStr: optionalString(record, "newStr") } : {}),
 	};
 }
 
@@ -107,11 +111,14 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 		if (typeof op !== "string" || !ACTION_OPERATIONS.has(op)) {
 			return {
 				ok: false,
-				message: `Action ${number} has unknown op ${JSON.stringify(op)}; expected read, search, shell, or write.`,
+				message: `Action ${number} has unknown op ${JSON.stringify(op)}; expected edit, read, search, shell, or write.`,
 			};
 		}
 		const typedOp = op as BunStructuredAction["op"];
-		if ((typedOp === "read" || typedOp === "write") && !optionalString(candidate, "path")?.trim()) {
+		if (
+			(typedOp === "edit" || typedOp === "read" || typedOp === "write") &&
+			!optionalString(candidate, "path")?.trim()
+		) {
 			return { ok: false, message: `Action ${number} (${typedOp}) requires a non-empty "path".` };
 		}
 		if (typedOp === "shell" && !optionalString(candidate, "command")?.trim()) {
@@ -119,6 +126,12 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 		}
 		if (typedOp === "write" && typeof candidate.content !== "string") {
 			return { ok: false, message: `Action ${number} (write) requires string "content".` };
+		}
+		if (typedOp === "edit" && !optionalString(candidate, "oldStr")) {
+			return { ok: false, message: `Action ${number} (edit) requires non-empty string "oldStr".` };
+		}
+		if (typedOp === "edit" && typeof candidate.newStr !== "string") {
+			return { ok: false, message: `Action ${number} (edit) requires string "newStr".` };
 		}
 		if (candidate.offset !== undefined && !positiveInteger(candidate.offset)) {
 			return { ok: false, message: `Action ${number} (${typedOp}) "offset" must be a positive integer.` };
@@ -129,7 +142,7 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 				message: `Action ${number} (${typedOp}) "limit" must be between 1 and ${MAX_READ_LINES}.`,
 			};
 		}
-		for (const key of ["path", "pattern", "glob", "command"] as const) {
+		for (const key of ["path", "pattern", "glob", "command", "oldStr", "newStr"] as const) {
 			if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
 				return { ok: false, message: `Action ${number} (${typedOp}) "${key}" must be a string.` };
 			}
@@ -140,6 +153,16 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 					ok: false,
 					message: `Action ${number} (write) "content" exceeds the ${MAX_WRITE_CONTENT_CHARS}-character structured-write limit; use code.`,
 				};
+			}
+		}
+		if (typedOp === "edit") {
+			for (const key of ["oldStr", "newStr"] as const) {
+				if ((candidate[key] as string).length > MAX_WRITE_CONTENT_CHARS) {
+					return {
+						ok: false,
+						message: `Action ${number} (edit) "${key}" exceeds the ${MAX_WRITE_CONTENT_CHARS}-character structured-edit limit; use code.`,
+					};
+				}
 			}
 		}
 		actions.push(actionFromRecord(candidate, typedOp));
@@ -184,6 +207,8 @@ function boundBatchActionBody(value: string, maxChars: number): string {
 
 function actionHeader(action: BunStructuredAction, index: number, total: number): string {
 	switch (action.op) {
+		case "edit":
+			return `[${index}/${total} edit ${compactTarget(action.path ?? "")}]`;
 		case "read": {
 			const offset = action.offset ?? 1;
 			const limit = action.limit ?? 200;
@@ -299,6 +324,31 @@ async function oldFileForDiff(path: string, newContentBytes: number): Promise<{ 
 	}
 }
 
+function exactReplacement(
+	content: string,
+	oldStr: string,
+	newStr: string,
+	path: string,
+): {
+	content: string;
+	startLine: number;
+} {
+	const firstIndex = content.indexOf(oldStr);
+	if (firstIndex === -1) {
+		throw new Error(`Could not find the exact oldStr in ${path}; whitespace and newlines must match.`);
+	}
+	if (content.indexOf(oldStr, firstIndex + 1) !== -1) {
+		throw new Error(`oldStr appears more than once in ${path}; include more surrounding context to make it unique.`);
+	}
+	if (oldStr === newStr) {
+		throw new Error(`oldStr and newStr are identical in ${path}.`);
+	}
+	return {
+		content: content.slice(0, firstIndex) + newStr + content.slice(firstIndex + oldStr.length),
+		startLine: content.slice(0, firstIndex).split(/\r\n|\r|\n/).length,
+	};
+}
+
 export async function executeBunStructuredActions(
 	actions: readonly BunStructuredAction[],
 	options: BunActionExecutionOptions,
@@ -313,6 +363,32 @@ export async function executeBunStructuredActions(
 		const index = zeroBasedIndex + 1;
 		try {
 			switch (action.op) {
+				case "edit": {
+					const path = action.path as string;
+					const oldStr = action.oldStr as string;
+					const newStr = action.newStr as string;
+					const content = await readFile(path, "utf8");
+					const replacement = exactReplacement(content, oldStr, newStr, path);
+					await writeFile(path, replacement.content, "utf8");
+					const oldBytes = Buffer.byteLength(oldStr);
+					const newBytes = Buffer.byteLength(newStr);
+					if (oldBytes + newBytes <= MAX_PERSISTED_WRITE_DIFF_BYTES) {
+						diffs.push({ newStr, oldStr, path, startLine: replacement.startLine });
+					}
+					const diffSummary =
+						oldBytes + newBytes > MAX_PERSISTED_WRITE_DIFF_BYTES
+							? `\n[diff omitted: replacement exceeds persisted diff limit of ${MAX_PERSISTED_WRITE_DIFF_BYTES} bytes]`
+							: "";
+					sections.push(
+						actionSection(
+							action,
+							index,
+							validation.actions.length,
+							`replaced ${oldBytes} bytes with ${newBytes} bytes${diffSummary}`,
+						),
+					);
+					break;
+				}
 				case "read": {
 					const body = await readLines(action.path as string, action.offset ?? 1, action.limit ?? 200);
 					sections.push(actionSection(action, index, validation.actions.length, body || "0 lines"));
@@ -363,8 +439,8 @@ export async function executeBunStructuredActions(
 			}
 		} catch (error) {
 			sections.push(actionSection(action, index, validation.actions.length, `ERROR: ${errorMessage(error)}`));
-			if (action.op === "write") {
-				trailers.push("[batch stopped after write failure]");
+			if (action.op === "edit" || action.op === "write") {
+				trailers.push(`[batch stopped after ${action.op} failure]`);
 				break;
 			}
 		}

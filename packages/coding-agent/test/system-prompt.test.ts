@@ -55,8 +55,9 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Installed JavaScript skill globals (prepared): `websearch`, `refine`.");
 		expect(prompt).toContain("Bun is the agent's long-lived JavaScript notebook");
 		expect(prompt).toContain(
-			"Default to the `actions` input for independent routine reads, searches, shell commands, and exact writes",
+			"Default to the `actions` input for independent routine edits, reads, searches, shell commands, and exact writes",
 		);
+		expect(prompt).toContain("Prefer structured `edit` (`path`, `oldStr`, `newStr`)");
 		expect(prompt).toContain(
 			'{"actions":[{"op":"search","path":"src","pattern":"TODO","glob":"*.ts"},{"op":"read","path":"package.json"}]}',
 		);
@@ -71,6 +72,9 @@ describe("buildRlmPrompt", () => {
 		expect(shIndex).toBeGreaterThan(bunShellIndex);
 		expect(prompt).toContain("Do not import `$` from `bun`");
 		expect(prompt).toContain("`sh(command)` uses the configured project shell and command prefix");
+		expect(prompt).toContain(
+			"`.text()` returns the stdout string directly, so never destructure `{ stdout }` from it",
+		);
 		expect(prompt).toContain("Do not use `child_process` (`execSync`, `spawnSync`, `exec`) in the notebook");
 		expect(prompt).toContain("including expected search misses");
 		expect(prompt).toContain("await sh(command)");
@@ -84,7 +88,7 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("prefer `rg -n` and `rg --files`");
 		expect(prompt).toContain("Never use recursive `grep -rn`");
 		expect(prompt).toContain("Batch multiple filename or pattern probes into one search");
-		expect(prompt).toContain("Unless the user asks for an exhaustive review, use at most 20 `javascript` calls");
+		expect(prompt).toContain("Unless the user asks for an exhaustive review, use at most 12 `javascript` calls");
 		expect(prompt).toContain("synthesize the requested answer before the budget is exhausted");
 		expect(prompt).toContain("text containing backticks or Markdown fences");
 		expect(prompt).toContain('array of ordinary quoted lines joined with "\\n"');
@@ -192,7 +196,7 @@ describe("buildRlmPrompt", () => {
 		});
 		expect(withEdit).toContain("await edit({ path: 'pkg/file.ts', oldStr, newStr })");
 		expect(withEdit).toContain("read the exact target first");
-		expect(withEdit).toContain("ordinary quoted strings with `\\n` escapes instead of template literals");
+		expect(withEdit).toContain("use a structured `edit` action with `path`, `oldStr`, and `newStr`");
 		expect(withEdit).toContain("reread the affected window after editing");
 
 		const withoutEdit = buildRlmPrompt({
@@ -424,12 +428,15 @@ describe("createJavaScriptToolDefinition", () => {
 		expect(tool.description).toContain("two input modes");
 		expect(tool.description).toContain("The tool name is `javascript`; `code` is only an input field");
 		expect(tool.description).toContain(
-			"Default to `actions` for independent routine reads, searches, shell commands",
+			"Default to `actions` for independent routine edits, reads, searches, shell commands",
 		);
 		expect(tool.description).toContain("Use `code` for computation, branching, dependent operations");
 		expect(tool.description).toContain("one to eight actions");
 		expect(tool.description).toContain("target project's own environment");
 		expect(tool.promptSnippet).toContain("persistent Bun notebook");
+		expect(tool.promptGuidelines).toContain(
+			"For read-only repository exploration and audits, plan first, batch independent actions, and stop after at most 12 JavaScript calls; answer from collected evidence instead of pursuing exhaustive coverage.",
+		);
 		const parameters = tool.parameters as unknown as {
 			properties: Record<string, { description?: unknown; items?: unknown; maxItems?: unknown; minItems?: unknown }>;
 			required?: string[];

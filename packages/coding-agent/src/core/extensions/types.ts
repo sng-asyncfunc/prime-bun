@@ -10,6 +10,7 @@
 
 import type {
 	AgentMessage,
+	AgentTool,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ThinkingLevel,
@@ -435,6 +436,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	promptGuidelines?: string[];
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;
+	/** Non-advertised legacy tool names normalized to this definition before validation. */
+	compatibilityAliases?: AgentTool<TParams>["compatibilityAliases"];
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
 	renderShell?: "default" | "self";
 	/** Replay renderer to use for removed built-ins in saved transcripts. */

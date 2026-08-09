@@ -24,7 +24,7 @@ describe("Bun structured actions", () => {
 
 		expect(result).toEqual({
 			ok: false,
-			message: 'Action 1 has unknown op "remove"; expected read, search, shell, or write.',
+			message: 'Action 1 has unknown op "remove"; expected edit, read, search, shell, or write.',
 		});
 	});
 
@@ -43,6 +43,16 @@ describe("Bun structured actions", () => {
 			name: "a write without content",
 			actions: [{ op: "write", path: "out.md" }],
 			message: 'Action 1 (write) requires string "content".',
+		},
+		{
+			name: "an edit without old text",
+			actions: [{ op: "edit", path: "out.md", newStr: "replacement" }],
+			message: 'Action 1 (edit) requires non-empty string "oldStr".',
+		},
+		{
+			name: "an edit without new text",
+			actions: [{ op: "edit", path: "out.md", oldStr: "target" }],
+			message: 'Action 1 (edit) requires string "newStr".',
 		},
 		{
 			name: "a fractional offset",
@@ -78,6 +88,33 @@ describe("Bun structured actions", () => {
 			actions: [
 				{ op: "write", path: "a.md", content: "a" },
 				{ op: "write", path: "b.md", content: "b" },
+			],
+		});
+	});
+
+	it("accepts exact structured edits without embedding them in JavaScript", () => {
+		const inputInterpolation = "${" + "input}";
+		const outputInterpolation = "${" + "output}";
+		const oldStr = `\`\`\`ts\nconst value = \`${inputInterpolation}\`;\n\`\`\``;
+		const newStr = `\`\`\`ts\nconst value = \`${outputInterpolation}\`;\n\`\`\``;
+		const result = validateBunStructuredActions([
+			{
+				op: "edit",
+				path: "README.md",
+				oldStr,
+				newStr,
+			},
+		]);
+
+		expect(result).toEqual({
+			ok: true,
+			actions: [
+				{
+					op: "edit",
+					path: "README.md",
+					oldStr,
+					newStr,
+				},
 			],
 		});
 	});
@@ -169,6 +206,44 @@ describe("Bun structured actions", () => {
 		expect(await readFile(target, "utf8")).toBe(content);
 		expect(result.diffs).toEqual([{ path: target, oldStr: "before\n", newStr: content, startLine: 1 }]);
 		expect(result.output).toContain(`wrote ${Buffer.byteLength(content)} bytes`);
+	});
+
+	it("edits one exact fenced block and returns a targeted diff", async () => {
+		const directory = await temporaryDirectory();
+		const target = join(directory, "fenced.md");
+		const oldStr = "Duplicate anchor.\nChange only this second copy.";
+		const newStr = "Duplicate anchor.\nSecond copy changed exactly.";
+		const original = `# Fixture\n\n\`\`\`ts\nconst message = \`\${value}\`;\n\`\`\`\n\n${oldStr}\n`;
+		await writeFile(target, original, "utf8");
+
+		const result = await executeBunStructuredActions([{ op: "edit", path: target, oldStr, newStr }], {
+			runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+		});
+
+		expect(await readFile(target, "utf8")).toBe(original.replace(oldStr, newStr));
+		expect(result.diffs).toEqual([{ path: target, oldStr, newStr, startLine: 7 }]);
+		expect(result.output).toContain(
+			`replaced ${Buffer.byteLength(oldStr)} bytes with ${Buffer.byteLength(newStr)} bytes`,
+		);
+	});
+
+	it("stops the batch when an exact edit target is ambiguous", async () => {
+		const directory = await temporaryDirectory();
+		const target = join(directory, "duplicate.txt");
+		const later = join(directory, "later.txt");
+		await writeFile(target, "same\nsame\n", "utf8");
+
+		const result = await executeBunStructuredActions(
+			[
+				{ op: "edit", path: target, oldStr: "same", newStr: "changed" },
+				{ op: "write", path: later, content: "must not run\n" },
+			],
+			{ runShell: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+		);
+
+		expect(result.output).toContain("appears more than once");
+		expect(result.output).toContain("batch stopped after edit failure");
+		await expect(readFile(later, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("writes multiple files and returns one diff per file", async () => {

@@ -7,13 +7,25 @@ export interface CliSubprocessLaunchSpec {
 	args: string[];
 }
 
+export function anchorCliSubprocessTsconfig(environment: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): void {
+	const configuredTsconfig = environment.TSX_TSCONFIG_PATH;
+	if (configuredTsconfig && !isAbsolute(configuredTsconfig)) {
+		environment.TSX_TSCONFIG_PATH = resolve(cwd, configuredTsconfig);
+	}
+}
+
 export function createCliSubprocessEnv(
 	source: NodeJS.ProcessEnv = process.env,
 	entrypoint = process.argv[1],
 	execArgs: readonly string[] = process.execArgv,
 ): NodeJS.ProcessEnv {
 	const environment = { ...source };
-	if (environment.TSX_TSCONFIG_PATH !== undefined || !entrypoint || !execArgs.some((arg) => arg.includes("tsx"))) {
+	const configuredTsconfig = environment.TSX_TSCONFIG_PATH;
+	if (configuredTsconfig !== undefined) {
+		anchorCliSubprocessTsconfig(environment);
+		return environment;
+	}
+	if (!entrypoint || !execArgs.some((arg) => arg.includes("tsx"))) {
 		return environment;
 	}
 	let directory = dirname(resolve(entrypoint));

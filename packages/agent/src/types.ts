@@ -350,6 +350,8 @@ export interface AgentToolResult<T> {
 	content: (TextContent | ImageContent)[];
 	/** Arbitrary structured details for logs or UI rendering. */
 	details: T;
+	/** Whether the tool completed with an encoded error instead of throwing. */
+	isError?: boolean;
 	/**
 	 * Hint that the agent should stop after the current tool batch.
 	 * Early termination only happens when every finalized tool result in the batch sets this to true.
@@ -364,6 +366,11 @@ export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
 	/** Human-readable label for UI display. */
 	label: string;
+	/**
+	 * Non-advertised legacy names that can be normalized to this tool before validation.
+	 * Returning undefined leaves the original call unresolved.
+	 */
+	compatibilityAliases?: Readonly<Record<string, (args: unknown) => Record<string, unknown> | undefined>>;
 	/**
 	 * Optional compatibility shim for raw tool-call arguments before schema validation.
 	 * Must return an object that matches `TParameters`.

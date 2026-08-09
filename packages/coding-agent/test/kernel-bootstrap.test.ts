@@ -49,6 +49,7 @@ function createRuntimeAssets(): string {
 		"bun-worker",
 		"bun-protocol",
 		"bun-cell-transform",
+		"bun-actions",
 		"bun-rlm-runtime",
 		"bun-runtime-globals",
 		"state-snapshot",
@@ -128,6 +129,7 @@ describe("Bun kernel bootstrap", () => {
 
 		expect(runtime).toMatchObject({ path: bun, version: "1.3.14" });
 		expectProvisioned(runtime, kernelDirectory);
+		expect(readFileSync(join(kernelDirectory, "bun-actions.ts"), "utf8")).toContain("bun_actions");
 		expect(readFileSync(logPath, "utf8")).toBe("install --production\n");
 	});
 

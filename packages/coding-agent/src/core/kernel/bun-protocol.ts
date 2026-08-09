@@ -1,4 +1,6 @@
-export const BUN_WORKER_PROTOCOL_VERSION = 5;
+import type { BunStructuredAction } from "./bun-actions.js";
+
+export const BUN_WORKER_PROTOCOL_VERSION = 6;
 
 interface BunWorkerProtocolMessage {
 	id: string;
@@ -29,6 +31,13 @@ export interface ExecuteBunCellMessage extends BunWorkerProtocolMessage {
 	type: "execute";
 	cellId: string;
 	code: string;
+	maxResultChars?: number;
+}
+
+export interface ExecuteBunActionsMessage extends BunWorkerProtocolMessage {
+	type: "execute_actions";
+	cellId: string;
+	actions: BunStructuredAction[];
 	maxResultChars?: number;
 }
 
@@ -71,6 +80,7 @@ export interface ShutdownBunWorkerMessage extends BunWorkerProtocolMessage {
 export type HostToBunWorkerMessage =
 	| InitializeBunWorkerMessage
 	| ExecuteBunCellMessage
+	| ExecuteBunActionsMessage
 	| ListBunWorkerNamesMessage
 	| SnapshotBunWorkerMessage
 	| RestoreBunWorkerMessage

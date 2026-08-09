@@ -43,6 +43,54 @@ describe("Bun KernelManager", () => {
 		expect(manager.isRunning).toBe(true);
 	});
 
+	it("executes an exact structured write without adding notebook bindings", async () => {
+		const manager = createManager();
+		const target = join(directory, "fenced.md");
+		const interpolation = "${" + "value}";
+		const content = ["# Example", "", "```ts", `const template = \`${interpolation}\`;`, "```", ""].join("\n");
+
+		const result = await manager.executeActions([{ op: "write", path: target, content }]);
+
+		expect(result).toMatchObject({ status: "ok" });
+		expect(await readFile(target, "utf8")).toBe(content);
+		expect(result.diffs).toEqual([{ path: target, oldStr: "", newStr: content, startLine: 1 }]);
+		expect(await manager.listNamespaceNames()).toEqual([]);
+	});
+
+	it("keeps search misses and non-zero shell exits out of the cell-error path", async () => {
+		const manager = createManager();
+		await writeFile(join(directory, "present.txt"), "present\n", "utf8");
+
+		const result = await manager.executeActions([
+			{ op: "search", path: directory, pattern: "definitely-absent-pattern" },
+			{ op: "shell", command: `${JSON.stringify(process.execPath)} -e "process.exit(7)"` },
+		]);
+
+		expect(result.status).toBe("ok");
+		expect(result.error).toBeUndefined();
+		expect(result.stdout).toContain("0 matches");
+		expect(result.stdout).toContain("exitCode: 7");
+		expect(result.stdout).toContain("stopped after shell exit 7");
+	});
+
+	it("aborts a structured batch, recovers the worker, and skips later actions", async () => {
+		const manager = createManager();
+		const target = join(directory, "must-not-run-after-action-abort.txt");
+		const controller = new AbortController();
+		const execution = manager.executeActions(
+			[
+				{ op: "shell", command: `${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 10000)"` },
+				{ op: "write", path: target, content: "unexpected" },
+			],
+			{ signal: controller.signal },
+		);
+		setTimeout(() => controller.abort(), 100);
+
+		await expect(execution).resolves.toMatchObject({ status: "aborted" });
+		expect(existsSync(target)).toBe(false);
+		await expect(manager.execute("40 + 2;")).resolves.toMatchObject({ result: "42", status: "ok" });
+	}, 10_000);
+
 	it("starts the isolated Bun worker in compact heap mode by default", async () => {
 		const manager = createManager();
 

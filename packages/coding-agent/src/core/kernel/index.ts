@@ -13,6 +13,7 @@ import {
 	type KernelBootstrapProgressHandler,
 	type PreparedJavaScriptSkillRuntimeInfo,
 } from "./bootstrap.js";
+import type { BunStructuredAction } from "./bun-actions.js";
 import { createHarnessHostHandlers } from "./bun-harness-host.js";
 import {
 	BUN_WORKER_PROTOCOL_VERSION,
@@ -101,6 +102,10 @@ export interface ExecuteOptions {
 	maxOutputChars?: number;
 	internal?: boolean;
 }
+
+type KernelExecutionInput =
+	| { type: "execute"; code: string }
+	| { type: "execute_actions"; actions: readonly BunStructuredAction[] };
 
 export interface KernelDiffDisplay {
 	path: string;
@@ -735,6 +740,14 @@ export class KernelManager {
 	}
 
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+		return this.executeInput({ code, type: "execute" }, opts);
+	}
+
+	async executeActions(actions: readonly BunStructuredAction[], opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+		return this.executeInput({ actions, type: "execute_actions" }, opts);
+	}
+
+	private async executeInput(input: KernelExecutionInput, opts: ExecuteOptions): Promise<ExecuteResult> {
 		const totalStartedAt = performance.now();
 		if (opts.signal?.aborted) return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
 		const startupStartedAt = performance.now();
@@ -760,7 +773,7 @@ export class KernelManager {
 					}
 					checkpointMs = elapsedMilliseconds(checkpointStartedAt);
 				}
-				executionOutcome ??= await this.executeInner(code, opts);
+				executionOutcome ??= await this.executeInner(input, opts);
 				const { result, stateChanged } = executionOutcome;
 				if (stateChanged) {
 					this.recoverySnapshotDirty = true;
@@ -791,7 +804,7 @@ export class KernelManager {
 		);
 	}
 
-	private async executeInner(code: string, opts: ExecuteOptions): Promise<KernelExecutionOutcome> {
+	private async executeInner(input: KernelExecutionInput, opts: ExecuteOptions): Promise<KernelExecutionOutcome> {
 		if (this.state !== "running") throw new Error("Bun kernel is not running");
 		const requestId = randomUUID();
 		const cellId = randomUUID();
@@ -799,7 +812,7 @@ export class KernelManager {
 			aborting: false,
 			attachments: [],
 			cellId,
-			code,
+			code: input.type === "execute" ? input.code : "[structured actions]",
 			diffs: [],
 			maxChars: Math.max(0, Math.floor(opts.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS)),
 			opts,
@@ -823,17 +836,25 @@ export class KernelManager {
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		if (opts.signal?.aborted) onAbort();
 
-		const response = this.sendRequest(
-			{
-				cellId,
-				code,
-				id: requestId,
-				maxResultChars: execution.maxChars,
-				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
-				type: "execute",
-			},
-			"result",
-		).then(
+		const request: HostToBunWorkerMessage =
+			input.type === "execute"
+				? {
+						cellId,
+						code: input.code,
+						id: requestId,
+						maxResultChars: execution.maxChars,
+						protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+						type: "execute",
+					}
+				: {
+						actions: [...input.actions],
+						cellId,
+						id: requestId,
+						maxResultChars: execution.maxChars,
+						protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+						type: "execute_actions",
+					};
+		const response = this.sendRequest(request, "result").then(
 			(message) => ({ kind: "result" as const, message }),
 			(error: unknown) => ({ kind: "error" as const, error }),
 		);

@@ -14,6 +14,7 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import * as utilModule from "node:util";
 import { $ } from "bun";
+import { type BunStructuredAction, executeBunStructuredActions } from "./bun-actions.js";
 import { type ModuleBindingRecipe, transformJavaScriptCell } from "./bun-cell-transform.js";
 import {
 	BUN_WORKER_PROTOCOL_VERSION,
@@ -116,6 +117,7 @@ const MAX_RESULT_PROJECTION_KEY_CHARS = 256;
 const MAX_SKILL_UNAVAILABLE_REASON_CHARS = 512;
 const MAX_ERROR_SOURCE_LINE_CHARS = 512;
 const MAX_WRITEV_BUFFERS = 1024;
+const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
 const CELL_LOCAL_RUNTIME_MODULE_SPECIFIERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 	["fs", new Set(["fs", "node:fs"])],
 	["os", new Set(["os", "node:os"])],
@@ -1333,6 +1335,101 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 	}
 }
 
+function structuredActionSource(actions: readonly BunStructuredAction[]): string {
+	return JSON.stringify(
+		actions.map((action) => ({
+			op: action.op,
+			...(action.path !== undefined ? { path: action.path.slice(0, 512) } : {}),
+			...(action.offset !== undefined ? { offset: action.offset } : {}),
+			...(action.limit !== undefined ? { limit: action.limit } : {}),
+			...(action.pattern !== undefined ? { pattern: action.pattern.slice(0, 512) } : {}),
+			...(action.glob !== undefined ? { glob: action.glob.slice(0, 512) } : {}),
+			...(action.command !== undefined ? { command: action.command.slice(0, 512) } : {}),
+			...(action.content !== undefined ? { contentChars: action.content.length } : {}),
+		})),
+	);
+}
+
+async function executeActions(message: Extract<HostToBunWorkerMessage, { type: "execute_actions" }>): Promise<void> {
+	if (!initialized) {
+		flushCellStreams(message.cellId);
+		send({
+			cellId: message.cellId,
+			durationMs: 0,
+			error: { message: "Bun worker is not initialized", name: "InitializationError" },
+			id: randomUUID(),
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			replyTo: message.id,
+			stateChanged: false,
+			status: "error",
+			type: "result",
+		});
+		return;
+	}
+	if (activeExecutionId) {
+		flushCellStreams(message.cellId);
+		send({
+			cellId: message.cellId,
+			durationMs: 0,
+			error: { message: "Bun worker is already executing a cell", name: "BusyError" },
+			id: randomUUID(),
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			replyTo: message.id,
+			stateChanged: false,
+			status: "error",
+			type: "result",
+		});
+		return;
+	}
+
+	activeExecutionId = message.id;
+	activeCell = { cellId: message.cellId, source: structuredActionSource(message.actions) };
+	lastCell = activeCell;
+	const startedAt = performance.now();
+	try {
+		await cellContext.run(activeCell, async () => {
+			const result = await executeBunStructuredActions(message.actions, { runShell });
+			for (const diff of result.diffs) {
+				display(DIFF_DISPLAY_MIME, {
+					new_str: diff.newStr,
+					old_str: diff.oldStr,
+					path: diff.path,
+					start_line: diff.startLine,
+				});
+			}
+			if (result.output) process.stdout.write(result.output);
+		});
+		flushCellStreams(message.cellId);
+		send({
+			bindingNames: [],
+			cellId: message.cellId,
+			durationMs: performance.now() - startedAt,
+			id: randomUUID(),
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			replyTo: message.id,
+			stateChanged: false,
+			status: "ok",
+			type: "result",
+		});
+	} catch (error) {
+		flushCellStreams(message.cellId);
+		send({
+			cellId: message.cellId,
+			durationMs: performance.now() - startedAt,
+			error: normalizeError(error),
+			id: randomUUID(),
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			replyTo: message.id,
+			stateChanged: false,
+			status: "error",
+			type: "result",
+		});
+	} finally {
+		activeCell = undefined;
+		activeExecutionId = undefined;
+	}
+}
+
 async function initialize(message: Extract<HostToBunWorkerMessage, { type: "initialize" }>): Promise<void> {
 	try {
 		initialized = false;
@@ -1477,6 +1574,9 @@ function handleMessage(message: HostToBunWorkerMessage): void {
 			return;
 		case "execute":
 			void executeCell(message);
+			return;
+		case "execute_actions":
+			void executeActions(message);
 			return;
 		case "list_names":
 			reconcileBindings();

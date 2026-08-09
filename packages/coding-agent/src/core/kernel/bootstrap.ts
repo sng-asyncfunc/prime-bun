@@ -34,6 +34,7 @@ const RUNTIME_ASSET_NAMES = [
 	"bun-worker",
 	"bun-protocol",
 	"bun-cell-transform",
+	"bun-actions",
 	"bun-rlm-runtime",
 	"bun-runtime-globals",
 	"state-snapshot",

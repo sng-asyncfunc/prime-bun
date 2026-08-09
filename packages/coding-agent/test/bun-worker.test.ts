@@ -247,6 +247,76 @@ describe("Bun worker", () => {
 		expect(names.names).toEqual(["state"]);
 	});
 
+	it("reconciles direct global mutations only when the namespace is observed", async () => {
+		client.send({
+			cellId: "namespace-probe-setup",
+			code: `
+const namespaceProbe = { scans: 0 };
+const originalGetOwnPropertyNames = Object.getOwnPropertyNames;
+Object.getOwnPropertyNames = (value) => {
+	if (value === globalThis) namespaceProbe.scans += 1;
+	return originalGetOwnPropertyNames(value);
+};
+globalThis.discoveredName = 42;
+`,
+			id: "namespace-probe-setup-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		await client.waitForType("result", (message) => message.replyTo === "namespace-probe-setup-execute");
+
+		client.send({
+			cellId: "namespace-probe-ordinary",
+			code: "1 + 1;",
+			id: "namespace-probe-ordinary-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		await client.waitForType("result", (message) => message.replyTo === "namespace-probe-ordinary-execute");
+
+		client.send({
+			cellId: "namespace-probe-count",
+			code: "namespaceProbe.scans;",
+			id: "namespace-probe-count-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		await expect(
+			client.waitForType("result", (message) => message.replyTo === "namespace-probe-count-execute"),
+		).resolves.toMatchObject({ status: "ok", value: "0" });
+
+		client.send({
+			id: "namespace-probe-first-list",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "list_names",
+		});
+		const firstNames = await client.waitForType(
+			"list_names_result",
+			(message) => message.replyTo === "namespace-probe-first-list",
+		);
+		expect(firstNames.names).toContain("discoveredName");
+
+		client.send({
+			cellId: "namespace-probe-delete",
+			code: "delete globalThis.discoveredName;",
+			id: "namespace-probe-delete-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		await client.waitForType("result", (message) => message.replyTo === "namespace-probe-delete-execute");
+
+		client.send({
+			id: "namespace-probe-second-list",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "list_names",
+		});
+		const secondNames = await client.waitForType(
+			"list_names_result",
+			(message) => message.replyTo === "namespace-probe-second-list",
+		);
+		expect(secondNames.names).not.toContain("discoveredName");
+	});
+
 	it("executes erasable TypeScript syntax", async () => {
 		client.send({
 			cellId: "typescript-cell",

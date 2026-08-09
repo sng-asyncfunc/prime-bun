@@ -821,6 +821,7 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 	};
 	try {
 		if (activeExecutionId) throw new Error("Cannot snapshot while a Bun cell is executing");
+		reconcileBindings();
 		if (message.includeRuntimeState) {
 			const runtimeEntry: SnapshotPayloadEntry = {
 				data: Buffer.from(JSON.stringify(captureRuntimeState()), "utf8"),
@@ -1191,7 +1192,6 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 			type: "result",
 		});
 	} finally {
-		reconcileBindings();
 		activeCell = undefined;
 		activeExecutionId = undefined;
 	}
@@ -1343,6 +1343,7 @@ function handleMessage(message: HostToBunWorkerMessage): void {
 			void executeCell(message);
 			return;
 		case "list_names":
+			reconcileBindings();
 			send({
 				id: randomUUID(),
 				names: [...bindings].filter((name) => !name.startsWith("_") && !runtimeBindingNames.has(name)).sort(),

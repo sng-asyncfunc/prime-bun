@@ -196,6 +196,15 @@ interface KernelRestoreOutcome extends RestoreResult {
 	runtimeRestored: boolean;
 }
 
+interface KernelSnapshotOutcome {
+	snapshot: SnapshotResult;
+	persistentMirror?: {
+		bytes: number;
+		path: string;
+		error?: string;
+	};
+}
+
 function publicRestoreResult(result: KernelRestoreOutcome): RestoreResult {
 	return { failed: result.failed, path: result.path, restored: result.restored };
 }
@@ -1065,12 +1074,28 @@ export class KernelManager {
 	}
 
 	private async flushRecoverySnapshot(signal?: AbortSignal): Promise<SnapshotResult | null> {
-		const result = await this.snapshotTo(this.getRecoverySnapshotConfig(), true, signal);
+		const recoveryConfig = this.getRecoverySnapshotConfig();
+		const persistentCandidate = this.persistentSnapshotDirty ? this.options.snapshot : undefined;
+		const persistentMirror =
+			persistentCandidate &&
+			(persistentCandidate.maxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES) ===
+				(recoveryConfig.maxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES)
+				? persistentCandidate
+				: undefined;
+		const outcome = await this.snapshotTo(recoveryConfig, true, signal, persistentMirror);
+		const result = outcome?.snapshot ?? null;
 		if (result) {
 			this.recoverySnapshotDirty = false;
 			this.recoverySnapshotAvailable = true;
 			this.recoveryCheckpointStatus = "ready";
 			this.lastRecoveryCheckpoint = result;
+			if (persistentMirror && outcome?.persistentMirror) {
+				if (outcome.persistentMirror.error) {
+					this.appendKernelDiagnostic(`persistent state snapshot failed: ${outcome.persistentMirror.error}`);
+				} else {
+					this.persistentSnapshotDirty = false;
+				}
+			}
 		}
 		return result;
 	}
@@ -1123,7 +1148,7 @@ export class KernelManager {
 
 	private async flushPersistentSnapshot(): Promise<SnapshotResult | null> {
 		if (!this.options.snapshot) return null;
-		const result = await this.snapshotTo(this.options.snapshot, false);
+		const result = (await this.snapshotTo(this.options.snapshot, false))?.snapshot ?? null;
 		if (result) this.persistentSnapshotDirty = false;
 		return result;
 	}
@@ -1132,7 +1157,8 @@ export class KernelManager {
 		config: KernelSnapshotConfig,
 		includeRuntimeState: boolean,
 		signal?: AbortSignal,
-	): Promise<SnapshotResult | null> {
+		persistentMirror?: KernelSnapshotConfig,
+	): Promise<KernelSnapshotOutcome | null> {
 		if (this.state !== "running") return null;
 		const request = this.sendRequest(
 			{
@@ -1141,6 +1167,9 @@ export class KernelManager {
 				manifestPath: config.manifestPath,
 				maxBytes: config.maxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES,
 				path: config.path,
+				...(persistentMirror
+					? { persistentMirror: { manifestPath: persistentMirror.manifestPath, path: persistentMirror.path } }
+					: {}),
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				type: "snapshot",
 			},
@@ -1167,7 +1196,7 @@ export class KernelManager {
 					.join("; ")}`,
 			);
 		}
-		return snapshot;
+		return { snapshot, ...(result.persistentMirror ? { persistentMirror: result.persistentMirror } : {}) };
 	}
 
 	private async restoreFrom(config: KernelSnapshotConfig, required = false): Promise<KernelRestoreOutcome | null> {
@@ -1250,7 +1279,10 @@ export class KernelManager {
 		if (this.snapshotTimer) globalThis.clearTimeout(this.snapshotTimer);
 		this.snapshotTimer = globalThis.setTimeout(() => {
 			this.snapshotTimer = undefined;
-			void this.withExecutionLock(() => this.flushPersistentSnapshot());
+			void this.withExecutionLock(async () => {
+				if (this.recoverySnapshotDirty) await this.requireRecoveryCheckpoint();
+				if (this.persistentSnapshotDirty) await this.flushPersistentSnapshot();
+			}).catch((error) => this.appendKernelDiagnostic(`background state snapshot failed: ${errorMessage(error)}`));
 		}, this.options.snapshot.debounceMs ?? DEFAULT_SNAPSHOT_DEBOUNCE_MS);
 		this.snapshotTimer.unref?.();
 	}

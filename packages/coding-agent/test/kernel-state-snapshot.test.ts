@@ -23,18 +23,34 @@ describe("Bun kernel state snapshot paths", () => {
 });
 
 describe("Bun snapshot binary format", () => {
-	function legacyV2ImportPayload(name: string, specifier: string): Buffer {
-		const data = Buffer.from(specifier, "utf8");
+	function handBuiltPayload(
+		version: number,
+		entries: Array<{ name: string; data: Uint8Array; kind?: string }>,
+	): Buffer {
+		let offset = 0;
 		const header = Buffer.from(
 			JSON.stringify({
-				entries: [{ kind: "import", length: data.byteLength, name, offset: 0 }],
-				version: 2,
+				entries: entries.map((entry) => {
+					const metadata = {
+						...(entry.kind ? { kind: entry.kind } : {}),
+						length: entry.data.byteLength,
+						name: entry.name,
+						offset,
+					};
+					offset += entry.data.byteLength;
+					return metadata;
+				}),
+				version,
 			}),
 			"utf8",
 		);
 		const prefix = Buffer.alloc(4);
 		prefix.writeUInt32BE(header.byteLength);
-		return Buffer.concat([prefix, header, data]);
+		return Buffer.concat([prefix, header, ...entries.map((entry) => entry.data)]);
+	}
+
+	function legacyV2ImportPayload(name: string, specifier: string): Buffer {
+		return handBuiltPayload(2, [{ data: Buffer.from(specifier, "utf8"), kind: "import", name }]);
 	}
 
 	it("materializes the legacy payload from zero-copy entry parts", () => {
@@ -50,6 +66,19 @@ describe("Bun snapshot binary format", () => {
 		expect(encoded.byteLength).toBe(payload.byteLength);
 		alpha[1] = 89;
 		expect(encoded.parts[2]?.[1]).toBe(89);
+	});
+
+	it("decodes payload entries without copying them through Uint8Array.from", () => {
+		const payload = encodeSnapshotPayload([{ name: "alpha", data: Uint8Array.from([1, 2, 3]) }]);
+		const fromSpy = vi.spyOn(Uint8Array, "from").mockImplementation(() => {
+			throw new Error("snapshot decode must not copy entry buffers");
+		});
+
+		try {
+			expect(decodeSnapshotPayload(payload)).toEqual([{ name: "alpha", data: new Uint8Array([1, 2, 3]) }]);
+		} finally {
+			fromSpy.mockRestore();
+		}
 	});
 
 	it("round-trips independently serialized binding blobs", () => {
@@ -69,7 +98,7 @@ describe("Bun snapshot binary format", () => {
 		const headerLength = payload.readUInt32BE(0);
 		const header = JSON.parse(payload.subarray(4, 4 + headerLength).toString("utf8")) as { version: number };
 
-		expect(header.version).toBe(3);
+		expect(header.version).toBe(4);
 		expect(decodeSnapshotPayload(payload)).toEqual([
 			{ name: "alpha", data: Uint8Array.from([1, 2, 3]) },
 			{
@@ -93,6 +122,18 @@ describe("Bun snapshot binary format", () => {
 	it("decodes hand-built v2 import entries", () => {
 		expect(decodeSnapshotPayload(legacyV2ImportPayload("pathModule", "node:path"))).toEqual([
 			{ data: Uint8Array.from(Buffer.from("node:path")), kind: "import", name: "pathModule" },
+		]);
+	});
+
+	it("decodes graph bindings from version 4 and scalar entries from version 3", () => {
+		const graphData = Uint8Array.from([3, 5, 8]);
+		const scalarData = Uint8Array.from([13, 21]);
+
+		expect(
+			decodeSnapshotPayload(handBuiltPayload(4, [{ data: graphData, kind: "bindings", name: "\0prime:bindings" }])),
+		).toEqual([{ data: graphData, kind: "bindings", name: "\0prime:bindings" }]);
+		expect(decodeSnapshotPayload(handBuiltPayload(3, [{ data: scalarData, name: "legacyScalar" }]))).toEqual([
+			{ data: scalarData, name: "legacyScalar" },
 		]);
 	});
 

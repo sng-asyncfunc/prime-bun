@@ -13,6 +13,7 @@
 - Changed JavaScript tool summaries to use a compact `js` label, adaptive two-row intent previews, and meaningful operations instead of cwd setup.
 - Changed the source-checkout command to npm-linked `prime-bun`, with Prime Bun help text and a separate default daemon socket.
 - Fixed chat input and scrolling lag during high-frequency response streaming.
+- Fixed Bun notebook checkpoints duplicating aliased state and redundant recovery/persistence serialization during long sessions.
 
 ## [0.7.1] - 2026-08-07
 

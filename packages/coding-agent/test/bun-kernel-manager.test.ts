@@ -67,6 +67,107 @@ describe("Bun KernelManager", () => {
 		expect(result.timings.totalMs).toBeGreaterThanOrEqual(result.timings.checkpointMs);
 	});
 
+	it("coalesces debounced recovery and persistent snapshots", async () => {
+		const recoveryPath = join(directory, "coalesced-recovery.bin");
+		const persistentPath = join(directory, "coalesced-persistent.bin");
+		const manager = createManager({
+			recoverySnapshot: {
+				manifestPath: join(directory, "coalesced-recovery.json"),
+				path: recoveryPath,
+			},
+			snapshot: {
+				debounceMs: 25,
+				manifestPath: join(directory, "coalesced-persistent.json"),
+				path: persistentPath,
+			},
+		});
+
+		await manager.execute("const coalescedState = { count: 42 };");
+		await expect.poll(() => manager.status.recovery.checkpoint, { timeout: 5_000 }).toBe("ready");
+
+		expect(existsSync(recoveryPath)).toBe(true);
+		expect(existsSync(persistentPath)).toBe(true);
+		expect(manager.status.recovery.lastCheckpoint?.saved).toContain("coalescedState");
+	});
+
+	it("contains debounced recovery checkpoint timeouts without an unhandled rejection", async () => {
+		const manager = createManager({
+			checkpointTimeoutMs: 100,
+			snapshot: {
+				debounceMs: 25,
+				manifestPath: join(directory, "timed-out-persistent.json"),
+				path: join(directory, "timed-out-persistent.bin"),
+			},
+		});
+		await manager.execute(`
+const timedOutDebouncedCheckpoint = {};
+Object.defineProperty(timedOutDebouncedCheckpoint, "value", {
+  enumerable: true,
+  get() { while (true) {} }
+});
+`);
+
+		await expect.poll(() => manager.status.diagnostics, { timeout: 2_000 }).toMatch(/checkpoint.*timed out/i);
+		await expect(manager.execute("42;")).rejects.toThrow(/recovery is blocked/i);
+	}, 5_000);
+
+	it("keeps a valid recovery checkpoint when its persistent mirror fails", async () => {
+		const blockedParent = join(directory, "blocked-persistent-parent");
+		const recoveryPath = join(directory, "mirror-failure-recovery.bin");
+		await writeFile(blockedParent, "blocking file");
+		const manager = createManager({
+			recoverySnapshot: {
+				manifestPath: join(directory, "mirror-failure-recovery.json"),
+				path: recoveryPath,
+			},
+			snapshot: {
+				debounceMs: 25,
+				manifestPath: join(blockedParent, "persistent.json"),
+				path: join(blockedParent, "persistent.bin"),
+			},
+		});
+
+		await manager.execute("const recoverySurvivesMirrorFailure = 41;");
+		await expect.poll(() => manager.status.recovery.checkpoint, { timeout: 5_000 }).toBe("ready");
+
+		expect(existsSync(recoveryPath)).toBe(true);
+		expect(manager.status.diagnostics).toMatch(/persistent state snapshot failed/i);
+		await expect(manager.execute("recoverySurvivesMirrorFailure + 1;")).resolves.toMatchObject({
+			result: "42",
+			status: "ok",
+		});
+	});
+
+	it("honors different recovery and persistent snapshot caps", async () => {
+		const recoveryManifestPath = join(directory, "small-cap-recovery.json");
+		const persistentManifestPath = join(directory, "large-cap-persistent.json");
+		const manager = createManager({
+			recoverySnapshot: {
+				manifestPath: recoveryManifestPath,
+				maxBytes: 512,
+				path: join(directory, "small-cap-recovery.bin"),
+			},
+			snapshot: {
+				debounceMs: 25,
+				manifestPath: persistentManifestPath,
+				maxBytes: 1024 * 1024,
+				path: join(directory, "large-cap-persistent.bin"),
+			},
+		});
+
+		await manager.execute('const stateBeyondRecoveryCap = "x".repeat(10_000);');
+		await expect.poll(() => existsSync(persistentManifestPath), { timeout: 5_000 }).toBe(true);
+
+		const recoveryManifest = JSON.parse(await readFile(recoveryManifestPath, "utf8")) as {
+			savedNames: string[];
+		};
+		const persistentManifest = JSON.parse(await readFile(persistentManifestPath, "utf8")) as {
+			savedNames: string[];
+		};
+		expect(recoveryManifest.savedNames).not.toContain("stateBeyondRecoveryCap");
+		expect(persistentManifest.savedNames).toContain("stateBeyondRecoveryCap");
+	});
+
 	it("refuses to execute the next cell when its recovery checkpoint cannot be written", async () => {
 		const blockedParent = join(directory, "not-a-directory");
 		const sideEffectPath = join(directory, "must-not-run.txt");

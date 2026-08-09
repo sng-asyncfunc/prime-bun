@@ -1,4 +1,4 @@
-export const BUN_WORKER_PROTOCOL_VERSION = 3;
+export const BUN_WORKER_PROTOCOL_VERSION = 4;
 
 interface BunWorkerProtocolMessage {
 	id: string;
@@ -42,6 +42,10 @@ export interface SnapshotBunWorkerMessage extends BunWorkerProtocolMessage {
 	manifestPath: string;
 	maxBytes: number;
 	includeRuntimeState: boolean;
+	persistentMirror?: {
+		path: string;
+		manifestPath: string;
+	};
 }
 
 export interface RestoreBunWorkerMessage extends BunWorkerProtocolMessage {
@@ -122,6 +126,11 @@ export interface BunWorkerSnapshotResultMessage extends BunWorkerResponseMessage
 	bytes: number;
 	path: string;
 	error?: string;
+	persistentMirror?: {
+		bytes: number;
+		path: string;
+		error?: string;
+	};
 }
 
 export interface BunWorkerRestoreResultMessage extends BunWorkerResponseMessage {

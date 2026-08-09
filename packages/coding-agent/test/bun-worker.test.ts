@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,25 @@ function legacyV2ImportSnapshot(name: string, specifier: string): Buffer {
 	const prefix = Buffer.alloc(4);
 	prefix.writeUInt32BE(header.byteLength);
 	return Buffer.concat([prefix, header, data]);
+}
+
+function legacyV3ValueSnapshot(bunPath: string, name: string, expression: string): Buffer {
+	const serialized = spawnSync(
+		bunPath,
+		["-e", `import { serialize } from "bun:jsc"; process.stdout.write(Buffer.from(serialize(${expression})))`],
+		{ stdio: ["ignore", "pipe", "pipe"] },
+	);
+	if (serialized.error) throw serialized.error;
+	if (serialized.status !== 0 || !Buffer.isBuffer(serialized.stdout)) {
+		throw new Error(`Failed to create legacy Bun snapshot fixture: ${serialized.stderr.toString("utf8")}`);
+	}
+	const header = Buffer.from(
+		JSON.stringify({ entries: [{ length: serialized.stdout.byteLength, name, offset: 0 }], version: 3 }),
+		"utf8",
+	);
+	const prefix = Buffer.alloc(4);
+	prefix.writeUInt32BE(header.byteLength);
+	return Buffer.concat([prefix, header, serialized.stdout]);
 }
 
 class BunWorkerTestClient {
@@ -160,11 +179,13 @@ class BunWorkerTestClient {
 }
 
 describe("Bun worker", () => {
+	let bunPath: string;
 	let client: BunWorkerTestClient;
 
 	beforeEach(async () => {
 		const runtime = await resolveBunRuntime();
-		client = BunWorkerTestClient.start(runtime.path);
+		bunPath = runtime.path;
+		client = BunWorkerTestClient.start(bunPath);
 		client.send({
 			bunPath: runtime.path,
 			commandPrefix: "",
@@ -899,7 +920,7 @@ plain.count;
 				expect.arrayContaining(["Custom", "callable", "explicitValue", "pathModule", "plain"]),
 			);
 			expect(manifest.bunVersion).toMatch(/^1\.3\./);
-			expect(manifest.version).toBe(3);
+			expect(manifest.version).toBe(4);
 
 			client.send({
 				cellId: "snapshot-mutation",
@@ -964,6 +985,202 @@ plain.count;
 		}
 	});
 
+	it("writes runtime recovery and runtime-free persistence from one snapshot request", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-mirrored-snapshot-"));
+		const recoveryPath = join(directory, "recovery.bin");
+		const recoveryManifestPath = join(directory, "recovery.json");
+		const persistentPath = join(directory, "persistent.bin");
+		const persistentManifestPath = join(directory, "persistent.json");
+		try {
+			client.send({
+				cellId: "mirrored-snapshot-source",
+				code: `const mirroredValue = { count: 42 }; process.env.PRIME_MIRROR_SECRET = "private";`,
+				id: "mirrored-snapshot-source-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "mirrored-snapshot-source-execute");
+
+			client.send({
+				id: "mirrored-snapshot",
+				includeRuntimeState: true,
+				manifestPath: recoveryManifestPath,
+				maxBytes: 1024 * 1024,
+				path: recoveryPath,
+				persistentMirror: { manifestPath: persistentManifestPath, path: persistentPath },
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "snapshot",
+			} as HostToBunWorkerMessage);
+			const snapshot = await client.waitForType(
+				"snapshot_result",
+				(message) => message.replyTo === "mirrored-snapshot",
+			);
+			const mirror = (
+				snapshot as typeof snapshot & {
+					persistentMirror?: { bytes: number; error?: string; path: string };
+				}
+			).persistentMirror;
+			expect(mirror).toMatchObject({ path: persistentPath });
+			expect(mirror?.error).toBeUndefined();
+			expect(mirror?.bytes).toBeGreaterThan(0);
+
+			const recoveryEntries = decodeSnapshotPayload(await readFile(recoveryPath));
+			const persistentEntries = decodeSnapshotPayload(await readFile(persistentPath));
+			expect(recoveryEntries.some((entry) => entry.kind === "runtime")).toBe(true);
+			expect(persistentEntries.some((entry) => entry.kind === "runtime")).toBe(false);
+			expect(recoveryEntries.some((entry) => entry.kind === "bindings")).toBe(true);
+			expect(persistentEntries.some((entry) => entry.kind === "bindings")).toBe(true);
+			expect(await readFile(persistentPath, "utf8")).not.toContain("PRIME_MIRROR_SECRET");
+		} finally {
+			delete process.env.PRIME_MIRROR_SECRET;
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
+	it("isolates an uncloneable binding and validates its aliases once", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-uncloneable-snapshot-"));
+		const path = join(directory, "state.bin");
+		const manifestPath = join(directory, "state.json");
+		try {
+			client.send({
+				cellId: "uncloneable-snapshot-source",
+				code: `
+const proxyInspectionState = { count: 0 };
+const safeSnapshotSibling = { count: 42 };
+const sharedSnapshotProxy = new Proxy({}, {
+	getPrototypeOf(target) {
+		proxyInspectionState.count += 1;
+		return Reflect.getPrototypeOf(target);
+	}
+});
+const snapshotProxyAlias = sharedSnapshotProxy;
+`,
+				id: "uncloneable-snapshot-source-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "uncloneable-snapshot-source-execute");
+
+			client.send({
+				id: "uncloneable-snapshot",
+				includeRuntimeState: false,
+				manifestPath,
+				maxBytes: 1024 * 1024,
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "snapshot",
+			});
+			const snapshot = await client.waitForType(
+				"snapshot_result",
+				(message) => message.replyTo === "uncloneable-snapshot",
+			);
+			expect(snapshot.saved).toContain("safeSnapshotSibling");
+			expect(snapshot.skipped).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "sharedSnapshotProxy" }),
+					expect.objectContaining({ name: "snapshotProxyAlias" }),
+				]),
+			);
+
+			client.send({
+				cellId: "uncloneable-snapshot-mutate",
+				code: "safeSnapshotSibling.count = 0;",
+				id: "uncloneable-snapshot-mutate-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "uncloneable-snapshot-mutate-execute");
+			client.send({
+				id: "uncloneable-snapshot-restore",
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "restore",
+			});
+			await expect(
+				client.waitForType("restore_result", (message) => message.replyTo === "uncloneable-snapshot-restore"),
+			).resolves.toMatchObject({ restored: expect.arrayContaining(["safeSnapshotSibling"]) });
+
+			client.send({
+				cellId: "uncloneable-snapshot-check",
+				code: "safeSnapshotSibling.count === 42 && proxyInspectionState.count > 0 && proxyInspectionState.count < 20;",
+				id: "uncloneable-snapshot-check-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await expect(
+				client.waitForType("result", (message) => message.replyTo === "uncloneable-snapshot-check-execute"),
+			).resolves.toMatchObject({ status: "ok", value: "true" });
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
+	it("keeps small bindings when a larger binding exceeds the snapshot cap", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-mixed-cap-snapshot-"));
+		const path = join(directory, "state.bin");
+		const manifestPath = join(directory, "state.json");
+		try {
+			client.send({
+				cellId: "mixed-cap-source",
+				code: 'let overCapBinding = "x".repeat(16 * 1024); let underCapBinding = 42;',
+				id: "mixed-cap-source-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "mixed-cap-source-execute");
+			await writeFile(path, "previous persistent snapshot");
+
+			client.send({
+				id: "mixed-cap-snapshot",
+				includeRuntimeState: false,
+				manifestPath,
+				maxBytes: 1024,
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "snapshot",
+			});
+			const snapshot = await client.waitForType(
+				"snapshot_result",
+				(message) => message.replyTo === "mixed-cap-snapshot",
+			);
+			expect(snapshot.saved).toContain("underCapBinding");
+			expect(snapshot.skipped).toEqual([
+				expect.objectContaining({ name: "overCapBinding", reason: "exceeds snapshot size cap" }),
+			]);
+			expect(decodeSnapshotPayload(await readFile(path)).some((entry) => entry.kind === "bindings")).toBe(true);
+
+			client.send({
+				cellId: "mixed-cap-mutate",
+				code: "underCapBinding = 0;",
+				id: "mixed-cap-mutate-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "mixed-cap-mutate-execute");
+			client.send({
+				id: "mixed-cap-restore",
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "restore",
+			});
+			await expect(
+				client.waitForType("restore_result", (message) => message.replyTo === "mixed-cap-restore"),
+			).resolves.toMatchObject({ restored: ["underCapBinding"] });
+			client.send({
+				cellId: "mixed-cap-check",
+				code: "underCapBinding;",
+				id: "mixed-cap-check-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await expect(
+				client.waitForType("result", (message) => message.replyTo === "mixed-cap-check-execute"),
+			).resolves.toMatchObject({ status: "ok", value: "42" });
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
 	it("restores namespace imports from a hand-built v2 snapshot", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "prime-bun-v2-snapshot-"));
 		const path = join(directory, "state.bin");
@@ -990,6 +1207,36 @@ plain.count;
 			});
 			const result = await client.waitForType("result", (message) => message.replyTo === "legacy-v2-check-execute");
 			expect(result).toMatchObject({ status: "ok", value: '"file"' });
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
+	it("restores ordinary bindings from a hand-built v3 snapshot", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-v3-snapshot-"));
+		const path = join(directory, "state.bin");
+		try {
+			await writeFile(path, legacyV3ValueSnapshot(bunPath, "legacyV3State", "{ count: 42 }"));
+			client.send({
+				id: "legacy-v3-restore",
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "restore",
+			});
+			await expect(
+				client.waitForType("restore_result", (message) => message.replyTo === "legacy-v3-restore"),
+			).resolves.toMatchObject({ failed: [], restored: ["legacyV3State"] });
+
+			client.send({
+				cellId: "legacy-v3-check-cell",
+				code: "legacyV3State.count;",
+				id: "legacy-v3-check-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await expect(
+				client.waitForType("result", (message) => message.replyTo === "legacy-v3-check-execute"),
+			).resolves.toMatchObject({ status: "ok", value: "42" });
 		} finally {
 			await rm(directory, { force: true, recursive: true });
 		}

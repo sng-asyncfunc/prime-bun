@@ -102,6 +102,53 @@ largeBytes[largeBytes.length - 1] = 251;
 		}
 	});
 
+	it("preserves aliases without duplicating their shared snapshot data", async () => {
+		const aliasSnapshot = {
+			path: join(directory, "aliases.bin"),
+			manifestPath: join(directory, "aliases.json"),
+			debounceMs: 60_000,
+		};
+		const writer = createManager({ snapshot: aliasSnapshot });
+		try {
+			await writer.execute(`
+const sharedAliasBytes = new Uint8Array(1024 * 1024);
+sharedAliasBytes[0] = 17;
+sharedAliasBytes[sharedAliasBytes.length - 1] = 251;
+const alias0 = sharedAliasBytes;
+const alias1 = sharedAliasBytes;
+const alias2 = sharedAliasBytes;
+const alias3 = sharedAliasBytes;
+const alias4 = sharedAliasBytes;
+const alias5 = sharedAliasBytes;
+const alias6 = sharedAliasBytes;
+const alias7 = sharedAliasBytes;
+`);
+			const snapshot = await writer.snapshotState();
+			expect(snapshot?.bytes).toBeLessThan(2 * 1024 * 1024);
+		} finally {
+			await writer.dispose();
+		}
+
+		const reader = createManager({ snapshot: aliasSnapshot });
+		try {
+			expect((await reader.restoreState())?.restored).toEqual(
+				expect.arrayContaining(["sharedAliasBytes", "alias0", "alias7"]),
+			);
+			const result = await reader.execute(`({
+				same: sharedAliasBytes === alias0 && alias0 === alias7,
+				length: alias7.length,
+				first: alias0[0],
+				last: alias7.at(-1),
+			});`);
+			expect(result.result).toContain("same: true");
+			expect(result.result).toContain("length: 1048576");
+			expect(result.result).toContain("first: 17");
+			expect(result.result).toContain("last: 251");
+		} finally {
+			await reader.dispose();
+		}
+	});
+
 	it("snapshots typed arrays without Uint8Array.from", async () => {
 		const writer = createManager({
 			snapshot: {
@@ -178,7 +225,7 @@ const float16Values = new Float16Array([1.5, -2.25, 0.5]);
 		const manager = createManager({ snapshot: undefined });
 		try {
 			expect(await manager.listNamespaceNames()).toBeNull();
-			await manager.execute("const alpha = 1; const _private = 2; const sh = 3; globalThis.beta = 2;");
+			await manager.execute("const alpha = 1; const _private = 2; globalThis.beta = 2;");
 			const names = await manager.listNamespaceNames();
 			expect(names).toContain("alpha");
 			expect(names).toContain("beta");

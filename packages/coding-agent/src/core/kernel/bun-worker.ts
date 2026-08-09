@@ -105,6 +105,7 @@ const bindingRecipes = new Map<string, BindingRecipeState>();
 const runtimeBindingNames = new Set(BUN_RUNTIME_GLOBAL_NAMES);
 const pendingHostRequests = new Map<string, PendingHostRequest>();
 const cellStreams = new Map<string, CellStreamState>();
+const BINDINGS_STATE_ENTRY_NAME = "\0prime:bindings";
 const RUNTIME_STATE_ENTRY_NAME = "\0prime:runtime";
 const MAX_CELL_STREAM_BYTES = 32 * 1024;
 const MAX_PROTOCOL_RESULT_CHARS = 1_000_000;
@@ -756,16 +757,65 @@ async function writeBinaryAtomic(path: string, parts: readonly Uint8Array[]): Pr
 	}
 }
 
+type SnapshotBindingEntry = [string, unknown];
+
+function splitSnapshotBindingEntries(
+	entries: SnapshotBindingEntry[],
+): [SnapshotBindingEntry[], SnapshotBindingEntry[]] | undefined {
+	const groups: SnapshotBindingEntry[][] = [];
+	const objectGroups = new WeakMap<object, SnapshotBindingEntry[]>();
+	for (const entry of entries) {
+		const value = entry[1];
+		const identity = typeof value === "object" && value !== null ? value : undefined;
+		if (!identity) {
+			groups.push([entry]);
+			continue;
+		}
+		const existing = objectGroups.get(identity);
+		if (existing) {
+			existing.push(entry);
+			continue;
+		}
+		const group = [entry];
+		objectGroups.set(identity, group);
+		groups.push(group);
+	}
+	if (groups.length < 2) return undefined;
+	const midpoint = Math.floor(groups.length / 2);
+	return [groups.slice(0, midpoint).flat(), groups.slice(midpoint).flat()];
+}
+
+function snapshotManifest(
+	byteLength: number,
+	savedNames: readonly string[],
+	skipped: readonly { name: string; reason: string }[],
+): string {
+	return `${JSON.stringify(
+		{
+			bunVersion: Bun.version,
+			bytes: byteLength,
+			savedNames,
+			skipped,
+			timestamp: new Date().toISOString(),
+			version: SNAPSHOT_FORMAT_VERSION,
+		},
+		null,
+		2,
+	)}\n`;
+}
+
 async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "snapshot" }>): Promise<void> {
 	const savedEntries: SnapshotPayloadEntry[] = [];
+	const savedNames: string[] = [];
 	const skipped: { name: string; reason: string }[] = [];
 	let serializedBytes = 0;
-	const saveEntry = (entry: SnapshotPayloadEntry): boolean => {
+	const saveEntry = (entry: SnapshotPayloadEntry, publicNames: readonly string[]): boolean => {
 		if (entry.data.byteLength > message.maxBytes || serializedBytes + entry.data.byteLength > message.maxBytes) {
-			skipped.push({ name: entry.name, reason: "exceeds snapshot size cap" });
+			for (const name of publicNames) skipped.push({ name, reason: "exceeds snapshot size cap" });
 			return false;
 		}
 		savedEntries.push(entry);
+		savedNames.push(...publicNames);
 		serializedBytes += entry.data.byteLength;
 		return true;
 	};
@@ -777,10 +827,13 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 				kind: "runtime",
 				name: RUNTIME_STATE_ENTRY_NAME,
 			};
-			if (!saveEntry(runtimeEntry)) {
+			if (!saveEntry(runtimeEntry, [])) {
 				throw new Error(`Runtime cwd and environment exceed the ${message.maxBytes}-byte snapshot cap`);
 			}
 		}
+		const ordinaryBindings = new Map<string, unknown>();
+		const recipeEntries: Array<{ entry: SnapshotPayloadEntry; name: string }> = [];
+		const validationCache = new WeakMap<object, string | undefined>();
 		for (const name of [...bindings].sort()) {
 			if (name.startsWith("_") || runtimeBindingNames.has(name)) {
 				skipped.push({ name, reason: "runtime bindings are recreated instead of snapshotted" });
@@ -795,7 +848,10 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 			}
 			const importRecipe = bindingRecipes.get(name)?.recipe;
 			if (importRecipe) {
-				saveEntry({ data: Buffer.from(JSON.stringify(importRecipe), "utf8"), kind: "module", name });
+				recipeEntries.push({
+					entry: { data: Buffer.from(JSON.stringify(importRecipe), "utf8"), kind: "module", name },
+					name,
+				});
 				continue;
 			}
 			if (typeof value === "function") {
@@ -805,42 +861,79 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 						skipped.push({ name, reason: "native function source is not restorable" });
 						continue;
 					}
-					saveEntry({ data: Buffer.from(source, "utf8"), kind: "function", name });
+					recipeEntries.push({ entry: { data: Buffer.from(source, "utf8"), kind: "function", name }, name });
 				} catch (error) {
 					skipped.push({ name, reason: `function source read failed: ${normalizeError(error).message}` });
 				}
 				continue;
 			}
-			const skipReason = snapshotValueSkipReason(value);
+			const cacheableValue = typeof value === "object" && value !== null ? value : undefined;
+			const skipReason =
+				cacheableValue && validationCache.has(cacheableValue)
+					? validationCache.get(cacheableValue)
+					: snapshotValueSkipReason(value);
+			if (cacheableValue && !validationCache.has(cacheableValue)) validationCache.set(cacheableValue, skipReason);
 			if (skipReason) {
 				skipped.push({ name, reason: skipReason });
 				continue;
 			}
+			ordinaryBindings.set(name, value);
+		}
+		if (ordinaryBindings.size > 0) {
+			let graphEntryIndex = 0;
+			const serializeBindingGroup = (entries: SnapshotBindingEntry[]): void => {
+				const names = entries.map(([name]) => name);
+				const splitEntries = splitSnapshotBindingEntries(entries);
+				let data: Uint8Array;
+				try {
+					data = new Uint8Array(serialize(new Map(entries)));
+				} catch (error) {
+					if (splitEntries) {
+						serializeBindingGroup(splitEntries[0]);
+						serializeBindingGroup(splitEntries[1]);
+						return;
+					}
+					for (const name of names) {
+						skipped.push({ name, reason: `serialization failed: ${normalizeError(error).message}` });
+					}
+					return;
+				}
+				if (serializedBytes + data.byteLength > message.maxBytes && splitEntries) {
+					serializeBindingGroup(splitEntries[0]);
+					serializeBindingGroup(splitEntries[1]);
+					return;
+				}
+				const entryName =
+					graphEntryIndex === 0 ? BINDINGS_STATE_ENTRY_NAME : `${BINDINGS_STATE_ENTRY_NAME}:${graphEntryIndex}`;
+				graphEntryIndex += 1;
+				saveEntry({ data, kind: "bindings", name: entryName }, names);
+			};
+			serializeBindingGroup([...ordinaryBindings]);
+		}
+		for (const { entry, name } of recipeEntries) saveEntry(entry, [name]);
+		const payload = encodeSnapshotPayloadParts(savedEntries);
+		savedNames.sort();
+		await writeBinaryAtomic(message.path, payload.parts);
+		await writeAtomic(message.manifestPath, snapshotManifest(payload.byteLength, savedNames, skipped));
+		let persistentMirror: { bytes: number; path: string; error?: string } | undefined;
+		if (message.persistentMirror) {
+			const persistentEntries = savedEntries.filter((entry) => entry.kind !== "runtime");
 			try {
-				const data = new Uint8Array(serialize(value));
-				saveEntry({ name, data });
+				const persistentPayload = encodeSnapshotPayloadParts(persistentEntries);
+				await writeBinaryAtomic(message.persistentMirror.path, persistentPayload.parts);
+				await writeAtomic(
+					message.persistentMirror.manifestPath,
+					snapshotManifest(persistentPayload.byteLength, savedNames, skipped),
+				);
+				persistentMirror = { bytes: persistentPayload.byteLength, path: message.persistentMirror.path };
 			} catch (error) {
-				skipped.push({ name, reason: `serialization failed: ${normalizeError(error).message}` });
+				persistentMirror = {
+					bytes: 0,
+					error: normalizeError(error).message,
+					path: message.persistentMirror.path,
+				};
 			}
 		}
-		const payload = encodeSnapshotPayloadParts(savedEntries);
-		const savedNames = savedEntries.filter((entry) => entry.kind !== "runtime").map((entry) => entry.name);
-		await writeBinaryAtomic(message.path, payload.parts);
-		await writeAtomic(
-			message.manifestPath,
-			`${JSON.stringify(
-				{
-					bunVersion: Bun.version,
-					bytes: payload.byteLength,
-					savedNames,
-					skipped,
-					timestamp: new Date().toISOString(),
-					version: SNAPSHOT_FORMAT_VERSION,
-				},
-				null,
-				2,
-			)}\n`,
-		);
 		send({
 			bytes: payload.byteLength,
 			id: randomUUID(),
@@ -850,6 +943,7 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 			saved: savedNames,
 			skipped,
 			type: "snapshot_result",
+			...(persistentMirror ? { persistentMirror } : {}),
 		});
 	} catch (error) {
 		send({
@@ -900,6 +994,27 @@ async function restoreState(message: Extract<HostToBunWorkerMessage, { type: "re
 				runtimeRestored = true;
 			} catch (error) {
 				failed.push({ name: RUNTIME_STATE_ENTRY_NAME, reason: normalizeError(error).message });
+			}
+		}
+		for (const entry of entries.filter((candidate) => candidate.kind === "bindings")) {
+			try {
+				const value = deserialize(entry.data);
+				if (!(value instanceof Map)) throw new Error("bindings entry did not restore a Map");
+				const restoredBindings: Array<readonly [string, unknown]> = [];
+				for (const [name, bindingValue] of value) {
+					if (typeof name !== "string") throw new Error("bindings entry contains a non-string name");
+					restoredBindings.push([name, bindingValue]);
+				}
+				for (const [name, bindingValue] of restoredBindings) {
+					if (runtimeBindingNames.has(name)) {
+						failed.push({ name, reason: "runtime binding was not restored" });
+						continue;
+					}
+					persistBinding(name, bindingValue);
+					restored.push(name);
+				}
+			} catch (error) {
+				failed.push({ name: BINDINGS_STATE_ENTRY_NAME, reason: normalizeError(error).message });
 			}
 		}
 		for (const entry of entries.filter((candidate) => candidate.kind === undefined)) {

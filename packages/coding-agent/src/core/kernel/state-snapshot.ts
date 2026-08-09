@@ -3,7 +3,8 @@ import { join } from "node:path";
 export const DEFAULT_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
 
 const KERNEL_STATE_BASENAME = "kernel-state";
-export const SNAPSHOT_FORMAT_VERSION = 3;
+export const SNAPSHOT_FORMAT_VERSION = 4;
+const PREVIOUS_SNAPSHOT_FORMAT_VERSION = 3;
 const LEGACY_SNAPSHOT_FORMAT_VERSION = 2;
 const HEADER_LENGTH_BYTES = 4;
 const MAX_HEADER_BYTES = 16 * 1024 * 1024;
@@ -32,7 +33,7 @@ export interface SnapshotPayloadParts {
 	byteLength: number;
 }
 
-export type SnapshotPayloadKind = "function" | "import" | "module" | "runtime";
+export type SnapshotPayloadKind = "bindings" | "function" | "import" | "module" | "runtime";
 
 interface SnapshotHeaderEntry {
 	name: string;
@@ -42,7 +43,10 @@ interface SnapshotHeaderEntry {
 }
 
 interface SnapshotHeader {
-	version: typeof LEGACY_SNAPSHOT_FORMAT_VERSION | typeof SNAPSHOT_FORMAT_VERSION;
+	version:
+		| typeof LEGACY_SNAPSHOT_FORMAT_VERSION
+		| typeof PREVIOUS_SNAPSHOT_FORMAT_VERSION
+		| typeof SNAPSHOT_FORMAT_VERSION;
 	entries: SnapshotHeaderEntry[];
 }
 
@@ -65,7 +69,9 @@ function corruptSnapshot(reason: string): Error {
 function parseHeader(value: unknown): SnapshotHeader {
 	if (
 		!isRecord(value) ||
-		(value.version !== LEGACY_SNAPSHOT_FORMAT_VERSION && value.version !== SNAPSHOT_FORMAT_VERSION) ||
+		(value.version !== LEGACY_SNAPSHOT_FORMAT_VERSION &&
+			value.version !== PREVIOUS_SNAPSHOT_FORMAT_VERSION &&
+			value.version !== SNAPSHOT_FORMAT_VERSION) ||
 		!Array.isArray(value.entries)
 	) {
 		throw corruptSnapshot("invalid header");
@@ -79,7 +85,12 @@ function parseHeader(value: unknown): SnapshotHeader {
 			!Number.isSafeInteger(entry.length) ||
 			(entry.offset as number) < 0 ||
 			(entry.length as number) < 0 ||
-			(kind !== undefined && kind !== "function" && kind !== "import" && kind !== "module" && kind !== "runtime")
+			(kind !== undefined &&
+				kind !== "bindings" &&
+				kind !== "function" &&
+				kind !== "import" &&
+				kind !== "module" &&
+				kind !== "runtime")
 		) {
 			throw corruptSnapshot("invalid entry metadata");
 		}
@@ -153,7 +164,7 @@ export function decodeSnapshotPayload(payload: Uint8Array): SnapshotPayloadEntry
 		ranges.push({ start: entry.offset, end });
 		return {
 			name: entry.name,
-			data: Uint8Array.from(buffer.subarray(dataStart + entry.offset, dataStart + end)),
+			data: new Uint8Array(buffer.buffer, buffer.byteOffset + dataStart + entry.offset, entry.length),
 			...(entry.kind ? { kind: entry.kind } : {}),
 		};
 	});

@@ -83,6 +83,7 @@ export interface KernelManagerOptions {
 	commandPrefix?: string;
 	shellPath?: string;
 	javascriptSkills?: readonly JavaScriptSkillRuntimeInfo[];
+	smol?: boolean;
 	readyTimeoutMs?: number;
 	skillFactoryTimeoutMs?: number;
 	checkpointTimeoutMs?: number;
@@ -511,7 +512,8 @@ export class KernelManager {
 			const workerEnvironment: NodeJS.ProcessEnv = { ...process.env, ...this.options.env };
 			const preparedSkills = bootstrappedRuntime?.preparedSkills ?? javascriptSkills;
 			const shell = getShellConfig(this.options.shellPath);
-			const worker = spawn(runtime.path, [resolveWorkerPath(workerPath)], {
+			const workerArguments = [...(this.options.smol === false ? [] : ["--smol"]), resolveWorkerPath(workerPath)];
+			const worker = spawn(runtime.path, workerArguments, {
 				cwd: this.options.cwd,
 				detached: process.platform !== "win32",
 				env: workerEnvironment,

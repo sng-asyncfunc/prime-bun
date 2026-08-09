@@ -43,6 +43,24 @@ describe("Bun KernelManager", () => {
 		expect(manager.isRunning).toBe(true);
 	});
 
+	it("starts the isolated Bun worker in compact heap mode by default", async () => {
+		const manager = createManager();
+
+		await expect(manager.execute('process.execArgv.includes("--smol");')).resolves.toMatchObject({
+			result: "true",
+			status: "ok",
+		});
+	});
+
+	it("allows throughput-sensitive embedders to disable compact heap mode", async () => {
+		const manager = createManager({ smol: false });
+
+		await expect(manager.execute('process.execArgv.includes("--smol");')).resolves.toMatchObject({
+			result: "false",
+			status: "ok",
+		});
+	});
+
 	it("reports complete timings for queued executions with recovery checkpoints", async () => {
 		const manager = createManager();
 		await manager.execute("const stateForTiming = { value: 1 };");

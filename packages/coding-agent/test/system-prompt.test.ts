@@ -67,6 +67,14 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain(
 			"Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state",
 		);
+		expect(prompt).toContain("Top-level named bindings are durable session state and are checkpointed between cells");
+		expect(prompt).toContain("serialized text, parsed duplicates, sorted copies, or temporary buffers");
+		expect(prompt).toContain("inside an explicit `{ ... }` block");
+		expect(prompt).toContain("not retained in later cells or checkpoints");
+		expect(prompt).toContain("If a value is not needed in a later cell, it must not be a top-level binding");
+		expect(prompt).toContain("Naming a temporary value does not make it reusable");
+		expect(prompt).toContain("Verify artifacts by rereading them");
+		expect(prompt).toContain("Prefer a direct computed write inside that block");
 		expect(prompt).toContain("Prefer a structured `shell` action over `$` or `sh()`");
 		const bunShellIndex = prompt.indexOf("await $`command`.quiet()");
 		const shIndex = prompt.indexOf("await sh(command)");
@@ -447,6 +455,8 @@ describe("createJavaScriptToolDefinition", () => {
 		expect(tool.description).toContain("structured writes create missing parent directories");
 		expect(tool.description).toContain("filesystem writes of computed values already held in variables");
 		expect(tool.description).toContain("Use `code` for computation, branching, dependent operations");
+		expect(tool.description).toContain("put large one-shot intermediates in an explicit `{ ... }` block");
+		expect(tool.description).toContain("Values not needed in a later cell must be block-scoped, even when named");
 		expect(tool.description).toContain("one to eight actions");
 		expect(tool.description).toContain("target project's own environment");
 		expect(tool.promptSnippet).toContain("persistent Bun notebook");
@@ -469,6 +479,8 @@ describe("createJavaScriptToolDefinition", () => {
 				: "";
 		expect(codeDescription).toContain("computation, branching, dependent operations");
 		expect(codeDescription).toContain("persistent notebook state");
+		expect(codeDescription).toContain("put large one-shot intermediates in an explicit `{ ... }` block");
+		expect(codeDescription).toContain("Values not needed in a later cell must be block-scoped, even when named");
 		expect(codeDescription).toContain("Do not import child_process or call execSync");
 		expect(codeDescription.length).toBeLessThan(1_000);
 	});

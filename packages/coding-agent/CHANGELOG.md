@@ -35,6 +35,7 @@
 - Fixed Bun shell `.text()` results being silently lost when models destructure a nonexistent `stdout` property.
 - Changed JSON print-mode message updates to emit linear deltas instead of repeating the accumulated assistant message.
 - Fixed authored file writes and exact edits failing on Markdown or quote syntax by routing their content outside JavaScript source.
+- Improved long-session Bun checkpoint growth by guiding large one-shot JavaScript intermediates into block scope instead of persistent notebook state.
 
 ## [0.7.1] - 2026-08-07
 

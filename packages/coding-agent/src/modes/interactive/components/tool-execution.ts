@@ -10,7 +10,7 @@ import type { AgentConnectionToolDefinition } from "../../agent-connection/index
 import { type Theme, theme } from "../theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../theme/working-icon.js";
 import { FileChangeSummaryComponent, getToolFileChanges } from "./edit-summary.js";
-import { getJavaScriptCodeFromArgs, JavaScriptCellComponent } from "./javascript-cell.js";
+import { getJavaScriptActionsFromArgs, getJavaScriptCodeFromArgs, JavaScriptCellComponent } from "./javascript-cell.js";
 import { ToolPanel } from "./tool-panel.js";
 
 export interface ToolExecutionOptions {
@@ -325,6 +325,7 @@ export class ToolExecutionComponent extends Container {
 
 			if (this.shouldUseJavaScriptRenderer()) {
 				const state = {
+					actions: getJavaScriptActionsFromArgs(this.args),
 					code: getJavaScriptCodeFromArgs(this.args),
 					content: this.result?.content,
 					details: this.result?.details,

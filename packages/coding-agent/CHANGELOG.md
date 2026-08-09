@@ -21,6 +21,7 @@
 - Fixed Bun notebook audits failing on redundant preloaded-module imports and expected search no-match exits.
 - Reduced long-session Bun transcript growth by deduplicating large result metadata and guiding bounded repository inspection.
 - Fixed Bun notebook writes with Markdown code fences causing opaque syntax errors or retries from unqualified filesystem helpers.
+- Added bounded structured read, search, shell, and write actions to the Bun notebook so models can batch routine work without generating fragile JavaScript.
 
 ## [0.7.1] - 2026-08-07
 

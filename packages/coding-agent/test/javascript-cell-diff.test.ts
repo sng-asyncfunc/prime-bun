@@ -94,7 +94,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			expanded: true,
 		}).split("\n");
 		// Summary line and header share the same single-space indent.
-		expect(done[0]).toMatch(/^ ✓ javascript/);
+		expect(done[0]).toMatch(/^ ✓ js/);
 		expect(done.find((l) => l.includes("a.ts"))).toMatch(/^ ✓ a\.ts/);
 
 		const failed = renderCell({
@@ -297,8 +297,8 @@ describe("JavaScriptCellComponent diff rendering", () => {
 
 		// Top line is unchanged through the duration; only the trailing hint flips
 		// "to expand" → "to collapse", so nothing before it can shift.
-		expect(stripAnsi(collapsed[0])).toMatch(/^ ✓ javascript · .* · ↑ 1 ↓ 1 lines · 780\.0s · .*to expand$/);
-		expect(stripAnsi(expanded[0])).toMatch(/^ ✓ javascript · .* · ↑ 1 ↓ 1 lines · 780\.0s · .*to collapse$/);
+		expect(stripAnsi(collapsed[0])).toMatch(/^ ✓ js · .* · ↑ 1 ↓ 1 lines · 780\.0s · .*to expand$/);
+		expect(stripAnsi(expanded[0])).toMatch(/^ ✓ js · .* · ↑ 1 ↓ 1 lines · 780\.0s · .*to collapse$/);
 		const upToHint = (line: string) => stripAnsi(line).replace(/· [^·]*to (expand|collapse)$/, "");
 		expect(upToHint(expanded[0])).toBe(upToHint(collapsed[0]));
 

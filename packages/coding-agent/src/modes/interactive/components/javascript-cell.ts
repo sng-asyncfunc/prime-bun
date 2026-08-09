@@ -7,6 +7,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { formatAgentMessageParticipant } from "../../../core/agent-messages.js";
+import type { BunStructuredAction } from "../../../core/kernel/bun-actions.js";
 import { previewJavaScriptCode } from "../../../core/tools/code-preview.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.js";
 import { shortenPath } from "../../../core/tools/render-utils.js";
@@ -25,6 +26,7 @@ export interface JavaScriptCellContentBlock {
 
 export interface JavaScriptCellState {
 	code: string;
+	actions?: readonly BunStructuredAction[];
 	content?: readonly JavaScriptCellContentBlock[];
 	details?: unknown;
 	isPartial?: boolean;
@@ -127,6 +129,60 @@ export function getJavaScriptCodeFromArgs(args: unknown): string {
 	}
 	const code = (args as { code?: unknown }).code;
 	return typeof code === "string" ? code : "";
+}
+
+const STRUCTURED_ACTION_OPERATIONS = new Set(["read", "search", "shell", "write"]);
+
+export function getJavaScriptActionsFromArgs(args: unknown): BunStructuredAction[] {
+	if (!args || typeof args !== "object" || !("actions" in args)) return [];
+	const actions = (args as { actions?: unknown }).actions;
+	if (!Array.isArray(actions)) return [];
+	return actions.flatMap((candidate): BunStructuredAction[] => {
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+		const record = candidate as Record<string, unknown>;
+		if (typeof record.op !== "string" || !STRUCTURED_ACTION_OPERATIONS.has(record.op)) return [];
+		const op = record.op as BunStructuredAction["op"];
+		return [
+			{
+				op,
+				...(typeof record.path === "string" ? { path: record.path } : {}),
+				...(typeof record.offset === "number" ? { offset: record.offset } : {}),
+				...(typeof record.limit === "number" ? { limit: record.limit } : {}),
+				...(typeof record.pattern === "string" ? { pattern: record.pattern } : {}),
+				...(typeof record.glob === "string" ? { glob: record.glob } : {}),
+				...(typeof record.command === "string" ? { command: record.command } : {}),
+				...(typeof record.content === "string" ? { content: record.content } : {}),
+			},
+		];
+	});
+}
+
+function summarizeStructuredActions(actions: readonly BunStructuredAction[]): string {
+	const counts = new Map<BunStructuredAction["op"], number>();
+	for (const action of actions) counts.set(action.op, (counts.get(action.op) ?? 0) + 1);
+	return [...counts].map(([op, count]) => (count > 1 ? `${op}×${count}` : op)).join(" ");
+}
+
+function structuredActionIntent(action: BunStructuredAction): string {
+	switch (action.op) {
+		case "read": {
+			const offset = action.offset ?? 1;
+			const limit = action.limit ?? 200;
+			return `read ${action.path ?? ""} lines ${offset}-${offset + limit - 1}`;
+		}
+		case "search": {
+			const scope = action.path ?? ".";
+			const query = action.pattern === undefined ? "list files" : `search ${JSON.stringify(action.pattern)}`;
+			const glob = action.glob === undefined ? "" : ` glob ${JSON.stringify(action.glob)}`;
+			return `${query} in ${scope}${glob}`;
+		}
+		case "shell":
+			return `shell ${action.command ?? ""}`;
+		case "write": {
+			const bytes = action.content === undefined ? undefined : Buffer.byteLength(action.content);
+			return `write ${action.path ?? ""}${bytes === undefined ? "" : ` (${bytes} bytes)`}`;
+		}
+	}
 }
 
 function readDetails(details: unknown): JavaScriptDetails {
@@ -414,13 +470,19 @@ export class JavaScriptCellComponent implements Component {
 
 	private collapsedLines(details: JavaScriptDetails, width: number): string[] {
 		const code = this.state.code.trimEnd();
-		const preview = previewJavaScriptCode(code);
+		const actions = this.state.actions ?? [];
+		const hasActions = actions.length > 0;
+		const preview = hasActions
+			? { language: "javascript" as const, text: summarizeStructuredActions(actions) }
+			: previewJavaScriptCode(code);
 		const label = preview.language === "javascript" ? "js" : preview.language;
 		const heading = `${this.marker(details)} ${theme.fg("muted", label)}`;
 		const intent = preview.text
-			? preview.language === "bash"
-				? theme.fg("bashMode", preview.text)
-				: this.highlightInputLine(compactJavaScriptIntent(preview.text))
+			? hasActions
+				? theme.fg("mdCodeBlock", preview.text)
+				: preview.language === "bash"
+					? theme.fg("bashMode", preview.text)
+					: this.highlightInputLine(compactJavaScriptIntent(preview.text))
 			: !this.state.executionStarted
 				? theme.fg("muted", "waiting for code")
 				: undefined;
@@ -479,7 +541,10 @@ export class JavaScriptCellComponent implements Component {
 	// the activity line. Output is omitted for edits (the diff shows on expand).
 	private lineCounts(details: JavaScriptDetails): string | undefined {
 		const body = this.state.code.split(/\r?\n/);
-		const input = body.filter((line) => line.trim().length > 0).length;
+		const input =
+			(this.state.actions?.length ?? 0) > 0
+				? (this.state.actions?.length ?? 0)
+				: body.filter((line) => line.trim().length > 0).length;
 
 		const hasDiffs = (details.diffs?.length ?? 0) > 0;
 		const structured = [details.stdout, details.stderr, details.result]
@@ -531,6 +596,25 @@ export class JavaScriptCellComponent implements Component {
 
 	// Only runs when expanded — shows the full source below the fixed top line.
 	private renderCode(lines: string[], width: number): boolean {
+		const actions = this.state.actions ?? [];
+		if (actions.length > 0) {
+			this.addBlank(lines, width);
+			for (const [index, action] of actions.entries()) {
+				const prefix = index === 0 ? theme.fg("dim", "› ") : theme.fg("dim", "  ");
+				const intent = structuredActionIntent(action);
+				const renderedIntent =
+					action.op === "shell" ? theme.fg("bashMode", intent) : theme.fg("mdCodeBlock", intent);
+				this.addWrapped(lines, prefix, renderedIntent, width);
+				if (action.op === "write" && action.content !== undefined) {
+					const language = getLanguageFromPath(action.path ?? "");
+					for (const contentLine of action.content.split("\n")) {
+						const highlighted = highlightCode(contentLine, language)[0] ?? theme.fg("mdCodeBlock", contentLine);
+						this.addWrapped(lines, theme.fg("dim", "  "), highlighted || " ", width);
+					}
+				}
+			}
+			return true;
+		}
 		const code = this.state.code.trimEnd();
 		if (!code) {
 			this.addBlank(lines, width);

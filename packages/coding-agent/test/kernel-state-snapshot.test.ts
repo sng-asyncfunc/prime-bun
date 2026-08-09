@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+	createSnapshotValueInspector,
 	DEFAULT_SNAPSHOT_MAX_BYTES,
 	decodeSnapshotPayload,
 	encodeSnapshotPayload,
@@ -149,6 +150,39 @@ describe("Bun snapshot binary format", () => {
 });
 
 describe("snapshotValueSkipReason", () => {
+	it("memoizes shared safe objects across distinct binding roots", () => {
+		const inspect = createSnapshotValueInspector();
+		let prototypeReads = 0;
+		const shared = new Proxy(
+			{ value: 42 },
+			{
+				getPrototypeOf(target) {
+					prototypeReads += 1;
+					return Reflect.getPrototypeOf(target);
+				},
+			},
+		);
+
+		expect(inspect({ first: shared })).toBeUndefined();
+		expect(inspect({ second: shared })).toBeUndefined();
+		expect(prototypeReads).toBe(1);
+	});
+
+	it("memoizes shared unsafe objects across distinct binding roots", () => {
+		const inspect = createSnapshotValueInspector();
+		let prototypeReads = 0;
+		const shared = new Proxy(Object.create({ inherited: true }) as Record<string, unknown>, {
+			getPrototypeOf(target) {
+				prototypeReads += 1;
+				return Reflect.getPrototypeOf(target);
+			},
+		});
+
+		expect(inspect({ first: shared })).toMatch(/custom prototype/i);
+		expect(inspect({ second: shared })).toMatch(/custom prototype/i);
+		expect(prototypeReads).toBe(1);
+	});
+
 	it("accepts the characterized structured-clone allowlist, including cycles", () => {
 		const cycle: { self?: unknown; values: Map<string, Set<number>> } = {
 			values: new Map([["numbers", new Set([1, 2, 3])]]),

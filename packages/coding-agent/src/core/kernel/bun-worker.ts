@@ -24,11 +24,11 @@ import {
 import { type BunRlmRuntime, createBunRlmRuntime } from "./bun-rlm-runtime.js";
 import { BUN_RUNTIME_GLOBAL_NAMES } from "./bun-runtime-globals.js";
 import {
+	createSnapshotValueInspector,
 	decodeSnapshotPayload,
 	encodeSnapshotPayloadParts,
 	SNAPSHOT_FORMAT_VERSION,
 	type SnapshotPayloadEntry,
-	snapshotValueSkipReason,
 } from "./state-snapshot.js";
 
 type PersistBinding = (name: string, value: unknown, recipe?: ModuleBindingRecipe) => void;
@@ -834,7 +834,7 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 		}
 		const ordinaryBindings = new Map<string, unknown>();
 		const recipeEntries: Array<{ entry: SnapshotPayloadEntry; name: string }> = [];
-		const validationCache = new WeakMap<object, string | undefined>();
+		const inspectSnapshotValue = createSnapshotValueInspector();
 		for (const name of [...bindings].sort()) {
 			if (name.startsWith("_") || runtimeBindingNames.has(name)) {
 				skipped.push({ name, reason: "runtime bindings are recreated instead of snapshotted" });
@@ -868,12 +868,7 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 				}
 				continue;
 			}
-			const cacheableValue = typeof value === "object" && value !== null ? value : undefined;
-			const skipReason =
-				cacheableValue && validationCache.has(cacheableValue)
-					? validationCache.get(cacheableValue)
-					: snapshotValueSkipReason(value);
-			if (cacheableValue && !validationCache.has(cacheableValue)) validationCache.set(cacheableValue, skipReason);
+			const skipReason = inspectSnapshotValue(value);
 			if (skipReason) {
 				skipped.push({ name, reason: skipReason });
 				continue;

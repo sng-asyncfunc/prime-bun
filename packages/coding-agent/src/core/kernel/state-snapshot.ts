@@ -211,7 +211,101 @@ function isUnsignedIntegerString(value: string): boolean {
 	return true;
 }
 
-function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: string): string | undefined {
+const INSPECTION_VISITING = Symbol("inspection-visiting");
+const INSPECTION_SAFE = Symbol("inspection-safe");
+type InspectionState = typeof INSPECTION_VISITING | typeof INSPECTION_SAFE | string;
+
+function inspectSnapshotObject(
+	object: object,
+	inspected: WeakMap<object, InspectionState>,
+	path: string,
+): string | undefined {
+	if (Object.getOwnPropertySymbols(object).length > 0) {
+		return `${path}: symbol-keyed state is not snapshot-safe`;
+	}
+
+	const prototype = Object.getPrototypeOf(object);
+	if (prototype === Promise.prototype) return `${path}: promises are not snapshot-safe`;
+	if (prototype === WeakMap.prototype || prototype === WeakSet.prototype) {
+		return `${path}: weak collections are not snapshot-safe`;
+	}
+	if (typeof WeakRef !== "undefined" && prototype === WeakRef.prototype) {
+		return `${path}: weak references are not snapshot-safe`;
+	}
+	if (prototype === Date.prototype) {
+		return Object.keys(object).length === 0 ? undefined : `${path}: custom Date properties are not snapshot-safe`;
+	}
+	if (prototype === RegExp.prototype) {
+		return Object.keys(object).length === 0 ? undefined : `${path}: custom RegExp properties are not snapshot-safe`;
+	}
+	if (prototype === ArrayBuffer.prototype) {
+		return Object.keys(object).length === 0
+			? undefined
+			: `${path}: custom ArrayBuffer properties are not snapshot-safe`;
+	}
+	if (ArrayBuffer.isView(object)) {
+		if (prototype === DataView.prototype || !TYPED_ARRAY_PROTOTYPES.has(prototype)) {
+			return `${path}: custom prototype or unsupported view is not snapshot-safe`;
+		}
+		return undefined;
+	}
+	if (prototype === Map.prototype) {
+		if (Object.keys(object).length > 0) return `${path}: custom Map properties are not snapshot-safe`;
+		let index = 0;
+		for (const [key, entryValue] of object as Map<unknown, unknown>) {
+			if (!isSnapshotSafePrimitive(key)) {
+				const keyReason = inspectSnapshotValue(key, inspected, `${path}.mapKey${index}`);
+				if (keyReason) return keyReason;
+			}
+			if (!isSnapshotSafePrimitive(entryValue)) {
+				const valueReason = inspectSnapshotValue(entryValue, inspected, `${path}.mapValue${index}`);
+				if (valueReason) return valueReason;
+			}
+			index += 1;
+		}
+		return undefined;
+	}
+	if (prototype === Set.prototype) {
+		if (Object.keys(object).length > 0) return `${path}: custom Set properties are not snapshot-safe`;
+		let index = 0;
+		for (const entryValue of object as Set<unknown>) {
+			if (!isSnapshotSafePrimitive(entryValue)) {
+				const reason = inspectSnapshotValue(entryValue, inspected, `${path}.setValue${index}`);
+				if (reason) return reason;
+			}
+			index += 1;
+		}
+		return undefined;
+	}
+	if (Array.isArray(object)) {
+		if (prototype !== Array.prototype) return `${path}: custom prototype is not snapshot-safe`;
+		const array = object as unknown[];
+		for (const key in array) {
+			if (!Object.hasOwn(array, key)) continue;
+			if (!isUnsignedIntegerString(key)) return `${path}: custom array properties are not snapshot-safe`;
+			const entryValue = (array as unknown as Record<string, unknown>)[key];
+			if (isSnapshotSafePrimitive(entryValue)) continue;
+			const reason = inspectSnapshotValue(entryValue, inspected, `${path}[${key}]`);
+			if (reason) return reason;
+		}
+		return undefined;
+	}
+	if (prototype !== Object.prototype && prototype !== null) {
+		return `${path}: custom prototype is not snapshot-safe`;
+	}
+	for (const [key, entryValue] of Object.entries(object)) {
+		if (isSnapshotSafePrimitive(entryValue)) continue;
+		const reason = inspectSnapshotValue(entryValue, inspected, `${path}.${key}`);
+		if (reason) return reason;
+	}
+	return undefined;
+}
+
+function inspectSnapshotValue(
+	value: unknown,
+	inspected: WeakMap<object, InspectionState>,
+	path: string,
+): string | undefined {
 	if (isSnapshotSafePrimitive(value)) return undefined;
 	const valueType = typeof value;
 	if (valueType === "symbol") return `${path}: symbol values are not snapshot-safe`;
@@ -219,101 +313,26 @@ function inspectSnapshotValue(value: unknown, seen: WeakSet<object>, path: strin
 	if (valueType !== "object") return `${path}: unsupported value type ${valueType}`;
 
 	const object = value as object;
-	if (seen.has(object)) return undefined;
-	seen.add(object);
+	const previousState = inspected.get(object);
+	if (previousState === INSPECTION_VISITING || previousState === INSPECTION_SAFE) return undefined;
+	if (typeof previousState === "string") return previousState;
+	inspected.set(object, INSPECTION_VISITING);
 
+	let reason: string | undefined;
 	try {
-		if (Object.getOwnPropertySymbols(object).length > 0) {
-			return `${path}: symbol-keyed state is not snapshot-safe`;
-		}
-		if (object instanceof Promise) return `${path}: promises are not snapshot-safe`;
-		if (object instanceof WeakMap || object instanceof WeakSet) {
-			return `${path}: weak collections are not snapshot-safe`;
-		}
-		if (typeof WeakRef !== "undefined" && object instanceof WeakRef) {
-			return `${path}: weak references are not snapshot-safe`;
-		}
-
-		const prototype = Object.getPrototypeOf(object);
-		if (object instanceof Date) {
-			if (prototype !== Date.prototype) return `${path}: custom prototype is not snapshot-safe`;
-			return Object.keys(object).length === 0 ? undefined : `${path}: custom Date properties are not snapshot-safe`;
-		}
-		if (object instanceof RegExp) {
-			if (prototype !== RegExp.prototype) return `${path}: custom prototype is not snapshot-safe`;
-			return Object.keys(object).length === 0
-				? undefined
-				: `${path}: custom RegExp properties are not snapshot-safe`;
-		}
-		if (object instanceof ArrayBuffer) {
-			if (prototype !== ArrayBuffer.prototype) return `${path}: custom prototype is not snapshot-safe`;
-			return Object.keys(object).length === 0
-				? undefined
-				: `${path}: custom ArrayBuffer properties are not snapshot-safe`;
-		}
-		if (ArrayBuffer.isView(object)) {
-			if (object instanceof DataView || !TYPED_ARRAY_PROTOTYPES.has(prototype)) {
-				return `${path}: custom prototype or unsupported view is not snapshot-safe`;
-			}
-			return undefined;
-		}
-		if (object instanceof Map) {
-			if (prototype !== Map.prototype) return `${path}: custom prototype is not snapshot-safe`;
-			if (Object.keys(object).length > 0) return `${path}: custom Map properties are not snapshot-safe`;
-			let index = 0;
-			for (const [key, entryValue] of object) {
-				if (!isSnapshotSafePrimitive(key)) {
-					const keyReason = inspectSnapshotValue(key, seen, `${path}.mapKey${index}`);
-					if (keyReason) return keyReason;
-				}
-				if (!isSnapshotSafePrimitive(entryValue)) {
-					const valueReason = inspectSnapshotValue(entryValue, seen, `${path}.mapValue${index}`);
-					if (valueReason) return valueReason;
-				}
-				index += 1;
-			}
-			return undefined;
-		}
-		if (object instanceof Set) {
-			if (prototype !== Set.prototype) return `${path}: custom prototype is not snapshot-safe`;
-			if (Object.keys(object).length > 0) return `${path}: custom Set properties are not snapshot-safe`;
-			let index = 0;
-			for (const entryValue of object) {
-				if (!isSnapshotSafePrimitive(entryValue)) {
-					const reason = inspectSnapshotValue(entryValue, seen, `${path}.setValue${index}`);
-					if (reason) return reason;
-				}
-				index += 1;
-			}
-			return undefined;
-		}
-		if (Array.isArray(object)) {
-			if (prototype !== Array.prototype) return `${path}: custom prototype is not snapshot-safe`;
-			const array = object as unknown[];
-			for (const key in array) {
-				if (!Object.hasOwn(array, key)) continue;
-				if (!isUnsignedIntegerString(key)) return `${path}: custom array properties are not snapshot-safe`;
-				const entryValue = (array as unknown as Record<string, unknown>)[key];
-				if (isSnapshotSafePrimitive(entryValue)) continue;
-				const reason = inspectSnapshotValue(entryValue, seen, `${path}[${key}]`);
-				if (reason) return reason;
-			}
-			return undefined;
-		}
-		if (prototype !== Object.prototype && prototype !== null) {
-			return `${path}: custom prototype is not snapshot-safe`;
-		}
-		for (const [key, entryValue] of Object.entries(object)) {
-			if (isSnapshotSafePrimitive(entryValue)) continue;
-			const reason = inspectSnapshotValue(entryValue, seen, `${path}.${key}`);
-			if (reason) return reason;
-		}
-		return undefined;
+		reason = inspectSnapshotObject(object, inspected, path);
 	} catch (error) {
-		return `${path}: inspection failed: ${error instanceof Error ? error.message : String(error)}`;
+		reason = `${path}: inspection failed: ${error instanceof Error ? error.message : String(error)}`;
 	}
+	inspected.set(object, reason ?? INSPECTION_SAFE);
+	return reason;
+}
+
+export function createSnapshotValueInspector(): (value: unknown) => string | undefined {
+	const inspected = new WeakMap<object, InspectionState>();
+	return (value) => inspectSnapshotValue(value, inspected, "$binding");
 }
 
 export function snapshotValueSkipReason(value: unknown): string | undefined {
-	return inspectSnapshotValue(value, new WeakSet(), "$binding");
+	return createSnapshotValueInspector()(value);
 }

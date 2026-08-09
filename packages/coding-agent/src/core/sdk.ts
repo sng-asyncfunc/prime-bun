@@ -18,7 +18,15 @@ import { DefaultResourceLoader } from "./resource-loader.js";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 import { time } from "./timings.js";
-import { createBashTool, createEditTool, createJavaScriptTool, withFileMutationQueue } from "./tools/index.js";
+import {
+	createBashTool,
+	createEditFileTool,
+	createEditTool,
+	createJavaScriptTool,
+	createWriteFileTool,
+	defaultBuiltinToolNames,
+	withFileMutationQueue,
+} from "./tools/index.js";
 
 export interface CreateAgentSessionOptions extends AgentSessionCreationOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
@@ -42,14 +50,14 @@ export interface CreateAgentSessionOptions extends AgentSessionCreationOptions {
 	 * Optional default tool suppression mode when no explicit allowlist is provided.
 	 *
 	 * - "all": start with no tools enabled
-	 * - "builtin": disable the default built-in tool (javascript)
+	 * - "builtin": disable the default built-in tools
 	 *   but keep extension/custom tools enabled
 	 */
 	noTools?: "all" | "builtin";
 	/**
 	 * Optional allowlist of tool names.
 	 *
-	 * When omitted, pi enables the default built-in tool (javascript)
+	 * When omitted, pi enables the default built-in tools
 	 * and leaves extension/custom tools enabled unless `noTools` changes that default.
 	 * When provided, only the listed tool names are enabled.
 	 */
@@ -107,6 +115,8 @@ export {
 	withFileMutationQueue,
 	// Tool factories (for custom cwd)
 	createJavaScriptTool,
+	createWriteFileTool,
+	createEditFileTool,
 	createBashTool,
 	createEditTool,
 };
@@ -251,7 +261,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const allowedToolNames = options.allowedToolNames ?? options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const includeGoals = options.includeGoals ?? (options.tools !== undefined || options.noTools !== "all");
 	const initialActiveToolNames: string[] =
-		options.initialActiveToolNames ?? (options.tools ? [...options.tools] : options.noTools ? [] : ["javascript"]);
+		options.initialActiveToolNames ??
+		(options.tools ? [...options.tools] : options.noTools ? [] : [...defaultBuiltinToolNames]);
 
 	let agent: Agent;
 

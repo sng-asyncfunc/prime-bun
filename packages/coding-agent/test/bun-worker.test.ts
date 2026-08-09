@@ -1187,9 +1187,38 @@ response.answer;
 		if (failed.status !== "error") throw new Error("Expected a fenced-template parse failure");
 		expect(failed.error.message).toContain("line 2, column 4");
 		expect(failed.error.message).toContain("```ts");
-		expect(failed.error.message).toContain('array of quoted lines joined with "\\n"');
+		expect(failed.error.message).toContain("This cell was not executed");
+		expect(failed.error.message).toContain("`write_file` tool or a structured `write` action");
+		expect(failed.error.message).toContain("content stays outside JavaScript syntax");
+		expect(failed.error.message).not.toContain("array of quoted lines");
 		expect(failed.error.stack).toContain("SyntaxError:");
 		expect(failed.error.stack).toContain("line 2, column 4");
+	});
+
+	it("guides structured recovery for the reproduced missing-quote report write", async () => {
+		client.send({
+			cellId: "report-write-error-cell",
+			code: [
+				"const report = [",
+				"  '# Report',",
+				"  '| Activity | Owner |",
+				"  '|----------|:-----:|",
+				"  '| Publish | **R** |",
+				"].join('\\n');",
+				'await fs.writeFile("/tmp/ignored-report.md", report);',
+			].join("\n"),
+			id: "report-write-error-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const failed = await client.waitForType("result", (message) => message.replyTo === "report-write-error-execute");
+		expect(failed).toMatchObject({ error: { name: "SyntaxError" }, stateChanged: false, status: "error" });
+		if (failed.status !== "error") throw new Error("Expected a report parse failure");
+		expect(failed.error.message).toContain("This cell was not executed");
+		expect(failed.error.message).toContain("do not repair JavaScript string escaping");
+		expect(failed.error.message).toContain("`write_file` tool or a structured `write` action");
+		expect(failed.error.message).not.toContain("array of quoted lines");
 	});
 
 	it("bounds source excerpts for parse failures on long lines", async () => {

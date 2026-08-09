@@ -27,9 +27,16 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		}
 	});
 
-	it("registers only javascript as a built-in tool", () => {
-		expect([...allToolNames]).toEqual(["javascript"]);
-		expect(Object.keys(createAllToolDefinitions(process.cwd()))).toEqual(["javascript"]);
+	it("registers only the Bun notebook and syntax-safe file tools", () => {
+		expect([...allToolNames]).toEqual(["javascript", "write_file", "edit_file"]);
+		expect(Object.keys(createAllToolDefinitions(process.cwd()))).toEqual(["javascript", "write_file", "edit_file"]);
+	});
+
+	it("accepts the syntax-safe file tool names in CLI allowlists", () => {
+		const result = parseArgs(["--tools", "write_file,edit_file"]);
+
+		expect(result.tools).toEqual(["write_file", "edit_file"]);
+		expect(result.diagnostics).toEqual([]);
 	});
 
 	it("keeps legacy names available for extension and custom tool allowlists", () => {
@@ -106,6 +113,54 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		expect(session.getAllTools().map((tool) => tool.name)).toEqual(["bash"]);
 		expect(session.getActiveToolNames()).toEqual(["bash"]);
 		session.dispose();
+	});
+
+	it("activates all three intentional built-ins by default", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.inMemory(tempDir);
+		const resourceLoader = new DefaultResourceLoader({ cwd: tempDir, agentDir, settingsManager });
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-5")!,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+		});
+		await session.bindExtensions({});
+
+		try {
+			expect(session.getActiveToolNames()).toEqual(["javascript", "write_file", "edit_file"]);
+		} finally {
+			await session.disposeAsync();
+		}
+	});
+
+	it("keeps explicit file-only allowlists authoritative", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.inMemory(tempDir);
+		const resourceLoader = new DefaultResourceLoader({ cwd: tempDir, agentDir, settingsManager });
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-5")!,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+			tools: ["write_file", "edit_file"],
+		});
+		await session.bindExtensions({});
+
+		try {
+			expect(session.getAllTools().map((tool) => tool.name)).toEqual(["write_file", "edit_file"]);
+			expect(session.getActiveToolNames()).toEqual(["write_file", "edit_file"]);
+		} finally {
+			await session.disposeAsync();
+		}
 	});
 
 	it("applies configured shell settings from Bun cells", async () => {

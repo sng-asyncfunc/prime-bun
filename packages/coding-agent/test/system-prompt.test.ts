@@ -45,7 +45,7 @@ describe("buildRlmPrompt", () => {
 			cwd: "/repo",
 			messagesPath: "/repo/.prime/sessions/session.jsonl",
 			installedSkills: ["websearch", "refine"],
-			activeTools: ["javascript"],
+			activeTools: ["javascript", "write_file", "edit_file"],
 			allowRecursion: false,
 		});
 
@@ -55,13 +55,15 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Installed JavaScript skill globals (prepared): `websearch`, `refine`.");
 		expect(prompt).toContain("Bun is the agent's long-lived JavaScript notebook");
 		expect(prompt).toContain(
-			"Default to the `actions` input for independent routine edits, reads, searches, shell commands, and exact writes",
+			"Default to the `actions` input for independent routine reads, searches, shell commands, and batched work",
 		);
-		expect(prompt).toContain("Prefer structured `edit` (`path`, `oldStr`, `newStr`)");
+		expect(prompt).toContain("`write_file` creates missing parent directories");
+		expect(prompt).toContain("Use `edit_file` for exact unique replacements");
+		expect(prompt).toContain("Authored document content must not be embedded in JavaScript string literals");
 		expect(prompt).toContain(
 			'{"actions":[{"op":"search","path":"src","pattern":"TODO","glob":"*.ts"},{"op":"read","path":"package.json"}]}',
 		);
-		expect(prompt).toContain("The only callable tool name is `javascript`; never emit a tool call named `code`");
+		expect(prompt).toContain("`code` is only an input field inside a `javascript` call");
 		expect(prompt).toContain(
 			"Use `code` for computation, branching, dependent operations, prepared JavaScript skills, and persistent notebook state",
 		);
@@ -90,13 +92,10 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Batch multiple filename or pattern probes into one search");
 		expect(prompt).toContain("Unless the user asks for an exhaustive review, use at most 12 `javascript` calls");
 		expect(prompt).toContain("synthesize the requested answer before the budget is exhausted");
-		expect(prompt).toContain("text containing backticks or Markdown fences");
-		expect(prompt).toContain('array of ordinary quoted lines joined with "\\n"');
-		expect(prompt).toContain("exact file in one cell");
-		expect(prompt).toContain("Call filesystem methods through the preloaded `fs` namespace");
+		expect(prompt).not.toContain("array of ordinary quoted lines");
+		expect(prompt).toContain("Read-only methods remain available through the preloaded `fs` namespace");
 		expect(prompt).toContain("`fs.existsSync`");
-		expect(prompt).toContain("`await fs.writeFile`");
-		expect(prompt).toContain("fully specified file contents directly");
+		expect(prompt).toContain("filesystem APIs only for values produced by computation");
 		expect(prompt).toContain("do not redeclare them as local variables");
 		expect(prompt).toContain("`rlmDoc`");
 		expect(prompt).toContain("check `fs.existsSync`");
@@ -108,6 +107,21 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Continual harness state is available as `rlm.harness`");
 		expect(prompt).toContain("installed JavaScript skills are prepared as globals");
 		expect(prompt).not.toMatch(/Python packages|Python REPL|%%bash|uv pip/);
+	});
+
+	test("falls back to structured actions when dedicated file tools are inactive", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/session.jsonl",
+			activeTools: ["javascript"],
+			allowRecursion: false,
+		});
+
+		expect(prompt).toContain("Use a structured `write` action for exact authored file content");
+		expect(prompt).toContain("Use a structured `edit` action for exact unique replacements");
+		expect(prompt).not.toContain("`write_file` creates missing parent directories");
+		expect(prompt).not.toContain("Use `edit_file`");
+		expect(prompt).not.toContain("array of ordinary quoted lines");
 	});
 
 	test("defaults omitted activeTools to JavaScript guidance", () => {
@@ -428,8 +442,10 @@ describe("createJavaScriptToolDefinition", () => {
 		expect(tool.description).toContain("two input modes");
 		expect(tool.description).toContain("The tool name is `javascript`; `code` is only an input field");
 		expect(tool.description).toContain(
-			"Default to `actions` for independent routine edits, reads, searches, shell commands",
+			"Default to `actions` for independent routine reads, searches, shell commands, and batched work",
 		);
+		expect(tool.description).toContain("structured writes create missing parent directories");
+		expect(tool.description).toContain("filesystem writes of computed values already held in variables");
 		expect(tool.description).toContain("Use `code` for computation, branching, dependent operations");
 		expect(tool.description).toContain("one to eight actions");
 		expect(tool.description).toContain("target project's own environment");

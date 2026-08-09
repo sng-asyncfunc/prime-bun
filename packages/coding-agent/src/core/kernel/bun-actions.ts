@@ -169,7 +169,7 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 			if ((candidate.content as string).length > MAX_WRITE_CONTENT_CHARS) {
 				return {
 					ok: false,
-					message: `Action ${number} (write) "content" exceeds the ${MAX_WRITE_CONTENT_CHARS}-character structured-write limit; use code.`,
+					message: `Action ${number} (write) "content" exceeds the ${MAX_WRITE_CONTENT_CHARS}-character structured-write limit; split authored content or use a project-native generator.`,
 				};
 			}
 		}
@@ -178,7 +178,7 @@ export function validateBunStructuredActions(value: unknown): BunStructuredActio
 				if ((candidate[key] as string).length > MAX_WRITE_CONTENT_CHARS) {
 					return {
 						ok: false,
-						message: `Action ${number} (edit) "${key}" exceeds the ${MAX_WRITE_CONTENT_CHARS}-character structured-edit limit; use code.`,
+						message: `Action ${number} (edit) "${key}" exceeds the ${MAX_WRITE_CONTENT_CHARS}-character structured-edit limit; split the exact edit or use a project-native generator.`,
 					};
 				}
 			}

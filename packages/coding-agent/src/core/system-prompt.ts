@@ -5,6 +5,7 @@
 import { buildChildAgentDoctrine, buildRlmPrompt, buildSubagentGuidance } from "./prompts/index.js";
 import { formatHarnessStateForPrompt, type HarnessState, REFINE_SKILL_NAME } from "./refinement/index.js";
 import { formatSkillsForPrompt, getJavaScriptSkillRuntimeInfo, type Skill } from "./skills.js";
+import { defaultBuiltinToolNames } from "./tools/tool-names.js";
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
@@ -62,7 +63,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
-	const tools = selectedTools ?? ["javascript"];
+	const tools = selectedTools ?? [...defaultBuiltinToolNames];
 	const hasJavaScript = tools.includes("javascript");
 	const hasBash = tools.includes("bash");
 	const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
@@ -117,7 +118,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		cwd: promptCwd,
 		messagesPath: promptMessagesPath,
 		installedSkills: visibleJavaScriptSkillGlobals,
-		activeTools: tools.filter((name) => name === "javascript" || name === "bash" || name === "edit"),
+		activeTools: tools.filter(
+			(name) =>
+				name === "javascript" ||
+				name === "write_file" ||
+				name === "edit_file" ||
+				name === "bash" ||
+				name === "edit",
+		),
 		allowRecursion,
 		depth: options.rlmDepth,
 		parentAgent: options.rlmParentAgent,

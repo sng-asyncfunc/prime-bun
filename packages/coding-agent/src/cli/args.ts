@@ -4,6 +4,7 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { APP_NAME } from "../config.js";
+import { defaultBuiltinToolNames } from "../core/tools/tool-names.js";
 
 export type Mode = "text" | "json" | "rpc" | "acp" | "daemon";
 
@@ -61,7 +62,7 @@ export interface Args {
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls"]);
-const BUILTIN_TOOL_NAMES = ["javascript"];
+const BUILTIN_TOOL_NAMES = defaultBuiltinToolNames;
 
 export const INTERNAL_RUNTIME_COMMAND_MARKER = "\0prime-agent-internal-command";
 

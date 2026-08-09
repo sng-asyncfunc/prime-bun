@@ -161,7 +161,8 @@ describe("Bun structured actions", () => {
 
 		expect(result).toEqual({
 			ok: false,
-			message: 'Action 1 (write) "content" exceeds the 1000000-character structured-write limit; use code.',
+			message:
+				'Action 1 (write) "content" exceeds the 1000000-character structured-write limit; split authored content or use a project-native generator.',
 		});
 	});
 

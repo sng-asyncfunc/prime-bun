@@ -398,22 +398,17 @@ function buildMessageSourceExcerpt(position: BunBuildMessagePosition): { caret: 
 	return { caret: `${" ".repeat(caretColumn)}${"^".repeat(caretLength)}`, excerpt };
 }
 
-function shouldSuggestQuotedLines(source: string | undefined): boolean {
+function shouldSuggestStructuredWrite(source: string | undefined): boolean {
 	if (!source) return false;
-	if (source.includes("```")) return true;
-	let backtickCount = 0;
-	for (const character of source) {
-		if (character === "`") backtickCount += 1;
-	}
-	return backtickCount % 2 === 1;
+	return /\b(?:fs(?:\.promises)?\.(?:appendFile|appendFileSync|writeFile|writeFileSync)|Bun\.write)\s*\(/.test(source);
 }
 
 function normalizeBuildMessage(error: unknown, source: string | undefined): BunWorkerError | undefined {
 	const buildMessage = bunBuildMessage(error);
 	if (!buildMessage) return undefined;
 	const { caret, excerpt } = buildMessageSourceExcerpt(buildMessage.position);
-	const hint = shouldSuggestQuotedLines(source)
-		? 'If backticks were intended as text, raw backticks can close a template literal; write the content as an array of quoted lines joined with "\\n" instead.'
+	const hint = shouldSuggestStructuredWrite(source)
+		? "This cell was not executed. For authored file content, do not repair JavaScript string escaping; retry with the `write_file` tool or a structured `write` action so content stays outside JavaScript syntax."
 		: undefined;
 	const message = [
 		`${buildMessage.message} at line ${buildMessage.position.line}, column ${buildMessage.position.column}`,

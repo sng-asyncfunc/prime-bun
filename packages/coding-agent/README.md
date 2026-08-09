@@ -67,7 +67,7 @@ prime-agent
 /login  # Then select provider
 ```
 
-Then just talk to Prime Agent. By default, Prime Agent gives the model one tool: `javascript`. The model uses the persistent Bun notebook to read files, run commands, edit code, inspect data, and retain JavaScript state. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Prime Agent packages](#prime-agent-packages).
+Then just talk to Prime Agent. By default, Prime Agent gives the model `javascript`, `write_file`, and `edit_file`. All three share one persistent Bun runtime: JavaScript handles computation and orchestration, while authored content and exact replacements travel through JSON fields outside JavaScript string syntax. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Prime Agent packages](#prime-agent-packages).
 
 The runtime is prepared automatically on first invocation and requires Bun 1.3.14 or newer. TypeScript syntax is transpiled for execution but is not type-checked. Set `PRIME_AGENT_KERNEL_BUN` to use a specific supported Bun executable.
 
@@ -92,6 +92,8 @@ const data = await sh("some-command --json").json();
 ```
 
 Bun batches cell output to reduce host-message overhead, stores checkpoints with bounded typed-array state, and reports provisioning, startup, queue, checkpoint, execution, and total timings in tool status. A checkpoint captures notebook state for the current session; it does not package the target project's environment or recover external processes.
+
+Use `write_file` for authored documents; it creates missing parent directories and preserves Markdown fences, backticks, quotes, and interpolation text byte-for-byte. Use `edit_file` for one exact unique replacement. JavaScript filesystem APIs remain available when the content is a value produced by computation rather than prose embedded in source.
 
 ## Providers & Models
 
@@ -593,7 +595,7 @@ Use `prime-agent session export <file> [output]` to export a saved session to HT
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools by default |
 
-Available built-in tools: `javascript`
+Available built-in tools: `javascript`, `write_file`, `edit_file`
 
 ### Resource Options
 

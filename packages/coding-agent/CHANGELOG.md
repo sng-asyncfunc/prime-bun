@@ -27,13 +27,14 @@
 - Improved exact-edit guidance for multiline content containing backticks, template expressions, and Markdown fences.
 - Fixed structured writes creating nested files and duplicating large replacement diffs into session history.
 - Fixed empty structured file listings being reported as errors.
-- Fixed common edit, shell, read, search, and write tool-name mismatches by routing them through bounded Bun notebook actions without advertising duplicate tools.
+- Fixed common shell, read, search, and legacy mutation tool-name mismatches by routing them through bounded Bun notebook actions.
 - Changed the daemon session catalog to retire after two idle minutes and transparently restart on demand.
 - Fixed source-mode daemon workers failing after changing to a project directory when tsx was launched with a relative config path.
 - Improved read-only audits with a 12-call inspection budget and unambiguous structured-action inference.
 - Added compact matching-file and per-file matching-line-count search output for Bun notebook repository audits.
 - Fixed Bun shell `.text()` results being silently lost when models destructure a nonexistent `stdout` property.
 - Changed JSON print-mode message updates to emit linear deltas instead of repeating the accumulated assistant message.
+- Fixed authored file writes and exact edits failing on Markdown or quote syntax by routing their content outside JavaScript source.
 
 ## [0.7.1] - 2026-08-07
 

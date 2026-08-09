@@ -1,4 +1,4 @@
-import { deserialize, serialize } from "bun:jsc";
+import { deserialize, gcAndSweep, serialize } from "bun:jsc";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { Console } from "node:console";
@@ -29,6 +29,7 @@ import {
 	encodeSnapshotPayloadParts,
 	SNAPSHOT_FORMAT_VERSION,
 	type SnapshotPayloadEntry,
+	shouldSweepSnapshotPayload,
 } from "./state-snapshot.js";
 
 type PersistBinding = (name: string, value: unknown, recipe?: ModuleBindingRecipe) => void;
@@ -916,22 +917,40 @@ async function snapshotState(message: Extract<HostToBunWorkerMessage, { type: "s
 			const persistentEntries = savedEntries.filter((entry) => entry.kind !== "runtime");
 			try {
 				const persistentPayload = encodeSnapshotPayloadParts(persistentEntries);
-				await writeBinaryAtomic(message.persistentMirror.path, persistentPayload.parts);
-				await writeAtomic(
-					message.persistentMirror.manifestPath,
-					snapshotManifest(persistentPayload.byteLength, savedNames, skipped),
-				);
-				persistentMirror = { bytes: persistentPayload.byteLength, path: message.persistentMirror.path };
+				try {
+					await writeBinaryAtomic(message.persistentMirror.path, persistentPayload.parts);
+					await writeAtomic(
+						message.persistentMirror.manifestPath,
+						snapshotManifest(persistentPayload.byteLength, savedNames, skipped),
+					);
+					persistentMirror = { bytes: persistentPayload.byteLength, path: message.persistentMirror.path };
+				} finally {
+					persistentPayload.parts.length = 0;
+				}
 			} catch (error) {
 				persistentMirror = {
 					bytes: 0,
 					error: normalizeError(error).message,
 					path: message.persistentMirror.path,
 				};
+			} finally {
+				persistentEntries.length = 0;
+			}
+		}
+		const payloadByteLength = payload.byteLength;
+		savedEntries.length = 0;
+		ordinaryBindings.clear();
+		recipeEntries.length = 0;
+		payload.parts.length = 0;
+		if (shouldSweepSnapshotPayload(payloadByteLength)) {
+			try {
+				gcAndSweep();
+			} catch (error) {
+				reportDiagnostic(new Error(`large snapshot memory sweep failed: ${normalizeError(error).message}`));
 			}
 		}
 		send({
-			bytes: payload.byteLength,
+			bytes: payloadByteLength,
 			id: randomUUID(),
 			path: message.path,
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,

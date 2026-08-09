@@ -6,7 +6,9 @@ import {
 	decodeSnapshotPayload,
 	encodeSnapshotPayload,
 	encodeSnapshotPayloadParts,
+	LARGE_SNAPSHOT_SWEEP_BYTES,
 	manifestPathIn,
+	shouldSweepSnapshotPayload,
 	snapshotPathIn,
 	snapshotValueSkipReason,
 } from "../src/core/kernel/state-snapshot.js";
@@ -20,6 +22,12 @@ describe("Bun kernel state snapshot paths", () => {
 		expect(snapshotPathIn(artifactDir)).toBe(join(artifactDir, "kernel-state.bin"));
 		expect(manifestPathIn(artifactDir)).toBe(join(artifactDir, "kernel-state.json"));
 		expect(DEFAULT_SNAPSHOT_MAX_BYTES).toBe(256 * 1024 * 1024);
+	});
+
+	it("sweeps only snapshot payloads at or above the large-payload threshold", () => {
+		expect(LARGE_SNAPSHOT_SWEEP_BYTES).toBe(8 * 1024 * 1024);
+		expect(shouldSweepSnapshotPayload(LARGE_SNAPSHOT_SWEEP_BYTES - 1)).toBe(false);
+		expect(shouldSweepSnapshotPayload(LARGE_SNAPSHOT_SWEEP_BYTES)).toBe(true);
 	});
 });
 

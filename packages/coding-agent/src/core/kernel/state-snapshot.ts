@@ -1,6 +1,11 @@
 import { join } from "node:path";
 
 export const DEFAULT_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
+export const LARGE_SNAPSHOT_SWEEP_BYTES = 8 * 1024 * 1024;
+
+export function shouldSweepSnapshotPayload(byteLength: number): boolean {
+	return byteLength >= LARGE_SNAPSHOT_SWEEP_BYTES;
+}
 
 const KERNEL_STATE_BASENAME = "kernel-state";
 export const SNAPSHOT_FORMAT_VERSION = 4;

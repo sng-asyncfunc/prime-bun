@@ -1055,6 +1055,82 @@ plain.count;
 		}
 	});
 
+	it("restores a large shared typed array after checkpoint buffer cleanup", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "prime-bun-large-snapshot-"));
+		const path = join(directory, "state.bin");
+		const manifestPath = join(directory, "state.json");
+		try {
+			client.send({
+				cellId: "large-snapshot-source",
+				code: `
+const largeSnapshotValue = new Uint8Array(9 * 1024 * 1024);
+largeSnapshotValue[0] = 17;
+largeSnapshotValue[largeSnapshotValue.length - 1] = 239;
+const largeSnapshotAlias = largeSnapshotValue;
+`,
+				id: "large-snapshot-source-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "large-snapshot-source-execute");
+
+			client.send({
+				id: "large-snapshot",
+				includeRuntimeState: false,
+				manifestPath,
+				maxBytes: 20 * 1024 * 1024,
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "snapshot",
+			});
+			const snapshot = await client.waitForType(
+				"snapshot_result",
+				(message) => message.replyTo === "large-snapshot",
+			);
+			expect(snapshot).toMatchObject({
+				saved: expect.arrayContaining(["largeSnapshotAlias", "largeSnapshotValue"]),
+				skipped: [],
+			});
+			expect(snapshot.bytes).toBeGreaterThanOrEqual(9 * 1024 * 1024);
+
+			client.send({
+				cellId: "large-snapshot-mutation",
+				code: "largeSnapshotValue.fill(0);",
+				id: "large-snapshot-mutation-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await client.waitForType("result", (message) => message.replyTo === "large-snapshot-mutation-execute");
+			client.send({
+				id: "large-snapshot-restore",
+				path,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "restore",
+			});
+			await expect(
+				client.waitForType("restore_result", (message) => message.replyTo === "large-snapshot-restore"),
+			).resolves.toMatchObject({ failed: [] });
+
+			client.send({
+				cellId: "large-snapshot-check",
+				code: `[
+					largeSnapshotValue[0],
+					largeSnapshotValue[largeSnapshotValue.length - 1],
+					largeSnapshotValue === largeSnapshotAlias,
+					largeSnapshotValue.length,
+				];`,
+				id: "large-snapshot-check-execute",
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "execute",
+			});
+			await expect(
+				client.waitForType("result", (message) => message.replyTo === "large-snapshot-check-execute"),
+			).resolves.toMatchObject({ status: "ok", value: "[ 17, 239, true, 9437184 ]" });
+		} finally {
+			await rm(directory, { force: true, recursive: true });
+		}
+	});
+
 	it("writes runtime recovery and runtime-free persistence from one snapshot request", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "prime-bun-mirrored-snapshot-"));
 		const recoveryPath = join(directory, "recovery.bin");

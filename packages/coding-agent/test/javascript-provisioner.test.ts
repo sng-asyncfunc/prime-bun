@@ -271,6 +271,32 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 		]);
 	});
 
+	it("keeps large output once in canonical content instead of duplicating raw details", async () => {
+		const largeResult = "x".repeat(20_000);
+		const manager = {
+			execute: vi
+				.fn<KernelManager["execute"]>()
+				.mockResolvedValue(executeResult({ result: largeResult, stdout: "" })),
+			status: { diagnostics: "", recovery: { available: false, checkpoint: "clean" }, state: "running" },
+		} as unknown as KernelManager;
+		const provisioner = { ensure: vi.fn(async () => manager) } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+
+		const result = await tool.execute(
+			"large-output-call",
+			{ code: "largeResult;" },
+			undefined,
+			undefined,
+			{} as unknown as ExtensionContext,
+		);
+
+		expect(result.content).toEqual([{ type: "text", text: largeResult }]);
+		expect(result.details).not.toHaveProperty("stdout");
+		expect(result.details).not.toHaveProperty("stderr");
+		expect(result.details).not.toHaveProperty("result");
+		expect(result.details).toMatchObject({ status: "ok" });
+	});
+
 	it("returns bounded kernel status when execution is blocked by recovery", async () => {
 		const execute = vi.fn<KernelManager["execute"]>().mockRejectedValue(new Error("Bun recovery checkpoint failed"));
 		const kernelStatus: KernelManagerStatus = {

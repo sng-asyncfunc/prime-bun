@@ -20,10 +20,12 @@ import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/st
 import type { JavaScriptSkillRuntimeInfo } from "../skills.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
+const MAX_STRUCTURED_OUTPUT_DETAIL_CHARS = 16 * 1024;
+
 const javascriptSchema = Type.Object({
 	code: Type.String({
 		description:
-			"JavaScript or TypeScript scratchpad code to execute in the persistent Bun notebook. TypeScript syntax is transpiled without type-checking, and top-level await is supported. Bun Shell `$`, `fs`, `path`, `os`, and `util` are preloaded. Do not import `$` from `bun`; use it directly. Do not redeclare preloaded runtime globals; choose distinct local names. Use `.nothrow()` for expected non-zero exits such as search no-match; Bun Shell throws before JavaScript `||` fallbacks. Discover optional paths before reading them instead of relying on shell globs. Run target-project commands through that project's own environment. For repository search, prefer `rg -n` or `rg --files` with traversal-time globs and exclusions; avoid repeated recursive `grep` scans with post-pipe filters.",
+			"JavaScript or TypeScript scratchpad code to execute in the persistent Bun notebook. TypeScript syntax is transpiled without type-checking, and top-level await is supported. Bun Shell `$`, `fs`, `path`, `os`, and `util` are preloaded; `sh` and `rlm` are reserved runtime APIs. Do not import `$` from `bun`; use it directly. Do not redeclare preloaded runtime globals; choose distinct local names. Bun Shell is not Bash and does not support process substitution `<(...)`; use ordinary JavaScript or `sh(command)` for shell-specific syntax. Use `.nothrow()` for expected non-zero exits such as search no-match; Bun Shell throws before JavaScript `||` fallbacks. Keep output bounded by retaining large inventories in variables and printing counts or small samples. Discover optional paths before reading them instead of relying on shell globs. Run target-project commands through that project's own environment. For repository search, prefer `rg -n` or `rg --files` with traversal-time globs and exclusions; avoid repeated recursive `grep` scans with post-pipe filters.",
 	}),
 });
 
@@ -132,6 +134,12 @@ export interface JavaScriptToolOptions {
 	onRestore?: (result: RestoreResult) => void;
 	onLateSentAgentMessage?: (toolCallId: string, message: KernelSentAgentMessage) => void;
 	provisioner?: BunKernelProvisioner;
+}
+
+function structuredOutputDetails(result: ExecuteResult): Pick<JavaScriptToolDetails, "result" | "stderr" | "stdout"> {
+	const outputChars = result.stdout.length + result.stderr.length + (result.result?.length ?? 0);
+	if (result.status === "ok" && outputChars > MAX_STRUCTURED_OUTPUT_DETAIL_CHARS) return {};
+	return { result: result.result, stderr: result.stderr, stdout: result.stdout };
 }
 
 export class BunKernelProvisioner {
@@ -300,7 +308,7 @@ export function createJavaScriptToolDefinition(
 		name: "javascript",
 		label: "Bun",
 		description:
-			"Execute JavaScript or TypeScript in a persistent Bun notebook. TypeScript syntax is transpiled without type-checking. Variables and loaded data persist across calls and are restored on a best-effort basis when a session resumes. Top-level await, Bun APIs, `sh`, Bun Shell, RLM, and prepared JavaScript skills are available as globals. Bun Shell `$`, `fs`, `path`, `os`, and `util` are preloaded. Do not import `$` from `bun`; use the preloaded global directly. Do not redeclare preloaded runtime globals; choose distinct local names. Use `.nothrow()` for expected non-zero exits such as search no-match; Bun Shell throws before JavaScript `||` fallbacks. Discover optional paths before reading them instead of relying on shell globs. Run target-project commands through the target project's own environment. For repository search, prefer `rg -n` or `rg --files` with traversal-time globs and exclusions; avoid repeated recursive `grep` scans with post-pipe filters.",
+			"Execute JavaScript or TypeScript in a persistent Bun notebook. TypeScript syntax is transpiled without type-checking. Variables and loaded data persist across calls and are restored on a best-effort basis when a session resumes. Top-level await, Bun APIs, `sh`, Bun Shell, RLM, and prepared JavaScript skills are available as globals. Bun Shell `$`, `fs`, `path`, `os`, and `util` are preloaded; `sh` and `rlm` are reserved runtime APIs. Do not import `$` from `bun`; use the preloaded global directly. Do not redeclare preloaded runtime globals; choose distinct local names. Bun Shell is not Bash and does not support process substitution `<(...)`; use ordinary JavaScript or `sh(command)` for shell-specific syntax. Use `.nothrow()` for expected non-zero exits such as search no-match; Bun Shell throws before JavaScript `||` fallbacks. Keep output bounded by retaining large inventories in variables and printing counts or small samples. Discover optional paths before reading them instead of relying on shell globs. Run target-project commands through the target project's own environment. For repository search, prefer `rg -n` or `rg --files` with traversal-time globs and exclusions; avoid repeated recursive `grep` scans with post-pipe filters.",
 		promptSnippet: "javascript - persistent Bun notebook for JavaScript, TypeScript, shell orchestration, and RLM",
 		executionMode: "sequential",
 		parameters: javascriptSchema,
@@ -383,11 +391,9 @@ export function createJavaScriptToolDefinition(
 						error: result.error,
 						errorEname: result.error?.ename,
 						kernelStatus: manager.status,
-						result: result.result,
 						sentAgentMessages: result.sentAgentMessages,
 						status: result.status,
-						stderr: result.stderr,
-						stdout: result.stdout,
+						...structuredOutputDetails(result),
 						timings,
 					},
 					isError: result.status === "error" || result.status === "aborted",

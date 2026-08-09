@@ -59,6 +59,7 @@ describe("buildRlmPrompt", () => {
 		expect(bunShellIndex).toBeGreaterThanOrEqual(0);
 		expect(shIndex).toBeGreaterThan(bunShellIndex);
 		expect(prompt).toContain("Bun Shell `$` is the fast path for ordinary commands");
+		expect(prompt).toContain("Do not import `$` from `bun`");
 		expect(prompt).toContain("`sh(command)` uses the configured project shell and command prefix");
 		expect(prompt).toContain("await sh(command)");
 		expect(prompt).toContain("{ exitCode, stdout, stderr }");
@@ -384,11 +385,13 @@ describe("createJavaScriptToolDefinition", () => {
 		const tool = createJavaScriptToolDefinition("/repo");
 
 		expect(tool.description).toContain("JavaScript or TypeScript");
+		expect(tool.description).toContain("Do not import `$` from `bun`");
 		expect(tool.description).toContain("target project's own environment");
 		expect(tool.promptSnippet).toContain("persistent Bun notebook");
 		const codeSchema = tool.parameters.properties.code;
 		const codeDescription =
 			"description" in codeSchema && typeof codeSchema.description === "string" ? codeSchema.description : "";
 		expect(codeDescription).toContain("target-project commands through that project's own environment");
+		expect(codeDescription).toContain("Do not import `$` from `bun`");
 	});
 });

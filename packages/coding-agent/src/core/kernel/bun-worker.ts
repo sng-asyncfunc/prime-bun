@@ -570,6 +570,10 @@ const persistBinding: PersistBinding = (name, value, recipe) => {
 	});
 };
 
+function isRedundantBunShellImport(name: string, recipe: ModuleBindingRecipe | undefined): boolean {
+	return name === "$" && recipe?.specifier === "bun" && recipe.exportName === "$";
+}
+
 function reconcileBindings(): void {
 	for (const name of [...bindings]) {
 		if (Object.hasOwn(globalThis, name)) continue;
@@ -1178,16 +1182,31 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 	let userCodeStarted = false;
 	try {
 		const transformed = transformJavaScriptCell(transpileCell(message.code));
-		const conflictingBinding = transformed.bindingNames.find((name) => runtimeBindingNames.has(name));
+		const cellLocalRuntimeBindings = new Set(
+			transformed.bindingNames.filter(
+				(name) =>
+					runtimeBindingNames.has(name) && isRedundantBunShellImport(name, transformed.bindingRecipes[name]),
+			),
+		);
+		const conflictingBinding = transformed.bindingNames.find(
+			(name) => runtimeBindingNames.has(name) && !cellLocalRuntimeBindings.has(name),
+		);
 		if (conflictingBinding) {
 			throw new SyntaxError(`${conflictingBinding} conflicts with a runtime global and cannot be redeclared`);
 		}
+		const persistCellBinding: PersistBinding = (name, value, recipe) => {
+			if (cellLocalRuntimeBindings.has(name)) return;
+			if (runtimeBindingNames.has(name)) {
+				throw new SyntaxError(`${name} conflicts with a runtime global and cannot be redeclared`);
+			}
+			persistBinding(name, value, recipe);
+		};
 		const executor = new AsyncFunction("__primePersist", transformed.code);
 		userCodeStarted = true;
-		const result = await cellContext.run(activeCell, () => executor(persistBinding));
+		const result = await cellContext.run(activeCell, () => executor(persistCellBinding));
 		flushCellStreams(message.cellId);
 		send({
-			bindingNames: transformed.bindingNames,
+			bindingNames: transformed.bindingNames.filter((name) => !cellLocalRuntimeBindings.has(name)),
 			cellId: message.cellId,
 			durationMs: performance.now() - startedAt,
 			id: randomUUID(),

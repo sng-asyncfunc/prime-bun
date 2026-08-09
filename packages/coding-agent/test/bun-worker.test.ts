@@ -845,6 +845,82 @@ const native = await $\`printf %s bun-shell\`;
 		expect(result.value).toContain('native: "bun-shell"');
 	});
 
+	it("accepts a redundant import of the preloaded Bun Shell global", async () => {
+		client.send({
+			cellId: "redundant-shell-import-cell",
+			code: [
+				'import { $ } from "bun";',
+				"const importedShellResult = await $`printf first-run-ok`.quiet();",
+				"importedShellResult.stdout.toString();",
+			].join("\n"),
+			id: "redundant-shell-import-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const result = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "redundant-shell-import-execute",
+		);
+		expect(result).toMatchObject({
+			bindingNames: ["importedShellResult"],
+			status: "ok",
+			value: '"first-run-ok"',
+		});
+
+		client.send({
+			id: "redundant-shell-import-names",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "list_names",
+		});
+		const names = await client.waitForType(
+			"list_names_result",
+			(message) => message.replyTo === "redundant-shell-import-names",
+		);
+		expect(names.names).toContain("importedShellResult");
+		expect(names.names).not.toContain("$");
+
+		client.send({
+			cellId: "preloaded-shell-after-import-cell",
+			code: [
+				"({",
+				'  descriptorWritable: Object.getOwnPropertyDescriptor(globalThis, "$")?.writable,',
+				"  output: (await $`printf still-preloaded`.quiet()).stdout.toString(),",
+				"})",
+			].join("\n"),
+			id: "preloaded-shell-after-import-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const followingResult = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "preloaded-shell-after-import-execute",
+		);
+		requireSuccess(followingResult);
+		expect(followingResult.value).toContain('output: "still-preloaded"');
+		expect(followingResult.value).toContain("descriptorWritable: false");
+	});
+
+	it("rejects a noncanonical import that shadows the Bun Shell global", async () => {
+		client.send({
+			cellId: "noncanonical-shell-import-cell",
+			code: 'import { spawn as $ } from "bun";',
+			id: "noncanonical-shell-import-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const result = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "noncanonical-shell-import-execute",
+		);
+		expect(result).toMatchObject({
+			error: { message: expect.stringMatching(/\$.*runtime global/i) },
+			stateChanged: false,
+			status: "error",
+		});
+	});
+
 	it("supports concise text and JSON shell consumers", async () => {
 		client.send({
 			cellId: "shell-consumer-cell",

@@ -115,6 +115,12 @@ const MAX_RESULT_PROJECTION_ENTRIES = 256;
 const MAX_RESULT_PROJECTION_KEY_CHARS = 256;
 const MAX_SKILL_UNAVAILABLE_REASON_CHARS = 512;
 const MAX_WRITEV_BUFFERS = 1024;
+const CELL_LOCAL_RUNTIME_MODULE_SPECIFIERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	["fs", new Set(["fs", "node:fs"])],
+	["os", new Set(["os", "node:os"])],
+	["path", new Set(["path", "node:path"])],
+	["util", new Set(["util", "node:util"])],
+]);
 const cellContext = new AsyncLocalStorage<ActiveCell>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
 const primeFileSystem: PrimeFileSystem = Object.freeze({
@@ -570,8 +576,13 @@ const persistBinding: PersistBinding = (name, value, recipe) => {
 	});
 };
 
-function isRedundantBunShellImport(name: string, recipe: ModuleBindingRecipe | undefined): boolean {
-	return name === "$" && recipe?.specifier === "bun" && recipe.exportName === "$";
+function isCellLocalRuntimeModuleImport(name: string, recipe: ModuleBindingRecipe | undefined): boolean {
+	if (!recipe) return false;
+	if (name === "$") return recipe.specifier === "bun" && recipe.exportName === "$";
+	const specifiers = CELL_LOCAL_RUNTIME_MODULE_SPECIFIERS.get(name);
+	return (
+		specifiers?.has(recipe.specifier) === true && (recipe.exportName === undefined || recipe.exportName === "default")
+	);
 }
 
 function reconcileBindings(): void {
@@ -1185,19 +1196,23 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 		const cellLocalRuntimeBindings = new Set(
 			transformed.bindingNames.filter(
 				(name) =>
-					runtimeBindingNames.has(name) && isRedundantBunShellImport(name, transformed.bindingRecipes[name]),
+					runtimeBindingNames.has(name) && isCellLocalRuntimeModuleImport(name, transformed.bindingRecipes[name]),
 			),
 		);
 		const conflictingBinding = transformed.bindingNames.find(
 			(name) => runtimeBindingNames.has(name) && !cellLocalRuntimeBindings.has(name),
 		);
 		if (conflictingBinding) {
-			throw new SyntaxError(`${conflictingBinding} conflicts with a runtime global and cannot be redeclared`);
+			throw new SyntaxError(
+				`${conflictingBinding} conflicts with a runtime global and cannot be redeclared; choose a different local name`,
+			);
 		}
 		const persistCellBinding: PersistBinding = (name, value, recipe) => {
 			if (cellLocalRuntimeBindings.has(name)) return;
 			if (runtimeBindingNames.has(name)) {
-				throw new SyntaxError(`${name} conflicts with a runtime global and cannot be redeclared`);
+				throw new SyntaxError(
+					`${name} conflicts with a runtime global and cannot be redeclared; choose a different local name`,
+				);
 			}
 			persistBinding(name, value, recipe);
 		};

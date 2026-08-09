@@ -521,7 +521,9 @@ const callback = await new Promise((resolve, reject) => {
 			(message) => message.replyTo === "runtime-collision-execute",
 		);
 		expect(collision).toMatchObject({
-			error: { message: expect.stringMatching(/fs.*runtime global/i) },
+			error: {
+				message: expect.stringMatching(/fs.*runtime global.*choose a different local name/i),
+			},
 			status: "error",
 		});
 
@@ -899,6 +901,58 @@ const native = await $\`printf %s bun-shell\`;
 		requireSuccess(followingResult);
 		expect(followingResult.value).toContain('output: "still-preloaded"');
 		expect(followingResult.value).toContain("descriptorWritable: false");
+	});
+
+	it("accepts canonical imports of preloaded Node modules as cell-local bindings", async () => {
+		client.send({
+			cellId: "redundant-node-import-cell",
+			code: [
+				'const fs = require("fs");',
+				'const path = require("path");',
+				'const os = require("os");',
+				'const util = require("util");',
+				"({",
+				'  basename: path.basename("/a/b"),',
+				'  nativeFs: !("callbacks" in fs),',
+				"  platform: typeof os.platform,",
+				'  formatted: util.format("%s-%d", "ready", 1),',
+				"})",
+			].join("\n"),
+			id: "redundant-node-import-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+
+		const imported = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "redundant-node-import-execute",
+		);
+		requireSuccess(imported);
+		expect(imported.bindingNames).toEqual([]);
+		expect(imported.value).toContain('basename: "b"');
+		expect(imported.value).toContain("nativeFs: true");
+		expect(imported.value).toContain('platform: "function"');
+		expect(imported.value).toContain('formatted: "ready-1"');
+
+		client.send({
+			cellId: "preloaded-node-modules-after-import-cell",
+			code: `({
+				preloadedFs: "callbacks" in fs,
+				fsWritable: Object.getOwnPropertyDescriptor(globalThis, "fs")?.writable,
+				pathWritable: Object.getOwnPropertyDescriptor(globalThis, "path")?.writable,
+			})`,
+			id: "preloaded-node-modules-after-import-execute",
+			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+			type: "execute",
+		});
+		const following = await client.waitForType(
+			"result",
+			(message) => message.replyTo === "preloaded-node-modules-after-import-execute",
+		);
+		requireSuccess(following);
+		expect(following.value).toContain("preloadedFs: true");
+		expect(following.value).toContain("fsWritable: false");
+		expect(following.value).toContain("pathWritable: false");
 	});
 
 	it("rejects a noncanonical import that shadows the Bun Shell global", async () => {

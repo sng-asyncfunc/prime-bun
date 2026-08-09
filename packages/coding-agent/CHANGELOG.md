@@ -18,6 +18,7 @@
 - Fixed redundant Bun Shell imports failing the first JavaScript notebook call.
 - Changed idle daemon workers to expire after 30 minutes by default, reducing memory retained across repeated sessions.
 - Improved Bun notebook repository-search guidance to avoid repeated whole-tree scans.
+- Fixed Bun notebook audits failing on redundant preloaded-module imports and expected search no-match exits.
 
 ## [0.7.1] - 2026-08-07
 

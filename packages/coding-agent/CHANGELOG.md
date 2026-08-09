@@ -14,6 +14,7 @@
 - Changed the source-checkout command to npm-linked `prime-bun`, with Prime Bun help text and a separate default daemon socket.
 - Fixed chat input and scrolling lag during high-frequency response streaming.
 - Fixed Bun notebook checkpoints duplicating aliased state and redundant recovery/persistence serialization during long sessions.
+- Improved Bun notebook long-session memory, namespace scaling, large-checkpoint cleanup, and failed-cell recovery.
 
 ## [0.7.1] - 2026-08-07
 

@@ -57,7 +57,7 @@ This keeps direct `globalThis` additions, deletions, and overwritten module reci
 
 ### Shared graph safety inspection
 
-Snapshot validation uses one memoizing inspector for the whole binding set. It records safe, unsafe, and currently-visiting objects in a `WeakMap`. Cycles terminate at the visiting marker; completed results are reused across top-level roots and nested shared subgraphs.
+Snapshot validation uses one memoizing inspector for the whole binding set. Settled safe and unsafe results are reused across top-level roots and nested shared subgraphs. Each root traversal keeps visiting and provisional-safe cycle state locally; cycle members become globally safe only after the complete root proves safe. This prevents order-dependent acceptance of an unsafe cyclic alias without repeatedly traversing safe cyclic diamonds.
 
 The existing `snapshotValueSkipReason()` API remains as a one-shot wrapper. The worker uses the shared inspector, and serialization fallback still isolates values that JavaScriptCore rejects.
 
@@ -85,7 +85,7 @@ This bumps only the private Bun host/worker protocol. There is no daemon command
 
 ## Verification
 
-Test-first coverage will prove:
+Test-first coverage proves:
 
 - workers start in compact mode by default and can opt out;
 - direct global additions/deletions remain visible to listing and snapshots after reconciliation moves;
@@ -96,6 +96,17 @@ Test-first coverage will prove:
 - the existing graph identity, cap, timeout, mirror, v2/v3 restore, and abort suites remain green.
 
 Benchmarks repeat the 100,000-unique-cell, 20,000-distinct-name, 64 MiB stable-state, and 8 MiB alias workloads. Repository `npm run check` and an adversarial read-only review gate finish the phase.
+
+## Results
+
+The production-protocol benchmark matrix completed with the default compact heap policy:
+
+- 100,000 rebinding cells completed in 10.37 seconds and ended at 133 MiB RSS after collection, with 3.45 MiB of live JSC heap.
+- 20,000 distinct-name cells completed in 2.17 seconds instead of 31.6 seconds, a 93% reduction in elapsed time; the final 2,000-cell bucket remained flat at 0.20 seconds instead of growing to 6.14 seconds.
+- Twenty checkpoints over one stable 64 MiB value completed in 1.48 seconds and ended at 241 MiB RSS after collection, below the prior 350–552 MiB range.
+- Twenty aliases over one 8 MiB value produced an 8 MiB checkpoint, completed in 0.14 seconds, and ended at 75 MiB RSS after collection.
+
+The focused kernel suites, repository checks, and Fable5 gate passed. Fable's blocking review found an order-dependent safe-cache result inside an unsafe cycle; regressions now cover both roots at worker level. Its follow-up performance concern led to provisional cycle promotion, reducing a 12-level cyclic-diamond probe from 4,095 inspections to 12 while retaining unsafe-cycle rejection.
 
 ## Deferred Research
 

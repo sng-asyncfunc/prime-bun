@@ -46,6 +46,8 @@ The prepared runtime lives at `~/.prime/agent/kernel-bun` by default; `PRIME_AGE
 
 Every message carries a protocol version and correlation ID. The manager rejects mismatched protocol versions, malformed responses, and unknown reply IDs. Cell execution is serialized so a notebook has one ordered shared namespace.
 
+The worker uses Bun's compact heap policy by default to reduce resident memory during long sessions. Durable namespace discovery runs when state is listed or checkpointed instead of scanning every accumulated global after every cell.
+
 Notebook output is separate from protocol output. `console.log`, `console.error`, Bun Shell streams, display attachments, and final expression values are collected for the active cell without corrupting the control channel.
 
 ## Cell execution
@@ -130,7 +132,9 @@ Detached tasks may continue after a cell result. Their host requests remain rout
 
 Prime Agent snapshots durable top-level bindings with Bun's JavaScriptCore serializer. Primitive values, plain objects, cycles, dates, regular expressions, maps, sets, array buffers, and typed arrays are preserved when the runtime serializer supports them. Functions, promises, weak collections, and custom class instances are not guaranteed to survive restart.
 
-Module bindings use versioned restore recipes rather than JavaScriptCore serialization. Snapshot version 3 retains the loader and selected export, while the decoder continues to accept version 2 namespace-import snapshots.
+Module bindings use versioned restore recipes rather than JavaScriptCore serialization. Snapshot version 4 stores compatible ordinary bindings as shared graphs so aliases and cycles retain their identity. The decoder continues to accept version 3 scalar snapshots and version 2 namespace-import snapshots.
+
+Validation is memoized across each shared graph. Large checkpoint buffers are released after the recovery and persistence files finish writing, followed by a guarded JavaScriptCore sweep to return transient serialization memory promptly.
 
 Snapshot restore is best effort:
 
@@ -144,6 +148,8 @@ The live worker remains authoritative while a session is running. Snapshots prov
 ## Abort and recovery
 
 Ordinary execution is serialized. When an abort signal fires, Prime Agent stops the Bun worker process tree because arbitrary JavaScript cannot be safely interrupted in place. The next cell starts a fresh worker and restores the latest snapshot on a best-effort basis. This makes abort deterministic and prevents a cancelled cell from continuing to mutate notebook state.
+
+Any cell that begins running user code marks recovery state dirty, including a cell that mutates bindings before throwing. Parse and compile failures that never start user code leave an existing recovery checkpoint clean.
 
 Startup, execution, host requests, and shutdown all have bounded failure paths. Worker exit rejects pending cells and requests, and session disposal waits for in-flight host work before tearing down routing.
 

@@ -441,6 +441,19 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("<javascript_global>webSearch</javascript_global>");
 		expect(prompt).toContain("Installed JavaScript skill globals (prepared): `webSearch`.");
 	});
+
+	test("does not assume prepared JavaScript skill globals are callable", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: ["javascript"],
+			contextFiles: [],
+			skills: [javaScriptSkill("rlm-heartbeat", "rlmHeartbeat")],
+			cwd: "/repo",
+		});
+
+		expect(prompt).toContain("A prepared global may be a function or a method-only object");
+		expect(prompt).toContain("Never call a prepared global as a function unless SKILL.md documents that exact form");
+		expect(prompt).not.toContain("can be called directly by that global name");
+	});
 });
 
 describe("createJavaScriptToolDefinition", () => {

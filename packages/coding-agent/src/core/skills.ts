@@ -515,7 +515,7 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 	const lines = [
 		"\n\nThe following skills provide specialized instructions for specific tasks.",
 		"Use the JavaScript notebook to inspect a skill's file when the task matches its description.",
-		"Skills with a javascript_global are prepared in the persistent Bun runtime and can be called directly by that global name.",
+		"Skills with a javascript_global are prepared in the persistent Bun runtime. The global may be a function or a method-only object; read SKILL.md and use its exact documented API shape.",
 		"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
 		"",
 		"<available_skills>",

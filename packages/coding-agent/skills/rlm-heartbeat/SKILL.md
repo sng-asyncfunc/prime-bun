@@ -9,7 +9,8 @@ RLM heartbeats are internal recurring prompts for the current agent session.
 They are separate from the user's visible `/heartbeat`: this skill cannot read,
 replace, pause, resume, or clear that user-level heartbeat.
 
-Call directly from Bun:
+`rlmHeartbeat` is a method-only object, not a callable function. Use its
+documented methods directly from Bun:
 
 ```javascript
 await rlmHeartbeat.create("check test progress", { interval: "5m", label: "tests" });
@@ -48,5 +49,7 @@ the session when it is busy:
   coordination.
 - Do not use this skill to satisfy a user's request to configure `/heartbeat`;
   that is a separate user-level surface.
+- Do not call `rlmHeartbeat(...)` or use this skill to wait for subagent
+  messages or to end a turn. Stop calling tools and end the turn instead.
 - Keep heartbeat instructions specific and actionable so each recurring turn
   knows exactly what to inspect or continue.

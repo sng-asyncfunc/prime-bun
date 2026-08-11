@@ -56,7 +56,7 @@ function buildJavaScriptControlPrompt(options: { hasEditFile: boolean; hasWriteF
 		"",
 		"Terminology: continual harness names the persisted prompt, memory, skill, and subagent layer; RLM names the Bun runtime and native call interface exposed to the model.",
 		"",
-		"RLM-native call contract: installed JavaScript skills are prepared as globals. Read the matching SKILL.md and call its documented function. Continual harness skill entries use a JavaScript `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm('sub-task')`; admission returns a child handle immediately. Results arrive only through an available messaging capability or files, never as an `rlm()` return value. Do not invent wrappers such as `callSkill(...)` or `runSubagent(...)`.",
+		"RLM-native call contract: installed JavaScript skills are prepared as globals, and each global may be callable or method-only. Read the matching SKILL.md and use its exact documented API shape; never call a prepared global as a function or use `.run(...)` unless that form is documented. Continual harness skill entries use a JavaScript `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm('sub-task')`; admission returns a child handle immediately. Results arrive only through an available messaging capability or files, never as an `rlm()` return value. Do not invent wrappers such as `callSkill(...)` or `runSubagent(...)`.",
 	].join("\n");
 }
 
@@ -121,7 +121,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		if (hasJavaScript) {
 			skillLines.push(`Installed JavaScript skill globals (prepared): ${installed}.`);
 			skillLines.push(
-				"Read each skill's SKILL.md for its API. Use `typeof`, object keys, and the documented signatures to inspect a prepared global.",
+				"Read each skill's SKILL.md before first use. A prepared global may be a function or a method-only object; use `typeof`, `Object.keys`, and only the documented signatures to inspect and invoke it. Never call a prepared global as a function unless SKILL.md documents that exact form.",
 			);
 		}
 		if (hasJavaScript && installedSkills.includes("edit")) {

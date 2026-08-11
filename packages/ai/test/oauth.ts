@@ -27,6 +27,9 @@ type AuthCredential = ApiKeyCredential | OAuthCredentialEntry;
 type AuthStorage = Record<string, AuthCredential>;
 
 function loadAuthStorage(): AuthStorage {
+	if (process.env.PI_NO_TEST_AUTH === "1") {
+		return {};
+	}
 	if (!existsSync(AUTH_PATH)) {
 		return {};
 	}

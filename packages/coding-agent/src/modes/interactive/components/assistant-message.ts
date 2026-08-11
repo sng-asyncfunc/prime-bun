@@ -1,6 +1,15 @@
 import { performance } from "node:perf_hooks";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { type Component, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Container,
+	Markdown,
+	type MarkdownTheme,
+	Spacer,
+	Text,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { LOGIN_RECOVERY_MESSAGE } from "../../../core/auth-guidance.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import {
@@ -9,6 +18,7 @@ import {
 	shouldCollapseErrorDetails,
 	summarizeErrorDetails,
 } from "./collapsible-error.js";
+import { expandCollapseHint } from "./keybinding-hints.js";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -37,6 +47,43 @@ function getThinkingMarkdownTheme(baseTheme: MarkdownTheme): MarkdownTheme {
 		listBullet: quiet,
 		highlightCode: (code: string) => code.split("\n").map((line) => quiet(line)),
 	};
+}
+
+class CollapsedThinkingRow implements Component {
+	constructor(
+		private readonly label: string,
+		private readonly recap: string,
+		private readonly hint: string,
+	) {}
+
+	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		const separator = theme.fg("dim", " · ");
+		const fixedWidth = visibleWidth(` ${this.label}${separator} ${this.hint}`);
+		const recapWidth = Math.max(8, safeWidth - fixedWidth);
+		const recap = theme.fg("thinkingText", truncateToWidth(this.recap, recapWidth));
+		return [truncateToWidth(` ${this.label}${separator}${recap} ${this.hint}`, safeWidth, "")];
+	}
+
+	invalidate(): void {}
+}
+
+export function thinkingRecap(thinking: string, fallback: string, maxWidth = 120): string {
+	const lines = thinking
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0);
+	const lastHeader = [...lines].reverse().find((line) => /^\*\*[^*]+\*\*:?$/.test(line) || /^#{1,6}\s+\S/.test(line));
+	const source = lastHeader ?? lines[0] ?? fallback;
+	const plain = source
+		.replace(/^#{1,6}\s+/, "")
+		.replace(/\*\*([^*]+)\*\*/g, "$1")
+		.replace(/\*([^*]+)\*/g, "$1")
+		.replace(/`([^`]+)`/g, "$1")
+		.replace(/\s+/g, " ")
+		.replace(/:$/, "")
+		.trim();
+	return truncateToWidth(plain || fallback, Math.max(20, maxWidth));
 }
 
 function formatInlineLoginRecoveryMessage(message: string): string | undefined {
@@ -201,6 +248,9 @@ export class AssistantMessageComponent extends Container {
 				parts.push(`${i}:text:${content.text.trim() ? 1 : 0}`);
 			} else if (content.type === "thinking") {
 				parts.push(`${i}:thinking:${content.thinking.trim() ? 1 : 0}`);
+				if (this.hideThinkingBlock && content.thinking.trim()) {
+					parts.push(`${i}:recap:${JSON.stringify(thinkingRecap(content.thinking, this.hiddenThinkingLabel))}`);
+				}
 			} else {
 				parts.push(`${i}:${content.type}`);
 			}
@@ -271,16 +321,19 @@ export class AssistantMessageComponent extends Container {
 					.slice(i + 1)
 					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
+				const thinkingLabel = theme.bold(theme.fg("thinkingText", this.hiddenThinkingLabel));
 				if (this.hideThinkingBlock) {
-					// Show static thinking label when hidden
+					const recap = thinkingRecap(content.thinking, this.hiddenThinkingLabel);
 					this.contentContainer.addChild(
-						new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), 1, 0),
+						new CollapsedThinkingRow(thinkingLabel, recap, expandCollapseHint("app.thinking.toggle", false)),
 					);
 					if (hasVisibleContentAfter) {
 						this.contentContainer.addChild(new Spacer(1));
 					}
 				} else {
-					// Thinking traces keep Markdown structure but stay visually quiet.
+					this.contentContainer.addChild(
+						new Text(`${thinkingLabel} ${expandCollapseHint("app.thinking.toggle", true)}`, 1, 0),
+					);
 					const markdown = new Markdown(
 						content.thinking.trim(),
 						1,

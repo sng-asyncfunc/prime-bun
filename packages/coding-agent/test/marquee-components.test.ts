@@ -150,7 +150,7 @@ describe("marquee TUI components", () => {
 
 		const collapsed = stripAnsi(component.render(100).join("\n"));
 		expect(collapsed).toContain("cat /tmp/missing-file");
-		expect(collapsed).toContain("ShellError · Ctrl+O to expand");
+		expect(collapsed).toContain("ShellError · (Ctrl+O to expand)");
 		expect(collapsed).not.toContain("No such file or directory");
 		expect(collapsed).not.toContain("Failed with exit code 1");
 		expect(collapsed).not.toContain("traceback collapsed");
@@ -181,7 +181,7 @@ describe("marquee TUI components", () => {
 		const component = new JavaScriptCellComponent(state);
 
 		const collapsed = stripAnsi(component.render(100).join("\n"));
-		expect(collapsed).toContain("RuntimeError · Ctrl+O to expand");
+		expect(collapsed).toContain("RuntimeError · (Ctrl+O to expand)");
 		expect(collapsed).not.toContain("no output");
 		expect(collapsed).not.toContain("/tmp/internal.ts");
 		expect(collapsed).not.toContain(":12:1");
@@ -424,7 +424,7 @@ describe("marquee TUI components", () => {
 		// generic JSON arg dump.
 		const collapsedLines = component.render(100);
 		const collapsed = stripAnsi(collapsedLines.join("\n"));
-		expect(collapsed).toContain("javascript");
+		expect(collapsed).toMatch(/\bjs\b/);
 		expect(collapsed).toContain("12ms");
 		expect(collapsed).toContain("Ctrl+O to expand");
 		expect(collapsed).not.toContain("Bun");
@@ -435,7 +435,7 @@ describe("marquee TUI components", () => {
 		component.setExpanded(true);
 		const expandedLines = component.render(100);
 		const expanded = stripAnsi(expandedLines.join("\n"));
-		const expandedStatus = expandedLines.map(stripAnsi).find((line) => line.includes("javascript"));
+		const expandedStatus = expandedLines.map(stripAnsi).find((line) => /\bjs\b/.test(line));
 		expect(expandedStatus).toContain("↑ 1 ↓ 1 lines · 12ms");
 		expect(expanded).toContain("Ctrl+O to collapse");
 		expect(expanded).toContain("console.log(55)");

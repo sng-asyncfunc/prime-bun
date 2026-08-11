@@ -16,7 +16,7 @@ import { getWorkingPulseFrame, WORKING_ICON_FRAMES, workingIconFrame } from "../
 import { agentMessageBodyLines, agentMessagePreview, agentMessageSummaryLine } from "./agent-message.js";
 import { normalizeErrorDetails, summarizeErrorDetails } from "./collapsible-error.js";
 import { renderDiffSeparator, renderRichDiff } from "./diff.js";
-import { keyHint } from "./keybinding-hints.js";
+import { expandCollapseHint } from "./keybinding-hints.js";
 
 export interface JavaScriptCellContentBlock {
 	type: string;
@@ -534,7 +534,7 @@ export class JavaScriptCellComponent implements Component {
 		}
 
 		if (this.state.showExpandHint !== false) {
-			metadata.push(keyHint("app.tools.expand", this.state.expanded ? "to collapse" : "to expand"));
+			metadata.push(expandCollapseHint("app.tools.expand", this.state.expanded ?? false));
 		}
 
 		const separator = theme.fg("dim", " · ");

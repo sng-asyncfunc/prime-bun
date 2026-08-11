@@ -490,8 +490,9 @@ describe("ENG-4531 agent message UI", () => {
 
 		component.setExpanded(true);
 		const expanded = render(component);
+		expect(expanded).toContain("to collapse");
 		const expandedLines = expanded.split("\n");
-		expect(expandedLines[1]?.trimEnd()).toBe(" ◆ Agent message received · from Planner");
+		expect(expandedLines[1]?.trimEnd()).toMatch(/^ ◆ Agent message received · from Planner \(.*to collapse\)$/);
 		expect(expandedLines.slice(2)).toEqual([
 			" ╰─ Reply to your parent with exactly: hi",
 			"    Then wait for more work.",
@@ -541,6 +542,79 @@ describe("ENG-4531 agent message UI", () => {
 			" ◆ Agent message sent · to parent Worker · Continue with shard eight.",
 		]);
 		expect(rendered).not.toContain("Agent message received");
+	});
+
+	it("keeps tool and agent-message expansion independent when rebuilding a transcript", () => {
+		const message = createAgentSessionMessage(createPayload("Inspect the next shard."));
+		const options = {
+			ui: { requestRender: () => {} } as unknown as TUI,
+			cwd: "/tmp",
+			toolOptions: {},
+			getToolDefinition: () => undefined,
+		};
+
+		const toolOnly = buildConversationComponents([message], {
+			...options,
+			toolsExpanded: true,
+			agentMessagesExpanded: false,
+		});
+		expect(stripAnsi(toolOnly[0]?.render(120).join("\n") ?? "")).not.toContain("╰─ Inspect the next shard.");
+
+		const messagesOnly = buildConversationComponents([message], {
+			...options,
+			toolsExpanded: false,
+			agentMessagesExpanded: true,
+		});
+		const rendered = stripAnsi(messagesOnly[0]?.render(120).join("\n") ?? "");
+		expect(rendered).toContain("╰─ Inspect the next shard.");
+	});
+
+	it("toggles live agent-message expansion without changing tool expansion", () => {
+		const toolStates: boolean[] = [];
+		const headerStates: boolean[] = [];
+		const message = new AgentMessageComponent(createAgentSessionMessage(createPayload("Live message.")));
+		const messageStates: boolean[] = [];
+		const originalSetExpanded = message.setExpanded.bind(message);
+		message.setExpanded = (expanded: boolean) => {
+			messageStates.push(expanded);
+			originalSetExpanded(expanded);
+		};
+		const host = {
+			toolOutputExpanded: false,
+			agentMessagesExpanded: false,
+			customHeader: undefined,
+			builtInHeader: { setExpanded: (expanded: boolean) => headerStates.push(expanded) },
+			chatContainer: {
+				children: [{ setExpanded: (expanded: boolean) => toolStates.push(expanded) }, message],
+			},
+			ui: {
+				isFullscreen: () => false,
+				requestRender: () => {},
+				requestRenderPreservingViewport: () => {},
+			},
+		};
+		Object.setPrototypeOf(host, InteractiveMode.prototype);
+
+		const toggleMessages = Reflect.get(InteractiveMode.prototype, "toggleAgentMessageExpansion") as (
+			this: typeof host,
+		) => void;
+		const setTools = Reflect.get(InteractiveMode.prototype, "setToolsExpanded") as (
+			this: typeof host,
+			expanded: boolean,
+		) => void;
+
+		toggleMessages.call(host);
+		expect(host.agentMessagesExpanded).toBe(true);
+		expect(host.toolOutputExpanded).toBe(false);
+		expect(messageStates).toEqual([true]);
+		expect(toolStates).toEqual([false]);
+
+		setTools.call(host, true);
+		expect(host.toolOutputExpanded).toBe(true);
+		expect(host.agentMessagesExpanded).toBe(true);
+		expect(messageStates).toEqual([true, true]);
+		expect(toolStates).toEqual([false, true]);
+		expect(headerStates).toEqual([false, true]);
 	});
 
 	it("expands sent messages to the message text without the Bun receipt metadata", () => {

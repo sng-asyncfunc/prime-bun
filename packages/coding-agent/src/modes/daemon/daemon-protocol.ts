@@ -59,8 +59,10 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 8;
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
 // Revision 14 replaces the Python notebook event discriminator with JavaScript.
 // Revision 15 adds the mutate_queued_message command and queue_message_mutation capability.
-export const DAEMON_SCHEMA_REVISION = 15;
-export const DAEMON_SCHEMA_ID = "protocol-8-schema-15-1bcb9e7f1a49";
+// Revision 16 adds the "stopping" workerState and stops reporting disconnected workers as "ready".
+// This is a backward-compatible optional response semantic, so no capability gate is required.
+export const DAEMON_SCHEMA_REVISION = 16;
+export const DAEMON_SCHEMA_ID = "protocol-8-schema-16-1bcb9e7f1a49";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;

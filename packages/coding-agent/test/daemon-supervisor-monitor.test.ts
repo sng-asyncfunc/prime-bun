@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getProcessStartId } from "../src/core/session-lease.js";
 import type { DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import { CommandRecoveryJournal } from "../src/modes/daemon/command-recovery-journal.js";
 import { DaemonCatalogClient } from "../src/modes/daemon/daemon-catalog-process.js";
@@ -188,6 +189,7 @@ function createExistingLaunchWorker(root: string, descriptorDir: string) {
 			version: 1 as const,
 			workerId,
 			pid: 999_999,
+			processStartId: undefined as string | undefined,
 			socketPath: join(root, `${workerId}.sock`),
 			recoveryJournalPath: join(descriptorDir, `${workerId}.recovery.jsonl`),
 			orphanProcessJournalPath: join(descriptorDir, `${workerId}.orphans.jsonl`),
@@ -898,6 +900,11 @@ describe("daemon worker supervisor monitoring", () => {
 			);
 		await rollbackStarted;
 		supervisor.shuttingDown = true;
+		workerLaunchTestState.forceMissingProcessStartId = false;
+		existing.descriptor.processStartId = getProcessStartId(existing.descriptor.pid);
+		if (existing.descriptor.processStartId === undefined) {
+			throw new Error("Could not identify launched worker before shutdown");
+		}
 		await supervisor.stopWorker(existing, true, true);
 		releaseRollback();
 
@@ -1605,6 +1612,7 @@ describe("daemon worker supervisor monitoring", () => {
 		} as unknown as DaemonAttachResult;
 		const worker = {
 			descriptor: { workerId: "worker-1", lifecycle: "ready", pid: 1234 },
+			client: {},
 			summaries: new Map([[activeSessionId, summary]]),
 			snapshotCache: new Map([[activeSessionId, result]]),
 			snapshotTransferFrames: new Map(),

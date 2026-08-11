@@ -1117,6 +1117,7 @@ describe("InteractiveMode pending bash components", () => {
 		const tuiStub = {
 			terminal: { columns: 120, rows: 24 },
 			requestRender: () => {},
+			requestRenderFor: () => {},
 		} as unknown as ConstructorParameters<typeof BashExecutionComponent>[1];
 		const component = new BashExecutionComponent("sleep 99", tuiStub);
 		const loader = (component as unknown as { loader: { intervalId: unknown } }).loader;
@@ -1145,6 +1146,7 @@ describe("InteractiveMode pending bash components", () => {
 			renderRecap: vi.fn(),
 			javaScriptToolComponents: new Map(),
 			lateJavaScriptSentAgentMessages: new Map(),
+			queueSelection: { reset: vi.fn() },
 			resetPendingToolState: vi.fn(),
 			resetSubagentSummary: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
@@ -4207,6 +4209,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 				isFullscreen: vi.fn().mockReturnValue(false),
 			},
 		};
+		Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 
 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
 

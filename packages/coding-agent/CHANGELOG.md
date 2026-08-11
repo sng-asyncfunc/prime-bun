@@ -37,6 +37,7 @@
 - Fixed authored file writes and exact edits failing on Markdown or quote syntax by routing their content outside JavaScript source.
 - Improved long-session Bun checkpoint growth by guiding large one-shot JavaScript intermediates into block scope instead of persistent notebook state.
 - Fixed Bun notebook shell commands waiting indefinitely for stdin, leaking descendant processes across abort or shutdown, poisoning recovery after rapid cancellation, and hiding completed batch evidence.
+- Added in-place queued-message browsing, editing, deletion, and reordering while preserving queued work across interrupts.
 
 ## [0.7.1] - 2026-08-07
 

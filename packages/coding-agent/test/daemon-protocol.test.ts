@@ -83,6 +83,15 @@ describe("daemon protocol helpers", () => {
 		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toContain("model_catalog");
 	});
 
+	it("capability-gates queued message mutation at its introducing schema", () => {
+		expect(DAEMON_COMMAND_COMPATIBILITY.mutate_queued_message).toEqual({
+			minProtocol: 8,
+			minSchemaRevision: 15,
+			capability: "queue_message_mutation",
+		});
+		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toContain("queue_message_mutation");
+	});
+
 	it("schema-gates the RLM max depth commands at their introducing revision", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.get_rlm_max_depth_status).toEqual({ minProtocol: 8, minSchemaRevision: 11 });
 		expect(DAEMON_COMMAND_COMPATIBILITY.set_rlm_max_depth).toEqual({ minProtocol: 8, minSchemaRevision: 11 });

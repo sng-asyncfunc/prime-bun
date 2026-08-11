@@ -6,6 +6,8 @@ Prime Agent uses the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/k
 
 Work out of the box.
 
+On macOS, `Ctrl+Option+Up/Down` can be intercepted by the system or emitted as a legacy escape sequence. Prime Agent accepts both modern and legacy sequences for its queue-reordering shortcuts. If another app still captures them, remap `app.message.moveEarlier` and `app.message.moveLater` in `~/.prime/agent/keybindings.json`.
+
 ## Ghostty
 
 Add to your Ghostty config (`~/Library/Application Support/com.mitchellh.ghostty/config` on macOS, `~/.config/ghostty/config` on Linux):

@@ -72,6 +72,7 @@ type ResetHarness = PromptStashLiveMarkerHarness & {
 	ui: { requestRender: Mock };
 	javaScriptToolComponents: Map<string, unknown>;
 	lateJavaScriptSentAgentMessages: Map<string, unknown>;
+	queueSelection: { reset: Mock };
 	resetPendingToolState: Mock;
 	resetSubagentSummary: Mock;
 	setGoalAnnouncementBaseline: Mock;
@@ -554,6 +555,7 @@ describe("InteractiveMode prompt stash", () => {
 			ui: { requestRender: vi.fn() },
 			javaScriptToolComponents: new Map(),
 			lateJavaScriptSentAgentMessages: new Map(),
+			queueSelection: { reset: vi.fn() },
 			resetPendingToolState: vi.fn(),
 			resetSubagentSummary: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
@@ -589,6 +591,7 @@ describe("InteractiveMode prompt stash", () => {
 			ui: { requestRender: vi.fn() },
 			javaScriptToolComponents: new Map(),
 			lateJavaScriptSentAgentMessages: new Map(),
+			queueSelection: { reset: vi.fn() },
 			resetPendingToolState: vi.fn(),
 			resetSubagentSummary: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),

@@ -239,6 +239,17 @@ describe("InProcessAgentConnection", () => {
 		await expect(connection.cancelRlmChild("finished-child")).resolves.toBe(false);
 	});
 
+	it("mutates queued messages through the connection boundary", async () => {
+		const session = createFakeSession("queue", []);
+		const mutateQueuedMessage = vi.fn(() => "applied" as const);
+		Object.assign(session.session, { mutateQueuedMessage });
+		const connection = new InProcessAgentConnection(asRuntime(new FakeRuntime(session.session)));
+		const mutation = { type: "replace", text: "edited", lane: "followUp" } as const;
+
+		await expect(connection.mutateQueuedMessage("followUp", 0, "original", mutation)).resolves.toBe("applied");
+		expect(mutateQueuedMessage).toHaveBeenCalledWith("followUp", 0, "original", mutation);
+	});
+
 	it("loads session context through the connection boundary", async () => {
 		const session = createFakeSession("ctx", [userMessage("context", 1)]);
 		const runtime = new FakeRuntime(session.session);

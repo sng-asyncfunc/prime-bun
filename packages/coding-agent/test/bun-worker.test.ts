@@ -210,6 +210,7 @@ describe("Bun worker", () => {
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			shell: { args: ["-c"], executable: "/bin/sh" },
 			skillFactoryTimeoutMs: 1_000,
+			structuredShellTimeoutMs: 120_000,
 			skills: [],
 			type: "initialize",
 		});
@@ -588,6 +589,7 @@ const callback = await new Promise((resolve, reject) => {
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			shell: { args: ["-c"], executable: "/bin/sh" },
 			skillFactoryTimeoutMs: 1_000,
+			structuredShellTimeoutMs: 120_000,
 			skills: [
 				{ entryPath, globalName: "duplicateSkill", name: "first-skill" },
 				{ entryPath, globalName: "duplicateSkill", name: "second-skill" },
@@ -633,6 +635,7 @@ const callback = await new Promise((resolve, reject) => {
 				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 				shell: { args: ["-c"], executable: "/bin/sh" },
 				skillFactoryTimeoutMs: 1_000,
+				structuredShellTimeoutMs: 120_000,
 				skills: [
 					{
 						entryPath: unavailableEntryPath,
@@ -840,6 +843,7 @@ console.log("after-wait");
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			shell: { args: ["-c"], executable: "/bin/sh" },
 			skillFactoryTimeoutMs: 1_000,
+			structuredShellTimeoutMs: 120_000,
 			skills: [],
 			type: "initialize",
 		});

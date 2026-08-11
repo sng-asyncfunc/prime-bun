@@ -1,6 +1,5 @@
 import { deserialize, gcAndSweep, serialize } from "bun:jsc";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFile } from "node:child_process";
 import { Console } from "node:console";
 import { randomUUID } from "node:crypto";
 import * as fsModule from "node:fs";
@@ -24,6 +23,7 @@ import {
 } from "./bun-protocol.js";
 import { type BunRlmRuntime, createBunRlmRuntime } from "./bun-rlm-runtime.js";
 import { BUN_RUNTIME_GLOBAL_NAMES } from "./bun-runtime-globals.js";
+import { runBunShellProcess } from "./bun-shell-runner.js";
 import {
 	createSnapshotValueInspector,
 	decodeSnapshotPayload,
@@ -61,7 +61,7 @@ interface PrimeWorkerGlobals {
 	path: typeof pathModule;
 	util: typeof utilModule;
 	require: NodeJS.Require;
-	sh: (command: string) => ShellPromise;
+	sh: (command: string, options?: { timeoutMs?: number }) => ShellPromise;
 	installPackage: (...names: string[]) => Promise<ShellResult>;
 	hostRequest: (requestType: string, payload?: unknown) => Promise<unknown>;
 	rlm: BunRlmRuntime;
@@ -184,6 +184,7 @@ let bunPath = "bun";
 let kernelDirectory = process.cwd();
 let initialized = false;
 let shuttingDown = false;
+let structuredShellTimeoutMs = 120_000;
 let baselineGlobalNames = new Set<string>();
 let initialEnvironment: Record<string, string | undefined> = { ...process.env };
 
@@ -683,18 +684,26 @@ function reconcileBindings(): void {
 	}
 }
 
-function runShell(command: string): ShellPromise {
+function shellChildStarted(pid: number): void {
+	send({ id: randomUUID(), pid, protocolVersion: BUN_WORKER_PROTOCOL_VERSION, type: "shell_child_started" });
+}
+
+function shellChildExited(pid: number): void {
+	send({ id: randomUUID(), pid, protocolVersion: BUN_WORKER_PROTOCOL_VERSION, type: "shell_child_exited" });
+}
+
+function runShell(command: string, options: { timeoutMs?: number } = {}): ShellPromise {
 	const source = commandPrefix ? `${commandPrefix}\n${command}` : command;
-	const promise = new Promise<ShellResult>((resolve) => {
-		execFile(
-			shellExecutable,
-			[...shellArgs, source],
-			{ cwd: process.cwd(), encoding: "utf8", env: process.env, maxBuffer: 16 * 1024 * 1024 },
-			(error, stdout, stderr) => {
-				const exitCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
-				resolve({ exitCode, stderr, stdout });
-			},
-		);
+	const promise = runBunShellProcess({
+		args: [...shellArgs, source],
+		command: shellExecutable,
+		cwd: process.cwd(),
+		detached: true,
+		env: process.env,
+		maxBufferBytes: 16 * 1024 * 1024,
+		onExit: shellChildExited,
+		onStart: shellChildStarted,
+		timeoutMs: options.timeoutMs,
 	});
 	const shellPromise = promise as ShellPromise;
 	shellPromise.text = async () => (await promise).stdout;
@@ -711,25 +720,22 @@ function installPackage(...names: string[]): Promise<ShellResult> {
 	if (names.some((name) => name.trimStart().startsWith("-"))) {
 		throw new Error("installPackage package names cannot start with '-'");
 	}
-	return new Promise((resolve, reject) => {
-		execFile(
-			bunPath,
-			["add", ...names],
-			{ cwd: kernelDirectory, encoding: "utf8", env: process.env, maxBuffer: 16 * 1024 * 1024 },
-			(error, stdout, stderr) => {
-				const exitCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
-				const result = { exitCode, stderr, stdout };
-				if (error) {
-					reject(
-						new Error(`bun add ${names.join(" ")} failed with exit code ${exitCode}: ${stderr.trim()}`, {
-							cause: error,
-						}),
-					);
-					return;
-				}
-				resolve(result);
-			},
-		);
+	return runBunShellProcess({
+		args: ["add", ...names],
+		command: bunPath,
+		cwd: kernelDirectory,
+		detached: true,
+		env: process.env,
+		maxBufferBytes: 16 * 1024 * 1024,
+		onExit: shellChildExited,
+		onStart: shellChildStarted,
+	}).then((result) => {
+		if (result.exitCode !== 0) {
+			throw new Error(
+				`bun add ${names.join(" ")} failed with exit code ${result.exitCode}: ${result.stderr.trim()}`,
+			);
+		}
+		return result;
 	});
 }
 
@@ -1349,6 +1355,7 @@ function structuredActionSource(actions: readonly BunStructuredAction[]): string
 			...(action.content !== undefined ? { contentChars: action.content.length } : {}),
 			...(action.oldStr !== undefined ? { oldStrChars: action.oldStr.length } : {}),
 			...(action.newStr !== undefined ? { newStrChars: action.newStr.length } : {}),
+			...(action.timeoutSeconds !== undefined ? { timeoutSeconds: action.timeoutSeconds } : {}),
 		})),
 	);
 }
@@ -1391,7 +1398,15 @@ async function executeActions(message: Extract<HostToBunWorkerMessage, { type: "
 	const startedAt = performance.now();
 	try {
 		await cellContext.run(activeCell, async () => {
-			const result = await executeBunStructuredActions(message.actions, { runShell });
+			let outputStreamed = false;
+			const result = await executeBunStructuredActions(message.actions, {
+				defaultShellTimeoutMs: structuredShellTimeoutMs,
+				onOutput: (chunk) => {
+					outputStreamed = true;
+					process.stdout.write(chunk);
+				},
+				runShell,
+			});
 			for (const diff of result.diffs) {
 				display(DIFF_DISPLAY_MIME, {
 					new_str: diff.newStr,
@@ -1400,7 +1415,7 @@ async function executeActions(message: Extract<HostToBunWorkerMessage, { type: "
 					start_line: diff.startLine,
 				});
 			}
-			if (result.output) process.stdout.write(result.output);
+			if (!outputStreamed && result.output) process.stdout.write(result.output);
 		});
 		flushCellStreams(message.cellId);
 		send({
@@ -1444,6 +1459,7 @@ async function initialize(message: Extract<HostToBunWorkerMessage, { type: "init
 		defineRuntimeGlobal("require", requireModule);
 		shellExecutable = message.shell.executable;
 		shellArgs = [...message.shell.args];
+		structuredShellTimeoutMs = message.structuredShellTimeoutMs;
 		initialEnvironment = { ...process.env };
 		for (const skill of message.skills) {
 			if (runtimeBindingNames.has(skill.globalName)) {

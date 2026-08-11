@@ -1,8 +1,10 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BUN_WORKER_PROTOCOL_VERSION } from "../src/core/kernel/bun-protocol.js";
 import { resolveBunRuntime } from "../src/core/kernel/bun-runtime.js";
 import {
 	AGENT_MESSAGE_DISPLAY_MIME,
@@ -10,6 +12,15 @@ import {
 	DIFF_DISPLAY_MIME,
 	KernelManager,
 } from "../src/core/kernel/index.js";
+
+function processIsRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 describe("Bun KernelManager", () => {
 	let bunPath: string;
@@ -73,6 +84,143 @@ describe("Bun KernelManager", () => {
 		expect(result.stdout).toContain("stopped after shell exit 7");
 	});
 
+	it.runIf(process.platform !== "win32")("reports configured-shell signal exits as failures", async () => {
+		const manager = createManager();
+
+		const result = await manager.executeActions([{ op: "shell", command: "kill -TERM $$" }]);
+
+		expect(result).toMatchObject({ status: "ok" });
+		expect(result.stdout).toContain("exitCode: 143");
+		expect(result.stdout).toContain("stopped after shell exit 143");
+	});
+
+	it("closes stdin for structured shell actions", async () => {
+		const manager = createManager();
+		const controller = new AbortController();
+		const abortTimer = setTimeout(() => controller.abort(), 1_000);
+
+		const result = await manager.executeActions([{ op: "shell", command: "cat" }], {
+			signal: controller.signal,
+		});
+		clearTimeout(abortTimer);
+
+		expect(result).toMatchObject({ status: "ok" });
+		expect(result.stdout).toContain("exitCode: 0");
+	});
+
+	it("closes stdin for sh calls in code cells", async () => {
+		const manager = createManager();
+		const controller = new AbortController();
+		const abortTimer = setTimeout(() => controller.abort(), 1_000);
+
+		const result = await manager.execute('await sh("cat").text();', { signal: controller.signal });
+		clearTimeout(abortTimer);
+
+		expect(result).toMatchObject({ result: '""', status: "ok" });
+	});
+
+	it("times out structured shell actions without restarting the worker", async () => {
+		const manager = createManager({
+			structuredShellTimeoutMs: 100,
+		} as ConstructorParameters<typeof KernelManager>[0]);
+		const controller = new AbortController();
+		const abortTimer = setTimeout(() => controller.abort(), 1_500);
+		const command = `${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 5000)"`;
+
+		const result = await manager.executeActions([{ op: "shell", command }], { signal: controller.signal });
+		clearTimeout(abortTimer);
+
+		expect(result).toMatchObject({ status: "ok" });
+		expect(result.stdout).toContain("timed out after 100ms");
+		expect(manager.isRunning).toBe(true);
+		await expect(manager.execute("40 + 2;")).resolves.toMatchObject({ result: "42", status: "ok" });
+	}, 5_000);
+
+	it("honors a structured shell action timeout override", async () => {
+		const manager = createManager({
+			structuredShellTimeoutMs: 100,
+		} as ConstructorParameters<typeof KernelManager>[0]);
+		const command = `${JSON.stringify(process.execPath)} -e "setTimeout(() => console.log('override-ok'), 250)"`;
+
+		const result = await manager.executeActions([{ op: "shell", command, timeoutSeconds: 1 }]);
+
+		expect(result).toMatchObject({ status: "ok" });
+		expect(result.stdout).toContain("exitCode: 0");
+		expect(result.stdout).toContain("override-ok");
+		expect(result.stdout).not.toContain("timed out");
+	});
+
+	it("supports explicit sh timeouts in code cells", async () => {
+		const manager = createManager();
+		const controller = new AbortController();
+		const abortTimer = setTimeout(() => controller.abort(), 1_500);
+		const command = `${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 5000)"`;
+
+		const result = await manager.execute(`(await sh(${JSON.stringify(command)}, { timeoutMs: 100 })).exitCode;`, {
+			signal: controller.signal,
+		});
+		clearTimeout(abortTimer);
+
+		expect(result).toMatchObject({ result: "124", status: "ok" });
+	});
+
+	it.runIf(process.platform !== "win32")(
+		"kills a structured shell action's descendants on timeout",
+		async () => {
+			const manager = createManager({
+				structuredShellTimeoutMs: 200,
+			} as ConstructorParameters<typeof KernelManager>[0]);
+			const childPidPath = join(directory, "timed-out-shell-child.pid");
+			const childScript = "setTimeout(() => {}, 10000)";
+			const parentScript = [
+				'const { spawn } = require("node:child_process");',
+				'const { writeFileSync } = require("node:fs");',
+				`const child = spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { stdio: "ignore" });`,
+				"child.unref();",
+				`writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+				"setTimeout(() => {}, 10000);",
+			].join(" ");
+			const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(parentScript)}`;
+			const controller = new AbortController();
+			const abortTimer = setTimeout(() => controller.abort(), 1_500);
+
+			const result = await manager.executeActions([{ op: "shell", command }], { signal: controller.signal });
+			clearTimeout(abortTimer);
+
+			expect(result.stdout).toContain("timed out after 200ms");
+			const childPid = Number.parseInt(await readFile(childPidPath, "utf8"), 10);
+			await expect.poll(() => processIsRunning(childPid), { timeout: 2_000 }).toBe(false);
+		},
+		5_000,
+	);
+
+	it.runIf(process.platform !== "win32")(
+		"does not leave background descendants after shell completion",
+		async () => {
+			const manager = createManager();
+			const childPidPath = join(directory, "completed-shell-child.pid");
+			const childScript = "setTimeout(() => {}, 10000)";
+			const parentScript = [
+				'const { spawn } = require("node:child_process");',
+				'const { writeFileSync } = require("node:fs");',
+				`const child = spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { stdio: "ignore" });`,
+				"child.unref();",
+				`writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+			].join(" ");
+			const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(parentScript)}`;
+			let childPid: number | undefined;
+
+			try {
+				await expect(manager.executeActions([{ op: "shell", command }])).resolves.toMatchObject({ status: "ok" });
+				childPid = Number.parseInt(await readFile(childPidPath, "utf8"), 10);
+				await expect.poll(() => processIsRunning(childPid as number), { timeout: 1_000 }).toBe(false);
+			} finally {
+				if (childPid !== undefined && processIsRunning(childPid)) process.kill(childPid, "SIGKILL");
+			}
+		},
+		5_000,
+	);
+
 	it("aborts a structured batch, recovers the worker, and skips later actions", async () => {
 		const manager = createManager();
 		const target = join(directory, "must-not-run-after-action-abort.txt");
@@ -90,6 +238,156 @@ describe("Bun KernelManager", () => {
 		expect(existsSync(target)).toBe(false);
 		await expect(manager.execute("40 + 2;")).resolves.toMatchObject({ result: "42", status: "ok" });
 	}, 10_000);
+
+	it.runIf(process.platform !== "win32")(
+		"kills detached shell descendants when a cell is aborted",
+		async () => {
+			const manager = createManager();
+			const escapedPath = join(directory, "must-not-escape-shell-abort.txt");
+			const script = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(escapedPath)}, "escaped"), 750)`;
+			const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+			const controller = new AbortController();
+			const execution = manager.executeActions([{ op: "shell", command }], { signal: controller.signal });
+			setTimeout(() => controller.abort(), 100);
+
+			await expect(execution).resolves.toMatchObject({ status: "aborted" });
+			await new Promise((resolve) => setTimeout(resolve, 900));
+			expect(existsSync(escapedPath)).toBe(false);
+		},
+		5_000,
+	);
+
+	it.runIf(process.platform !== "win32")(
+		"kills a detached shell reported after its worker became stale",
+		async () => {
+			const manager = createManager();
+			await manager.execute("1;");
+			const escapedPath = join(directory, "must-not-escape-stale-worker.txt");
+			const script = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(escapedPath)}, "escaped"), 500)`;
+			const child = spawn(process.execPath, ["-e", script], { detached: true, stdio: "ignore" });
+			if (child.pid === undefined) throw new Error("Detached test shell did not start");
+			child.unref();
+			const message = `${JSON.stringify({
+				id: "late-shell-start",
+				pid: child.pid,
+				protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
+				type: "shell_child_started",
+			})}\n`;
+			const protocolManager = manager as unknown as {
+				handleProtocolChunk(worker: ChildProcess, chunk: string): void;
+			};
+
+			try {
+				const splitAt = Math.floor(message.length / 2);
+				protocolManager.handleProtocolChunk(child, message.slice(0, splitAt));
+				protocolManager.handleProtocolChunk(child, message.slice(splitAt));
+				await new Promise((resolve) => setTimeout(resolve, 650));
+				expect(existsSync(escapedPath)).toBe(false);
+			} finally {
+				if (processIsRunning(child.pid)) process.kill(-child.pid, "SIGKILL");
+			}
+		},
+		5_000,
+	);
+
+	it.runIf(process.platform !== "win32")(
+		"kills an unreported detached shell when its worker is force-stopped",
+		async () => {
+			const manager = createManager();
+			const childPidPath = join(directory, "unreported-shell-child.pid");
+			const escapedPath = join(directory, "must-not-escape-unreported-shell.txt");
+			const childScript = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(escapedPath)}, "escaped"), 500)`;
+			const workerScript = [
+				'const { spawn } = require("node:child_process");',
+				'const { writeFileSync } = require("node:fs");',
+				`const child = spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { detached: true, stdio: "ignore" });`,
+				"child.unref();",
+				`writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+				"setInterval(() => {}, 1000);",
+			].join(" ");
+			const worker = spawn(process.execPath, ["-e", workerScript], { detached: true, stdio: "ignore" });
+			if (worker.pid === undefined) throw new Error("Detached test worker did not start");
+			worker.unref();
+			let childPid: number | undefined;
+
+			try {
+				await expect.poll(() => existsSync(childPidPath), { timeout: 1_000 }).toBe(true);
+				childPid = Number.parseInt(await readFile(childPidPath, "utf8"), 10);
+				const processManager = manager as unknown as {
+					terminateWorkerProcess(worker: ChildProcess, signal: NodeJS.Signals): void;
+				};
+				processManager.terminateWorkerProcess(worker, "SIGKILL");
+
+				await new Promise((resolve) => setTimeout(resolve, 650));
+				expect(existsSync(escapedPath)).toBe(false);
+				expect(processIsRunning(childPid)).toBe(false);
+			} finally {
+				if (processIsRunning(worker.pid)) process.kill(-worker.pid, "SIGKILL");
+				if (childPid !== undefined && processIsRunning(childPid)) process.kill(-childPid, "SIGKILL");
+			}
+		},
+		5_000,
+	);
+
+	it.runIf(process.platform !== "win32")(
+		"force-kills shell descendants that ignore graceful notebook shutdown",
+		async () => {
+			const manager = createManager();
+			const childPidPath = join(directory, "shutdown-resistant-shell-child.pid");
+			const script = [
+				'process.on("SIGTERM", () => {});',
+				`require("node:fs").writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid));`,
+				"setInterval(() => {}, 1000);",
+			].join(" ");
+			const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+			let childPid: number | undefined;
+
+			try {
+				const execution = manager.executeActions([{ op: "shell", command }]).catch(() => undefined);
+				await expect.poll(() => existsSync(childPidPath), { timeout: 1_000 }).toBe(true);
+				childPid = Number.parseInt(await readFile(childPidPath, "utf8"), 10);
+
+				await manager.shutdown();
+				await execution;
+
+				await expect.poll(() => processIsRunning(childPid as number), { timeout: 1_000 }).toBe(false);
+			} finally {
+				if (childPid !== undefined && processIsRunning(childPid)) process.kill(childPid, "SIGKILL");
+			}
+		},
+		5_000,
+	);
+
+	it("streams a completed structured action before a later action finishes", async () => {
+		const manager = createManager();
+		const target = join(directory, "stream-first.txt");
+		await writeFile(target, "first-action-evidence\n", "utf8");
+		await manager.execute("1;");
+		let resolveFirstAction!: () => void;
+		const firstActionStreamed = new Promise<void>((resolve) => {
+			resolveFirstAction = resolve;
+		});
+		const command = `${JSON.stringify(process.execPath)} -e "setTimeout(() => console.log('second-done'), 750)"`;
+		const execution = manager.executeActions(
+			[
+				{ op: "read", path: target },
+				{ op: "shell", command },
+			],
+			{
+				onStream: (chunk) => {
+					if (chunk.includes("first-action-evidence")) resolveFirstAction();
+				},
+			},
+		);
+
+		const streamedBeforeSecondFinished = await Promise.race([
+			firstActionStreamed.then(() => true),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 300)),
+		]);
+
+		await expect(execution).resolves.toMatchObject({ status: "ok" });
+		expect(streamedBeforeSecondFinished).toBe(true);
+	}, 5_000);
 
 	it("starts the isolated Bun worker in compact heap mode by default", async () => {
 		const manager = createManager();
@@ -287,6 +585,20 @@ Object.defineProperty(hangingCheckpointValue, "value", {
 		expect(manager.status.diagnostics).toMatch(/checkpoint.*timed out/i);
 		await expect(manager.execute("42;")).rejects.toThrow(/recovery is blocked/i);
 	}, 10_000);
+
+	it("keeps the notebook usable when an ordinary recovery checkpoint is interrupted", async () => {
+		const manager = createManager();
+		await manager.execute("const retainedAfterCheckpointAbort = 42;");
+		const controller = new AbortController();
+		const execution = manager.execute("throw new Error('must not execute');", { signal: controller.signal });
+		setTimeout(() => controller.abort(), 0);
+
+		await expect(execution).resolves.toMatchObject({ status: "aborted" });
+		await expect(manager.execute("retainedAfterCheckpointAbort;")).resolves.toMatchObject({
+			result: "42",
+			status: "ok",
+		});
+	}, 5_000);
 
 	it("honors abort while a recovery checkpoint is hung and blocks the wedged worker", async () => {
 		const manager = createManager({ checkpointTimeoutMs: 5_000 });

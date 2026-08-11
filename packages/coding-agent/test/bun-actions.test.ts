@@ -64,6 +64,11 @@ describe("Bun structured actions", () => {
 			actions: [{ op: "read", path: "README.md", limit: 0 }],
 			message: 'Action 1 (read) "limit" must be between 1 and 2000.',
 		},
+		{
+			name: "a timeout on a non-shell action",
+			actions: [{ op: "read", path: "README.md", timeoutSeconds: 30 }],
+			message: 'Action 1 (read) "timeoutSeconds" is only supported for shell actions.',
+		},
 	])("rejects $name", ({ actions, message }) => {
 		expect(validateBunStructuredActions(actions)).toEqual({ ok: false, message });
 	});
@@ -153,6 +158,17 @@ describe("Bun structured actions", () => {
 		).toEqual({
 			ok: false,
 			message: 'Action 1 (search) "outputMode" must be content, files_with_matches, or count.',
+		});
+	});
+
+	it.each([
+		{ timeoutSeconds: 0, message: 'Action 1 (shell) "timeoutSeconds" must be between 1 and 86400.' },
+		{ timeoutSeconds: 86_401, message: 'Action 1 (shell) "timeoutSeconds" must be between 1 and 86400.' },
+		{ timeoutSeconds: 1.5, message: 'Action 1 (shell) "timeoutSeconds" must be between 1 and 86400.' },
+	])("rejects invalid structured shell timeout $timeoutSeconds", ({ timeoutSeconds, message }) => {
+		expect(validateBunStructuredActions([{ op: "shell", command: "project-command", timeoutSeconds }])).toEqual({
+			ok: false,
+			message,
 		});
 	});
 
@@ -431,5 +447,28 @@ describe("Bun structured actions", () => {
 		}
 		expect(result.output).toContain("24 KiB call output budget");
 		expect(result.output.length).toBeLessThanOrEqual(24_576);
+	});
+
+	it("bounds streamed batch output while preserving every action header", async () => {
+		const actions = Array.from({ length: 8 }, (_, index) => ({
+			command: `stream-probe-${index + 1}`,
+			op: "shell" as const,
+		}));
+		const chunks: string[] = [];
+
+		await executeBunStructuredActions(actions, {
+			onOutput: (chunk) => chunks.push(chunk),
+			runShell: async (command) => ({
+				exitCode: 0,
+				stderr: "",
+				stdout: `HEAD-${command}-${"x".repeat(12_000)}-TAIL-${command}`,
+			}),
+		});
+
+		const streamed = chunks.join("");
+		for (const [index, action] of actions.entries()) {
+			expect(streamed).toContain(`[${index + 1}/8 shell ${action.command}]`);
+		}
+		expect(streamed.length).toBeLessThanOrEqual(24_576);
 	});
 });

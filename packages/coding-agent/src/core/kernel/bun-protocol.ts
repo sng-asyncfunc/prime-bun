@@ -1,6 +1,6 @@
 import type { BunStructuredAction } from "./bun-actions.js";
 
-export const BUN_WORKER_PROTOCOL_VERSION = 6;
+export const BUN_WORKER_PROTOCOL_VERSION = 7;
 
 interface BunWorkerProtocolMessage {
 	id: string;
@@ -19,6 +19,7 @@ export interface InitializeBunWorkerMessage extends BunWorkerProtocolMessage {
 		args: string[];
 	};
 	skillFactoryTimeoutMs: number;
+	structuredShellTimeoutMs: number;
 	skills: Array<{
 		name: string;
 		globalName: string;
@@ -189,6 +190,16 @@ export interface BunWorkerDiagnosticMessage extends BunWorkerResponseMessage {
 	error: BunWorkerError;
 }
 
+export interface BunWorkerShellChildStartedMessage extends BunWorkerResponseMessage {
+	type: "shell_child_started";
+	pid: number;
+}
+
+export interface BunWorkerShellChildExitedMessage extends BunWorkerResponseMessage {
+	type: "shell_child_exited";
+	pid: number;
+}
+
 export type BunWorkerToHostMessage =
 	| BunWorkerReadyMessage
 	| BunWorkerSuccessResultMessage
@@ -199,5 +210,7 @@ export type BunWorkerToHostMessage =
 	| BunWorkerHostRequestMessage
 	| BunWorkerStreamMessage
 	| BunWorkerDisplayMessage
+	| BunWorkerShellChildStartedMessage
+	| BunWorkerShellChildExitedMessage
 	| BunWorkerProtocolErrorMessage
 	| BunWorkerDiagnosticMessage;

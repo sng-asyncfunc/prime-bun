@@ -52,6 +52,13 @@ const javascriptActionSchema = Type.Object(
 			}),
 		),
 		command: Type.Optional(Type.String({ description: "Configured-shell command for shell." })),
+		timeoutSeconds: Type.Optional(
+			Type.Integer({
+				description: "Wall timeout for a shell action in seconds; defaults to 120 and may be at most 86400.",
+				maximum: 86_400,
+				minimum: 1,
+			}),
+		),
 		content: Type.Optional(Type.String({ description: "Exact UTF-8 file content for write." })),
 		oldStr: Type.Optional(
 			Type.String({ description: "Exact, unique existing text to replace for edit; include enough context." }),
@@ -65,7 +72,7 @@ const javascriptSchema = Type.Object({
 	actions: Type.Optional(
 		Type.Array(javascriptActionSchema, {
 			description:
-				"DEFAULT JAVASCRIPT MODE for independent routine work and batching; do not generate JavaScript for operations this covers. Batch edit (path/oldStr/newStr), read (path/offset/limit), search (optional path/pattern/glob/outputMode; use files_with_matches or count to keep broad searches compact; omit pattern to list files), shell (command), and write (path/content). Write creates missing parent directories. Exact content fields stay outside JavaScript syntax. A failed edit/write or non-zero shell exit stops later actions. Use code only for dependencies or operations outside this surface.",
+				"DEFAULT JAVASCRIPT MODE for independent routine work and batching; do not generate JavaScript for operations this covers. Batch edit (path/oldStr/newStr), read (path/offset/limit), search (optional path/pattern/glob/outputMode; use files_with_matches or count to keep broad searches compact; omit pattern to list files), shell (command/optional timeoutSeconds; 120-second default), and write (path/content). Shell stdin is closed, so pass explicit file, path, or revision operands. Write creates missing parent directories. Exact content fields stay outside JavaScript syntax. A failed edit/write or non-zero shell exit stops later actions. Use code only for dependencies or operations outside this surface.",
 			maxItems: 8,
 			minItems: 1,
 		}),
@@ -73,7 +80,7 @@ const javascriptSchema = Type.Object({
 	code: Type.Optional(
 		Type.String({
 			description:
-				"Use JavaScript or TypeScript only for computation, branching, dependent operations, prepared JavaScript skills, or persistent notebook state. Top-level bindings persist between cells; put large one-shot intermediates in an explicit `{ ... }` block. Values not needed in a later cell must be block-scoped, even when named. Authored document content must not be embedded in JavaScript string literals or assembled as quoted source lines; use write_file or a structured write action. Filesystem APIs remain available for computed values already held in variables. Do not import child_process or call execSync; use actions or sh for commands. Top-level await works. Preloaded globals include fs, path, os, util, $, sh, require, and rlm; use them directly without redeclaring them. Keep printed output bounded and run target-project commands through that project's own environment.",
+				"Use JavaScript or TypeScript only for computation, branching, dependent operations, prepared JavaScript skills, or persistent notebook state. Top-level bindings persist between cells; put large one-shot intermediates in an explicit `{ ... }` block. Values not needed in a later cell must be block-scoped, even when named. Authored document content must not be embedded in JavaScript string literals or assembled as quoted source lines; use write_file or a structured write action. Filesystem APIs remain available for computed values already held in variables. Do not import child_process or call execSync; use actions or sh for commands. Configured-shell stdin is closed; sh has no default timeout and accepts an optional `{ timeoutMs }`. Top-level await works. Preloaded globals include fs, path, os, util, $, sh, require, and rlm; use them directly without redeclaring them. Keep printed output bounded and run target-project commands through that project's own environment.",
 		}),
 	),
 });
@@ -546,7 +553,7 @@ export function createJavaScriptToolDefinition(
 		label: "Bun",
 		compatibilityAliases: javascriptCompatibilityAliases,
 		description:
-			"Execute work in a persistent Bun notebook with two input modes. The tool name is `javascript`; `code` is only an input field, never a tool name. Default to `actions` for independent routine reads, searches, shell commands, and batched work. Batch one to eight actions. Exact edit/write fields carry literal content outside JavaScript syntax, and structured writes create missing parent directories. Authored document content belongs in `write_file` or a structured write action. Use `code` for computation, branching, dependent operations, prepared JavaScript skills, persistent notebook state, and filesystem writes of computed values already held in variables. Top-level bindings persist between cells; put large one-shot intermediates in an explicit `{ ... }` block. Values not needed in a later cell must be block-scoped, even when named. Both modes share the notebook cwd, configured shell, output bounds, abort recovery, and file diffs. Run target-project commands through the target project's own environment.",
+			"Execute work in a persistent Bun notebook with two input modes. The tool name is `javascript`; `code` is only an input field, never a tool name. Default to `actions` for independent routine reads, searches, shell commands, and batched work. Batch one to eight actions. Structured shell actions close stdin, default to a 120-second wall timeout, and accept `timeoutSeconds`. Exact edit/write fields carry literal content outside JavaScript syntax, and structured writes create missing parent directories. Authored document content belongs in `write_file` or a structured write action. Use `code` for computation, branching, dependent operations, prepared JavaScript skills, persistent notebook state, and filesystem writes of computed values already held in variables. Top-level bindings persist between cells; put large one-shot intermediates in an explicit `{ ... }` block. Values not needed in a later cell must be block-scoped, even when named. Both modes share the notebook cwd, configured shell, output bounds, abort recovery, and file diffs. Run target-project commands through the target project's own environment.",
 		promptSnippet:
 			"javascript - persistent Bun notebook with structured actions for routine work and code for computation",
 		promptGuidelines: [

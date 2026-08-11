@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +39,9 @@ const SNAPSHOT_DISPOSE_TIMEOUT_MS = 5_000;
 const DEFAULT_WORKER_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_SKILL_FACTORY_TIMEOUT_MS = 10_000;
 const DEFAULT_CHECKPOINT_TIMEOUT_MS = 15_000;
+const DEFAULT_STRUCTURED_SHELL_TIMEOUT_MS = 120_000;
+const GRACEFUL_SHELL_KILL_DELAY_MS = 250;
+const RECOVERY_CHECKPOINT_ABORT_GRACE_MS = 100;
 const MAX_KERNEL_DIAGNOSTIC_CHARS = 16_384;
 const MAX_KERNEL_STATUS_ENTRIES = 128;
 const MAX_KERNEL_STATUS_DETAIL_CHARS = 512;
@@ -88,6 +91,7 @@ export interface KernelManagerOptions {
 	readyTimeoutMs?: number;
 	skillFactoryTimeoutMs?: number;
 	checkpointTimeoutMs?: number;
+	structuredShellTimeoutMs?: number;
 }
 
 export interface KernelStartOptions {
@@ -249,6 +253,35 @@ function positiveTimeout(value: number | undefined, fallback: number): number {
 	return value !== undefined && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
+function descendantProcessIds(rootPid: number): number[] {
+	const snapshot = spawnSync("ps", ["-axo", "pid=,ppid="], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+		timeout: 1_000,
+		windowsHide: true,
+	});
+	if (snapshot.status !== 0 || typeof snapshot.stdout !== "string") return [];
+	const childrenByParent = new Map<number, number[]>();
+	for (const line of snapshot.stdout.split("\n")) {
+		const [pidText, parentPidText] = line.trim().split(/\s+/, 2);
+		const pid = Number(pidText);
+		const parentPid = Number(parentPidText);
+		if (!Number.isInteger(pid) || !Number.isInteger(parentPid) || pid <= 0 || parentPid <= 0) continue;
+		const children = childrenByParent.get(parentPid) ?? [];
+		children.push(pid);
+		childrenByParent.set(parentPid, children);
+	}
+	const descendants: number[] = [];
+	const pending = [...(childrenByParent.get(rootPid) ?? [])];
+	while (pending.length > 0) {
+		const pid = pending.shift();
+		if (pid === undefined) break;
+		descendants.push(pid);
+		pending.push(...(childrenByParent.get(pid) ?? []));
+	}
+	return descendants;
+}
+
 function skillUnavailableReason(
 	skill: JavaScriptSkillRuntimeInfo | PreparedJavaScriptSkillRuntimeInfo,
 ): string | undefined {
@@ -269,11 +302,19 @@ function raceRecoveryCheckpointWithAbort<T>(promise: Promise<T>, signal: AbortSi
 	if (!signal) return promise;
 	if (signal.aborted) return Promise.reject(createRecoveryCheckpointAbortError());
 	return new Promise<T>((resolve, reject) => {
+		let abortTimer: ReturnType<typeof setTimeout> | undefined;
 		const abort = () => {
-			cleanup();
-			reject(createRecoveryCheckpointAbortError());
+			signal.removeEventListener("abort", abort);
+			abortTimer = setTimeout(() => {
+				abortTimer = undefined;
+				reject(createRecoveryCheckpointAbortError());
+			}, RECOVERY_CHECKPOINT_ABORT_GRACE_MS);
+			abortTimer.unref?.();
 		};
-		const cleanup = () => signal.removeEventListener("abort", abort);
+		const cleanup = () => {
+			signal.removeEventListener("abort", abort);
+			if (abortTimer) clearTimeout(abortTimer);
+		};
 		signal.addEventListener("abort", abort, { once: true });
 		promise.then(
 			(value) => {
@@ -391,7 +432,7 @@ export class KernelManager {
 	private readonly options: KernelManagerOptions;
 	private worker?: ChildProcess;
 	private protocolInput?: Writable;
-	private protocolBuffer = "";
+	private readonly protocolBuffers = new WeakMap<ChildProcess, string>();
 	private state: KernelManagerState = "idle";
 	private startPromise?: Promise<void>;
 	private recoveryPromise?: Promise<void>;
@@ -399,6 +440,7 @@ export class KernelManager {
 	private executionQueue: Promise<void> = Promise.resolve();
 	private activeExecution?: ActiveExecution;
 	private readonly pendingProtocolRequests = new Map<string, PendingProtocolRequest>();
+	private readonly trackedShellChildPids = new Set<number>();
 	private readonly inFlightHostRequests = new Set<Promise<void>>();
 	private readonly lateSentAgentMessageHandlers = new Map<string, (message: KernelSentAgentMessage) => void>();
 	private readonly harnessHostHandlers: HostRequestHandlers;
@@ -550,6 +592,10 @@ export class KernelManager {
 						this.options.skillFactoryTimeoutMs,
 						DEFAULT_SKILL_FACTORY_TIMEOUT_MS,
 					),
+					structuredShellTimeoutMs: positiveTimeout(
+						this.options.structuredShellTimeoutMs,
+						DEFAULT_STRUCTURED_SHELL_TIMEOUT_MS,
+					),
 					skills: preparedSkills.map((skill) => ({
 						entryPath: skill.entryPath,
 						globalName: skill.globalName,
@@ -624,21 +670,26 @@ export class KernelManager {
 	}
 
 	private handleProtocolChunk(worker: ChildProcess, chunk: string): void {
-		if (this.worker !== worker) return;
-		this.protocolBuffer += chunk;
-		const lines = this.protocolBuffer.split("\n");
-		this.protocolBuffer = lines.pop() ?? "";
+		const lines = `${this.protocolBuffers.get(worker) ?? ""}${chunk}`.split("\n");
+		this.protocolBuffers.set(worker, lines.pop() ?? "");
 		for (const line of lines) {
 			if (!line.trim()) continue;
 			try {
-				this.handleProtocolMessage(JSON.parse(line) as BunWorkerToHostMessage);
+				const message = JSON.parse(line) as BunWorkerToHostMessage;
+				if (this.worker === worker) {
+					this.handleProtocolMessage(worker, message);
+				} else if (message.type === "shell_child_started" && Number.isInteger(message.pid) && message.pid > 0) {
+					killProcessTree(message.pid, "SIGKILL");
+				}
 			} catch (error) {
-				this.appendKernelDiagnostic(`invalid worker protocol message: ${errorMessage(error)}`);
+				if (this.worker === worker) {
+					this.appendKernelDiagnostic(`invalid worker protocol message: ${errorMessage(error)}`);
+				}
 			}
 		}
 	}
 
-	private handleProtocolMessage(message: BunWorkerToHostMessage): void {
+	private handleProtocolMessage(worker: ChildProcess, message: BunWorkerToHostMessage): void {
 		if (message.protocolVersion !== BUN_WORKER_PROTOCOL_VERSION) {
 			const failure = new Error(
 				`Bun worker protocol version ${message.protocolVersion} does not match host version ${BUN_WORKER_PROTOCOL_VERSION}`,
@@ -664,6 +715,14 @@ export class KernelManager {
 		}
 		if (message.type === "display") {
 			this.handleDisplay(message);
+			return;
+		}
+		if (message.type === "shell_child_started") {
+			if (this.worker === worker) this.trackedShellChildPids.add(message.pid);
+			return;
+		}
+		if (message.type === "shell_child_exited") {
+			this.trackedShellChildPids.delete(message.pid);
 			return;
 		}
 		if (message.type === "protocol_error" && message.replyTo) {
@@ -772,6 +831,12 @@ export class KernelManager {
 						};
 					}
 					checkpointMs = elapsedMilliseconds(checkpointStartedAt);
+				}
+				if (!executionOutcome && opts.signal?.aborted) {
+					executionOutcome = {
+						result: { durationMs: 0, status: "aborted", stderr: "", stdout: "" },
+						stateChanged: false,
+					};
 				}
 				executionOutcome ??= await this.executeInner(input, opts);
 				const { result, stateChanged } = executionOutcome;
@@ -1046,9 +1111,9 @@ export class KernelManager {
 	private handleWorkerFailure(worker: ChildProcess, reason: Error): void {
 		if (this.worker !== worker || this.state === "shutdown") return;
 		const failedDuringStartup = this.state === "starting";
+		this.killTrackedShellChildren("SIGKILL");
 		this.worker = undefined;
 		this.protocolInput = undefined;
-		this.protocolBuffer = "";
 		this.startPromise = undefined;
 		this.rejectPendingProtocolRequests(reason);
 		this.appendKernelDiagnostic(reason.message);
@@ -1083,14 +1148,44 @@ export class KernelManager {
 		const worker = this.worker;
 		this.worker = undefined;
 		this.protocolInput = undefined;
-		this.protocolBuffer = "";
 		this.rejectPendingProtocolRequests(reason);
+		this.killTrackedShellChildren(signal);
 		if (!worker) return;
 		this.terminateWorkerProcess(worker, signal);
 	}
 
+	private killTrackedShellChildren(signal: NodeJS.Signals): void {
+		const pids = [...this.trackedShellChildPids];
+		for (const pid of pids) killProcessTree(pid, signal);
+		this.trackedShellChildPids.clear();
+		if (signal !== "SIGTERM" || pids.length === 0) return;
+		const forceKillTimer = setTimeout(() => {
+			for (const pid of pids) killProcessTree(pid, "SIGKILL");
+		}, GRACEFUL_SHELL_KILL_DELAY_MS);
+		forceKillTimer.unref();
+	}
+
 	private terminateWorkerProcess(worker: ChildProcess, signal: NodeJS.Signals): void {
 		if (worker.pid !== undefined) {
+			if (process.platform !== "win32") {
+				try {
+					process.kill(worker.pid, "SIGSTOP");
+				} catch {}
+				const descendants = descendantProcessIds(worker.pid);
+				for (const pid of descendants) killProcessTree(pid, signal);
+				killProcessTree(worker.pid, signal);
+				if (signal === "SIGTERM") {
+					try {
+						process.kill(worker.pid, "SIGCONT");
+					} catch {}
+					const forceKillTimer = setTimeout(() => {
+						for (const pid of descendants) killProcessTree(pid, "SIGKILL");
+						killProcessTree(worker.pid as number, "SIGKILL");
+					}, GRACEFUL_SHELL_KILL_DELAY_MS);
+					forceKillTimer.unref();
+				}
+				return;
+			}
 			killProcessTree(worker.pid, signal);
 			return;
 		}

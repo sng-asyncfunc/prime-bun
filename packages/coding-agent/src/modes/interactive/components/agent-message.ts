@@ -16,20 +16,39 @@ function collapseText(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
+/** Shared summary line for received and sent agent messages. */
+export function agentMessageSummaryLine(label: string, participant: string, preview?: string): string {
+	const parts = [`${theme.fg("accent", "◆")} ${theme.fg("muted", label)}`, theme.fg("muted", participant)];
+	if (preview) {
+		parts.push(theme.fg("muted", preview));
+	}
+	return parts.join(theme.fg("dim", " · "));
+}
+
+/** Single-line message preview sized to fit after the summary prefix. */
+export function agentMessagePreview(prefixWidth: number, message: string): string {
+	return truncateToWidth(collapseText(message), Math.max(20, 100 - prefixWidth));
+}
+
+/** Message body lines with the same gutter used by received messages. */
+export function agentMessageBodyLines(message: string, width: number): string[] {
+	const safeWidth = Math.max(1, width);
+	const textWidth = Math.max(1, safeWidth - 4);
+	const bodyLines = message.split("\n").flatMap((line) => {
+		const wrapped = wrapTextWithAnsi(line, textWidth);
+		return wrapped.length > 0 ? wrapped : [""];
+	});
+	return bodyLines.map((line, index) => {
+		const prefix = index === 0 ? theme.fg("dim", "╰─ ") : "   ";
+		return truncateToWidth(` ${prefix}${theme.fg("customMessageText", line)}`, safeWidth, "");
+	});
+}
+
 class AgentMessageBodyComponent implements Component {
 	constructor(private readonly message: string) {}
 
 	render(width: number): string[] {
-		const safeWidth = Math.max(1, width);
-		const textWidth = Math.max(1, safeWidth - 4);
-		const bodyLines = this.message.split("\n").flatMap((line) => {
-			const wrapped = wrapTextWithAnsi(line, textWidth);
-			return wrapped.length > 0 ? wrapped : [""];
-		});
-		return bodyLines.map((line, index) => {
-			const prefix = index === 0 ? theme.fg("dim", "╰─ ") : "   ";
-			return truncateToWidth(` ${prefix}${theme.fg("customMessageText", line)}`, safeWidth, "");
-		});
+		return agentMessageBodyLines(this.message, width);
 	}
 
 	invalidate(): void {}
@@ -74,22 +93,19 @@ export class AgentMessageComponent extends Container {
 	}
 
 	private headerText(): string {
-		const icon = theme.fg("accent", "◆");
-		const title = theme.fg("muted", "Agent message received");
+		const label = "Agent message received";
 		const participant = formatAgentMessageParticipant(
 			"received",
 			this.message.details.fromRelationship,
 			this.message.details.from,
 		);
-		const sender = theme.fg("muted", participant);
-		const separator = theme.fg("dim", " · ");
 		if (this.expanded) {
-			return `${icon} ${title}${separator}${sender}`;
+			return agentMessageSummaryLine(label, participant);
 		}
 
-		const prefixWidth = visibleWidth(`◆ Agent message received · ${participant} · `);
-		const preview = truncateToWidth(collapseText(this.message.details.message), Math.max(20, 100 - prefixWidth));
+		const prefixWidth = visibleWidth(`◆ ${label} · ${participant} · `);
+		const preview = agentMessagePreview(prefixWidth, this.message.details.message);
 		const hint = theme.fg("dim", ` (${keyText("app.tools.expand")} to expand)`);
-		return `${icon} ${title}${separator}${sender}${separator}${theme.fg("muted", preview)}${hint}`;
+		return `${agentMessageSummaryLine(label, participant, preview)}${hint}`;
 	}
 }

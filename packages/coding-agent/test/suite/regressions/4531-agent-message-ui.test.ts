@@ -536,10 +536,150 @@ describe("ENG-4531 agent message UI", () => {
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		const lines = rendered.split("\n");
 		expect(lines).toEqual([
-			expect.stringContaining("javascript"),
+			expect.stringContaining("js"),
 			" ◆ Agent message queued · to child Worker · Review shard seven.",
 			" ◆ Agent message sent · to parent Worker · Continue with shard eight.",
 		]);
 		expect(rendered).not.toContain("Agent message received");
+	});
+
+	it("expands sent messages to the message text without the Bun receipt metadata", () => {
+		const receipt =
+			'{\n  id: "agentmsg_4531_delivered",\n' +
+			'  source: "agent_message",\n' +
+			'  target: { activeSessionId: "worker-active", sessionId: "worker-session" },\n' +
+			'  message: "Continue with shard eight.\\nThen report back.",\n' +
+			'  deliveryStatus: "delivered",\n' +
+			'  deliveryMode: "steer"\n}';
+		const component = new JavaScriptCellComponent({
+			code: 'await agentMessage.send("Continue with shard eight.", { receiverRole: "parent" })',
+			executionStarted: true,
+			argsComplete: true,
+			expanded: true,
+			details: {
+				status: "ok",
+				result: receipt,
+				sentAgentMessages: [
+					{
+						id: "agentmsg_4531_delivered",
+						message: "Continue with shard eight.\nThen report back.",
+						deliveryStatus: "delivered",
+						receiverRole: "parent",
+						target: {
+							activeSessionId: "worker-active",
+							sessionId: "worker-session",
+							sessionName: "Worker",
+						},
+					},
+				],
+			},
+		});
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		const lines = rendered.split("\n").filter((line) => line.trim().length > 0);
+		expect(lines).toEqual([
+			expect.stringContaining("js"),
+			expect.stringContaining("await agentMessage.send"),
+			" ◆ Agent message sent · to parent Worker",
+			" ╰─ Continue with shard eight.",
+			"    Then report back.",
+		]);
+		expect(lines[0]).not.toContain("↓");
+		expect(rendered).not.toContain("deliveryStatus");
+		expect(rendered).not.toContain("agentmsg_4531_delivered");
+		expect(rendered).not.toContain("· Continue with shard eight.");
+	});
+
+	it("keeps broadcast receipt objects with failed deliveries visible next to sent messages", () => {
+		const receipts =
+			'{\n  receipts: [{ id: "agentmsg_4531_broadcast", deliveryStatus: "delivered", message: "Status check." },\n' +
+			'    { target: "worker-two", error: "session is inactive" }]\n}';
+		const component = new JavaScriptCellComponent({
+			code: 'await agentMessage.send("Status check.", { receiverRole: "child" })',
+			executionStarted: true,
+			argsComplete: true,
+			expanded: true,
+			details: {
+				status: "ok",
+				result: receipts,
+				sentAgentMessages: [
+					{
+						id: "agentmsg_4531_broadcast",
+						message: "Status check.",
+						deliveryStatus: "delivered",
+						receiverRole: "child",
+						target: {
+							activeSessionId: "worker-active",
+							sessionId: "worker-session",
+							sessionName: "Worker",
+						},
+					},
+				],
+			},
+		});
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain(" ◆ Agent message sent · to child Worker");
+		expect(rendered).toContain('error: "session is inactive"');
+	});
+
+	it("keeps results that merely reference a sent-message id visible", () => {
+		const component = new JavaScriptCellComponent({
+			code: "recordReply()",
+			executionStarted: true,
+			argsComplete: true,
+			expanded: true,
+			details: {
+				status: "ok",
+				result: '{ referencedMessage: "agentmsg_4531_ref", answer: 42 }',
+				sentAgentMessages: [
+					{
+						id: "agentmsg_4531_ref",
+						message: "Ping.",
+						deliveryStatus: "delivered",
+						receiverRole: "parent",
+						target: {
+							activeSessionId: "worker-active",
+							sessionId: "worker-session",
+							sessionName: "Worker",
+						},
+					},
+				],
+			},
+		});
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("answer: 42");
+	});
+
+	it("keeps unrelated results visible next to sent messages", () => {
+		const component = new JavaScriptCellComponent({
+			code: 'await agentMessage.send("Ping.", { receiverRole: "parent" })\n"done"',
+			executionStarted: true,
+			argsComplete: true,
+			expanded: true,
+			details: {
+				status: "ok",
+				result: '"done"',
+				sentAgentMessages: [
+					{
+						id: "agentmsg_4531_result",
+						message: "Ping.",
+						deliveryStatus: "delivered",
+						receiverRole: "parent",
+						target: {
+							activeSessionId: "worker-active",
+							sessionId: "worker-session",
+							sessionName: "Worker",
+						},
+					},
+				],
+			},
+		});
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain(" ◆ Agent message sent · to parent Worker");
+		expect(rendered).toContain(" ╰─ Ping.");
+		expect(rendered).toContain("done");
 	});
 });

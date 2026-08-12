@@ -4,12 +4,12 @@ This repository-level file is the handoff ledger for Prime Bun-specific work and
 
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-08-11.
+Last refreshed: 2026-08-12.
 
 - Upstream baseline: Prime Agent [`v0.7.1` / `95afd319`](https://github.com/PrimeIntellect-ai/prime-agent/commit/95afd319).
-- Last fully dispositioned upstream commit: [`14d6e749`](https://github.com/PrimeIntellect-ai/prime-agent/commit/14d6e749).
+- Last fully dispositioned upstream commit: [`83a0f9f9`](https://github.com/PrimeIntellect-ai/prime-agent/commit/83a0f9f9).
 - Upstream `main` observed at: [`1ae59498`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1ae59498).
-- Prime Bun synchronization checkpoint: [`5c774e46`](https://github.com/sng-asyncfunc/prime-bun/commit/5c774e46).
+- Prime Bun synchronization checkpoint: [`f4285e9b`](https://github.com/sng-asyncfunc/prime-bun/commit/f4285e9b).
 - Policy: port behavior selectively, adapt it to the Bun architecture, and never inherit Prime Agent telemetry, analytics, release metadata, or distribution-specific code without an explicit decision.
 
 ### Dispositioned Prime Agent commits after v0.7.1
@@ -27,6 +27,8 @@ Last refreshed: 2026-08-11.
 | [`2857e234`](https://github.com/PrimeIntellect-ai/prime-agent/commit/2857e234) | Ported and hardened | [`9e42d8cf`](https://github.com/sng-asyncfunc/prime-bun/commit/9e42d8cf) | Reports truthful worker lifecycle state and hides stopping workers from active routing. |
 | [`e9ef5777`](https://github.com/PrimeIntellect-ai/prime-agent/commit/e9ef5777) | Ported and hardened | [`9e42d8cf`](https://github.com/sng-asyncfunc/prime-bun/commit/9e42d8cf) | Finalizes timed-out worker stops without risking signals to recycled PIDs. |
 | [`14d6e749`](https://github.com/PrimeIntellect-ai/prime-agent/commit/14d6e749) | Ported and hardened | [`9e42d8cf`](https://github.com/sng-asyncfunc/prime-bun/commit/9e42d8cf) | Reclaims stale worker registrations during resume with conservative process-identity checks. |
+| [`795a21de`](https://github.com/PrimeIntellect-ai/prime-agent/commit/795a21de) | Ported | [`4ed9609c`](https://github.com/sng-asyncfunc/prime-bun/commit/4ed9609c) | Kept Down Arrow inside an unfinished prompt until the cursor reaches the actual end. |
+| [`47dccfad`](https://github.com/PrimeIntellect-ai/prime-agent/commit/47dccfad) | Ported | [`f4285e9b`](https://github.com/sng-asyncfunc/prime-bun/commit/f4285e9b) | Consolidated dependency updates and adapted biome 2.5.5 formatting while enforcing Prime Bun's seven-day dependency-age policy. |
 
 Prime Bun then added a dogfood-derived clarification in [`5c774e46`](https://github.com/sng-asyncfunc/prime-bun/commit/5c774e46): prepared JavaScript skill globals may be callable functions or method-only objects, and `rlmHeartbeat` must not be called as a wait primitive.
 
@@ -36,8 +38,6 @@ These commits were present at the last refresh but are not yet included in the f
 
 | Prime Agent source | Next action | Reason |
 | --- | --- | --- |
-| [`795a21de`](https://github.com/PrimeIntellect-ai/prime-agent/commit/795a21de) | Review next | Keeps Down Arrow inside an unfinished prompt until the cursor reaches the actual end; likely a useful Prime Bun UX fix. |
-| [`47dccfad`](https://github.com/PrimeIntellect-ai/prime-agent/commit/47dccfad) | Review separately | Consolidates dependencies and related source adjustments; never cherry-pick wholesale, and enforce Prime Bun's seven-day dependency-age policy. |
 | [`83a0f9f9`](https://github.com/PrimeIntellect-ai/prime-agent/commit/83a0f9f9) | Informational only | Upstream v0.7.2 release metadata summarizes the ported work but Prime Bun versions and changelogs are independent. |
 | [`1ae59498`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1ae59498) | Review next | Prevents malformed provider responses containing null assistant content blocks from crashing TUI rendering. |
 
@@ -45,7 +45,7 @@ These commits were present at the last refresh but are not yet included in the f
 
 1. Fetch without adding or mutating a persistent remote: `git fetch https://github.com/PrimeIntellect-ai/prime-agent.git main`.
 2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 1ae59498..FETCH_HEAD`.
-3. Resolve the four known commits above before advancing the “last fully dispositioned” checkpoint.
+3. Resolve the two known commits above before advancing the “last fully dispositioned” checkpoint.
 4. Classify every upstream commit as ported, adapted, excluded, informational, or deferred; add both upstream and Prime Bun commit links here.
 5. Do not blindly cherry-pick daemon, dependency, release, Homebrew, or telemetry changes; preserve Prime Bun protocol capability gates, Bun runtime behavior, and dependency-age rules.
 6. After code ports, run `npm run check`, focused tests for every changed behavior, live DeepSeek Flash/Pro dogfood, and a Fable5 go/no-go gate when the change is cross-cutting.
@@ -56,6 +56,13 @@ These commits were present at the last refresh but are not yet included in the f
 - Focused verification passed 485 coding-agent tests, 8 TUI keybinding tests, 3 heartbeat bridge tests, and 8 supervisor-process tests with 6 intentional skips.
 - DeepSeek V4 Flash and Pro each completed 17 JavaScript results with zero JavaScript errors; settled aggregate source-mode RSS was 244 MB and 236 MB respectively.
 - Fable5 returned `SATISFIED_PROCEED`, and local `main`, `origin/main`, and the remote ref were synchronized at `5c774e46`.
+
+### Verification for the 2026-08-12 synchronization
+
+- Ported `795a21de` (Down Arrow) and `47dccfad` (dependency consolidation), then bumped Prime Bun and all package changelogs to `0.7.2`.
+- `npm run check` passed on merged `main` (biome 2.5.5, tsgo, installer render, and browser smoke).
+- Focused editor verification passed 16 custom-editor tests and 186 TUI editor tests.
+- The daemon supervisor process suite was not run to completion in this session because the agent runtime runs as a daemon worker and leaks `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1` into spawned test supervisors; a scrubbed-environment handshake confirmed the supervisor reports `appVersion 0.7.2` and protocol v8.
 
 ## 2026-08-08 to 2026-08-09
 

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-12
+
 - Added xAI subscription login with device authorization, automatic token refresh, and API-key fallback.
 - Replaced the Python notebook with a persistent Bun JavaScript and TypeScript notebook, including native JavaScript skills and RLM globals.
 - Fixed Bun notebook parity for TypeScript syntax, cell-scoped streams, shell consumers, executable-state and abort recovery, and automatically provisioned JavaScript skill dependencies.
@@ -40,6 +42,7 @@
 - Added in-place queued-message browsing, editing, deletion, and reordering while preserving queued work across interrupts.
 - Fixed stopped daemon workers lingering as ready, surviving escalation, or permanently blocking session resume.
 - Fixed method-only JavaScript skill globals being called as functions by clarifying their exact API shape.
+- Fixed Down Arrow focusing the Agents View entry before moving a nonempty prompt cursor to the end.
 
 ## [0.7.1] - 2026-08-07
 

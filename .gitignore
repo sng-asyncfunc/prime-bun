@@ -42,3 +42,6 @@ collect.sh
 
 __pycache__/
 *.pyc
+
+# Nested/scratch projects in this worktree
+cua-fork/

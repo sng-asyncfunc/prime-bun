@@ -30,6 +30,7 @@ import {
 	getCronJobsPath,
 	getDaemonLogPath,
 	getDaemonUpdateRestartManifestPath,
+	getSessionsDir,
 	VERSION,
 } from "../../config.js";
 import {
@@ -201,6 +202,7 @@ import {
 	SESSION_LEASES_ENABLED_ENV,
 } from "./daemon-worker-protocol.js";
 import { MutationDrainLatch } from "./mutation-drain-latch.js";
+import { createRlmLedgerRegistrySeedSource, type RlmLedgerDeleteReason, RlmSpawnLedger } from "./rlm-ledger.js";
 import { serializeSavedSessionInfo } from "./saved-session-info.js";
 import {
 	createSnapshotTranscriptChunks,
@@ -521,6 +523,7 @@ export class AgentDaemon {
 		},
 	);
 	private readonly recoveryJournal?: WorkerRecoveryJournal;
+	private rlmSpawnLedgerInstance?: RlmSpawnLedger;
 
 	constructor(
 		private readonly socketPath: string,
@@ -878,6 +881,56 @@ export class AgentDaemon {
 		}
 	}
 
+	/** Root sessions dir that keys this daemon's spawn ledger. */
+	private rlmLedgerSessionsDir(): string {
+		return this.options.defaultSessionConfig.sessionDir ?? getSessionsDir(this.agentDir);
+	}
+
+	/**
+	 * Supervisor-owned spawn ledger for this daemon's sessions dir. Seeded
+	 * lazily from the existing per-parent registries via the same tolerant
+	 * reader the daemon already uses for passive hydration.
+	 */
+	private rlmSpawnLedger(): RlmSpawnLedger {
+		this.rlmSpawnLedgerInstance ??= new RlmSpawnLedger(
+			this.agentDir,
+			this.rlmLedgerSessionsDir(),
+			createRlmLedgerRegistrySeedSource(),
+			(message) => this.log(message),
+		);
+		return this.rlmSpawnLedgerInstance;
+	}
+
+	private appendRlmLedgerSpawn(input: {
+		childId: string;
+		parent: string;
+		child: string;
+		depth: number;
+		name: string;
+	}): void {
+		this.rlmSpawnLedger()
+			.appendSpawn(input)
+			.catch((error) => {
+				// TODO: once the ledger is the messaging authority (post-stack
+				// rebase), a swallowed spawn-append failure means an invisible
+				// child — revisit failing admission here instead of logging.
+				this.log(`failed to append RLM ledger spawn: ${error instanceof Error ? error.message : String(error)}`);
+			});
+	}
+
+	private async appendRlmLedgerRenameForState(state: ActiveSessionState, name: string): Promise<void> {
+		const childId = state.runtime.metadata.rlmChildId;
+		const child = state.runtime.session.sessionFile;
+		if (!childId || !child) return;
+		// Awaited: the supervisor answers sibling-name checks from the ledger,
+		// so the rename must be durable before the reservation is released.
+		await this.rlmSpawnLedger()
+			.appendRename({ childId, child, name })
+			.catch((error) => {
+				this.log(`failed to append RLM ledger rename: ${error instanceof Error ? error.message : String(error)}`);
+			});
+	}
+
 	private rlmSubagentRegistryPath(parentSession: AgentSession): string | undefined {
 		const artifactDir = parentSession.sessionManager.getSessionArtifactDir();
 		if (!artifactDir) {
@@ -932,6 +985,18 @@ export class AgentDaemon {
 		},
 	): boolean {
 		const parentSession = parentState.runtime.session;
+		// Spawn admission is the moment the daemon knows the edge firsthand;
+		// record it in the supervisor-owned ledger (registries keep being
+		// written unchanged for their non-topology consumers).
+		if (input.status === "running" && parentSession.sessionFile) {
+			this.appendRlmLedgerSpawn({
+				childId: input.childId,
+				parent: parentSession.sessionFile,
+				child: input.sessionFile,
+				depth: input.rlmDepth,
+				name: input.sessionName,
+			});
+		}
 		return this.appendRlmSubagentRegistryEntry(parentState, {
 			type: "rlm_subagent",
 			childId: input.childId,
@@ -952,11 +1017,22 @@ export class AgentDaemon {
 		});
 	}
 
-	private async recordRlmSubagentDeletion(parentState: ActiveSessionState, childId: string): Promise<void> {
+	private async recordRlmSubagentDeletion(
+		parentState: ActiveSessionState,
+		childId: string,
+		reason: RlmLedgerDeleteReason = "user",
+	): Promise<void> {
 		const latest = (await this.readLatestRlmSubagentRegistry(parentState, true)).find(
 			(entry) => entry.childId === childId,
 		);
-		if (!latest || latest.status === "deleted") {
+		if (!latest) {
+			return;
+		}
+		if (latest.status === "deleted") {
+			// Self-heal: a crash between the registry tombstone and the ledger
+			// delete leaves a permanent ghost live edge; retrying the deletion
+			// finishes the ledger side.
+			await this.appendRlmLedgerDeleteIfLive(childId, latest.sessionFile, reason);
 			return;
 		}
 		if (
@@ -967,6 +1043,30 @@ export class AgentDaemon {
 			})
 		) {
 			throw new Error(`Failed to persist deletion for RLM subagent ${childId}`);
+		}
+		// After the registry tombstone: a crash in between leaves a live ledger
+		// edge over a tombstoned registry entry (healed on a retried delete);
+		// the reverse order could tombstone the ledger while the registry still
+		// claims the child exists.
+		await this.rlmSpawnLedger()
+			.appendDelete({ childId, child: latest.sessionFile, reason })
+			.catch((error) => {
+				this.log(`failed to append RLM ledger delete: ${error instanceof Error ? error.message : String(error)}`);
+			});
+	}
+
+	private async appendRlmLedgerDeleteIfLive(childId: string, child: string, reason: RlmLedgerDeleteReason) {
+		try {
+			const ledger = this.rlmSpawnLedger();
+			const target = canonicalSessionPath(child);
+			const live = (await ledger.edges()).some(
+				(edge) => edge.childId === childId && canonicalSessionPath(edge.child) === target,
+			);
+			if (live) {
+				await ledger.appendDelete({ childId, child, reason });
+			}
+		} catch (error) {
+			this.log(`failed to heal RLM ledger delete: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
@@ -2244,7 +2344,7 @@ export class AgentDaemon {
 				let deletionError: unknown;
 				if (status === "cancelled") {
 					try {
-						await this.recordRlmSubagentDeletion(parentState, options.id);
+						await this.recordRlmSubagentDeletion(parentState, options.id, "revoked");
 					} catch (error) {
 						deletionError = error;
 					}
@@ -2411,6 +2511,10 @@ export class AgentDaemon {
 				options.onSessionPublished?.(runtime.session);
 			},
 		);
+		// Admission is complete only once the spawn record is durably in the
+		// ledger: no self-heal exists for a lost spawn record (seeding only runs
+		// when the ledger file is absent; reconciliation only drops edges).
+		await this.rlmSpawnLedger().flush();
 		return runtime;
 	}
 
@@ -3712,6 +3816,13 @@ export class AgentDaemon {
 								true,
 							);
 							SessionManager.open(command.sessionPath).appendSessionInfo(name);
+							await this.rlmSpawnLedger()
+								.appendRenameByChildPath(command.sessionPath, name)
+								.catch((error) => {
+									this.log(
+										`failed to append RLM ledger rename: ${error instanceof Error ? error.message : String(error)}`,
+									);
+								});
 						},
 					);
 				}
@@ -5153,6 +5264,7 @@ export class AgentDaemon {
 			async () => {
 				await this.assertStateSessionNameAvailable(state, normalizedName);
 				state.runtime.session.setSessionName(normalizedName);
+				await this.appendRlmLedgerRenameForState(state, normalizedName);
 			},
 		);
 	}

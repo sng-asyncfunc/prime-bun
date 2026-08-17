@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed the agent going silent after an automatic context compaction interrupted unfinished work: the tool loop now resumes when a threshold compaction fails or is skipped, and active goals keep continuing after a successful mid-goal threshold compaction.
+
 ## [0.7.2] - 2026-08-12
 
 - Added xAI subscription login with device authorization, automatic token refresh, and API-key fallback.

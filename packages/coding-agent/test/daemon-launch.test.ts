@@ -12,7 +12,11 @@ import {
 	shutdownDaemonAndWait,
 } from "../src/cli/daemon-launch.js";
 import { ENV_AGENT_DIR, getDaemonLogPath, VERSION } from "../src/config.js";
-import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../src/modes/daemon/daemon-protocol.js";
+import {
+	DAEMON_PROTOCOL_VERSION,
+	DAEMON_SCHEMA_ID,
+	type DaemonRuntimeIdentity,
+} from "../src/modes/daemon/daemon-protocol.js";
 
 interface FakeDaemonOptions {
 	/** Sessions returned for a `list` command. */
@@ -26,6 +30,7 @@ interface FakeDaemonOptions {
 	appVersion?: string;
 	schemaId?: string;
 	serverCapabilities?: string[];
+	runtime?: DaemonRuntimeIdentity;
 	onCommand?: (command: { type: string }) => void;
 }
 
@@ -51,6 +56,7 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 			schemaId: options.schemaId ?? DAEMON_SCHEMA_ID,
 			clientId: "fake-client",
 			serverCapabilities: options.serverCapabilities ?? [],
+			...(options.runtime ? { runtime: options.runtime } : {}),
 		});
 		let buffer = "";
 		socket.on("data", (chunk) => {
@@ -271,6 +277,25 @@ describe("ensureInteractiveDaemonRunning", () => {
 		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
 
 		await expect(probe).resolves.toMatchObject({ status: "current" });
+	});
+
+	it("treats a daemon whose launcher and entrypoint were deleted as stale", async () => {
+		const deletedDir = mkdtempSync(join(tmpdir(), "pa-launch-deleted-runtime-"));
+		const launcherPath = join(deletedDir, "prime-agent.sh");
+		const entrypointPath = join(deletedDir, "packages", "coding-agent", "src", "cli.ts");
+		rmSync(deletedDir, { recursive: true, force: true });
+		const daemon = await startFakeDaemon({
+			appVersion: VERSION,
+			runtime: {
+				buildId: "deleted-worktree",
+				executablePath: process.execPath,
+				entrypointPath,
+				launcherPath,
+			},
+		});
+		cleanups.push(daemon.close);
+
+		await expect(probeDaemonVersion(daemon.socketPath)).resolves.toMatchObject({ status: "stale" });
 	});
 
 	it("fails fast with the daemon log tail when the spawned daemon exits during startup", async () => {

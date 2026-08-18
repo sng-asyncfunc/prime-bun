@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed launches hanging after an update removed the worktree used by an idle background service.
+
 ## [0.7.3] - 2026-08-18
 
 - Added contextual host requests for Bun-backed tools without breaking legacy extension handlers.

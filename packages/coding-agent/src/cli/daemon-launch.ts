@@ -84,15 +84,19 @@ export async function probeDaemonVersion(socketPath: string): Promise<DaemonVers
 	}
 	try {
 		const hello = await client.waitForHello(2000);
+		const missingEntrypoint =
+			hello.runtime?.entrypointPath !== undefined && !existsSync(hello.runtime.entrypointPath);
 		const current =
 			hello.protocol.version === DAEMON_PROTOCOL_VERSION &&
 			hello.schemaId === DAEMON_SCHEMA_ID &&
-			hello.appVersion === VERSION;
+			hello.appVersion === VERSION &&
+			!missingEntrypoint;
 		if (!current) {
 			logDaemonLaunch(
 				`running daemon on ${socketPath} is stale: daemon v${hello.appVersion}/proto${hello.protocol.version}` +
 					`/schema ${hello.schemaId ?? "legacy"}/build ${hello.runtime?.buildId ?? "unknown"} vs client ` +
-					`v${VERSION}/proto${DAEMON_PROTOCOL_VERSION}/schema ${DAEMON_SCHEMA_ID}/build ${getDaemonRuntimeIdentity().buildId}`,
+					`v${VERSION}/proto${DAEMON_PROTOCOL_VERSION}/schema ${DAEMON_SCHEMA_ID}/build ${getDaemonRuntimeIdentity().buildId}` +
+					(missingEntrypoint ? `; daemon entrypoint no longer exists: ${hello.runtime?.entrypointPath}` : ""),
 			);
 		}
 		if (current) {

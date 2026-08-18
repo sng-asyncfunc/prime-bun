@@ -65,6 +65,67 @@ const RUNTIME_NAMESPACE_NAMES = new Set([
 ]);
 
 export type HostRequestHandler = (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+
+export interface HostRequestContext {
+	readonly requestId: string;
+	readonly generation: number;
+	readonly signal: AbortSignal;
+	isCurrent(): boolean;
+}
+
+const hostRequestHandlerBrand = Symbol("hostRequestHandler");
+
+export type HostRequestHandlerImplementation = (
+	payload: Record<string, unknown>,
+	context: HostRequestContext,
+) => Promise<Record<string, unknown>>;
+
+type HostRequestHandlerCapability = HostRequestHandlerImplementation & { readonly [hostRequestHandlerBrand]: true };
+
+const factoryCreatedHostRequestHandlers = new WeakSet<object>();
+
+function assertGenuineHostRequestContext(context: unknown): asserts context is HostRequestContext {
+	if (
+		typeof context !== "object" ||
+		context === null ||
+		typeof (context as HostRequestContext).requestId !== "string" ||
+		!(context as HostRequestContext).requestId ||
+		!Number.isSafeInteger((context as HostRequestContext).generation) ||
+		typeof (context as HostRequestContext).isCurrent !== "function" ||
+		typeof (context as HostRequestContext).signal !== "object" ||
+		(context as HostRequestContext).signal === null ||
+		typeof (context as HostRequestContext).signal.aborted !== "boolean" ||
+		typeof (context as HostRequestContext).signal.addEventListener !== "function"
+	) {
+		throw new Error("host request context is invalid");
+	}
+}
+
+export function createHostRequestHandler<T extends HostRequestHandlerImplementation>(
+	implementation: T,
+	..._unaryRejection: Parameters<T> extends [unknown, unknown, ...unknown[]]
+		? []
+		: ["host request handlers must accept payload and context"]
+): HostRequestHandlerCapability {
+	if (implementation.length < 2) throw new Error("host request handlers must accept payload and context");
+	const handler = async (payload: Record<string, unknown>, context: HostRequestContext) => {
+		assertGenuineHostRequestContext(context);
+		return implementation(payload, context);
+	};
+	factoryCreatedHostRequestHandlers.add(handler);
+	return Object.defineProperty(handler, hostRequestHandlerBrand, { value: true }) as HostRequestHandlerCapability;
+}
+
+export function assertHostRequestHandler(value: unknown): asserts value is HostRequestHandlerCapability {
+	if (
+		typeof value !== "function" ||
+		(value as Partial<HostRequestHandlerCapability>)[hostRequestHandlerBrand] !== true ||
+		!factoryCreatedHostRequestHandlers.has(value)
+	) {
+		throw new Error("host request handler is not a dispatcher-created capability");
+	}
+}
+
 export type HostRequestHandlers = Record<string, HostRequestHandler>;
 
 export interface KernelSnapshotConfig {

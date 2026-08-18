@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-17
+
 - Fixed fullscreen OSC 8 and bare HTTP links across wrapped, tabbed, and wide-character text while preserving drag selection and Ghostty scrolling.
 
 ## [0.7.2] - 2026-08-12

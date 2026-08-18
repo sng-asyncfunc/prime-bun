@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-17
+
 - Added contextual host requests for Bun-backed tools without breaking legacy extension handlers.
 - Added `app.edits.expand` (`ctrl+j`) to toggle edit diffs independently from tool output and agent messages.
 - Changed edit results to keep their file summary visible while expanding diffs inline beneath it.

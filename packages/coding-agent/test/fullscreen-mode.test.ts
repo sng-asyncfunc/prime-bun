@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -34,6 +34,13 @@ describe("fullscreen mode settings", () => {
 	it("defaults to on with mouse enabled", () => {
 		const manager = SettingsManager.create(projectDir, agentDir);
 		expect(manager.getFullscreen()).toBe(true);
+		expect(manager.getFullscreenMouse()).toBe(true);
+	});
+
+	it("ignores a malformed null fullscreen mouse setting", () => {
+		const settingsPath = join(agentDir, "settings.json");
+		writeFileSync(settingsPath, JSON.stringify({ terminal: { fullscreenMouse: null } }));
+		const manager = SettingsManager.create(projectDir, agentDir);
 		expect(manager.getFullscreenMouse()).toBe(true);
 	});
 

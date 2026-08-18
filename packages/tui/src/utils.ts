@@ -1239,6 +1239,58 @@ export function sliceWithWidth(
 	return { text: result, width: resultWidth };
 }
 
+/** Return the OSC 8 hyperlink URL covering a visible column. */
+export function hyperlinkAtColumn(line: string, column: number): string | null {
+	if (column < 0) return null;
+	const extractAnsi = createAnsiCodeExtractor(line);
+	let currentCol = 0;
+	let activeUrl: string | null = null;
+	let i = 0;
+	while (i < line.length) {
+		const ansi = extractAnsi(i);
+		if (ansi) {
+			const hyperlink = parseOsc8Hyperlink(ansi.code);
+			if (hyperlink !== undefined) activeUrl = hyperlink?.url ?? null;
+			i += ansi.length;
+			continue;
+		}
+		let textEnd = i;
+		while (textEnd < line.length && !extractAnsi(textEnd)) textEnd++;
+		for (const { segment } of segmenter.segment(line.slice(i, textEnd))) {
+			const width = graphemeWidth(segment);
+			if (column < currentCol + width) return activeUrl;
+			currentCol += width;
+		}
+		i = textEnd;
+	}
+	return null;
+}
+
+/** Return an OSC 8 target or bare HTTP(S) URL covering a visible column. */
+export function urlAtColumn(line: string, column: number): string | null {
+	const explicitUrl = hyperlinkAtColumn(line, column);
+	if (explicitUrl || column < 0) return explicitUrl;
+
+	const plainText = stripAnsi(line).replace(/\t/g, "   ");
+	const urlPattern = /https?:\/\/[^\s<>"'`]+/giu;
+	for (const match of plainText.matchAll(urlPattern)) {
+		let url = match[0].replace(/[.,;:!?]+$/u, "");
+		for (const [open, close] of [
+			["(", ")"],
+			["[", "]"],
+			["{", "}"],
+		] as const) {
+			while (url.endsWith(close) && url.split(close).length > url.split(open).length) {
+				url = url.slice(0, -1);
+			}
+		}
+		const start = visibleWidth(plainText.slice(0, match.index));
+		const end = start + visibleWidth(url);
+		if (column >= start && column < end) return url;
+	}
+	return null;
+}
+
 // Pooled tracker instance for extractSegments (avoids allocation per call)
 const pooledStyleTracker = new AnsiCodeTracker();
 

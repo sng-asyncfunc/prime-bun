@@ -2,6 +2,7 @@
  * Minimal TUI implementation with differential rendering
  */
 
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -410,6 +411,8 @@ export class TUI extends Container {
 	public onDebug?: () => void;
 	/** Copies fullscreen mouse selections; when unset, OSC 52 is written directly. */
 	public onCopy?: (text: string) => void;
+	/** Opens URLs clicked in fullscreen; when unset, the platform opener is used. */
+	public onOpenUrl?: (url: string) => void;
 	private renderRequested = false;
 	private focusedRenderRequested = false;
 	private viewportRenderRequested = false;
@@ -433,6 +436,8 @@ export class TUI extends Container {
 	private fullRedrawCount = 0;
 	private preserveViewportOnNextRender = false; // One-shot: repaint visible viewport in place instead of replaying scrollback
 	private stopped = false;
+	private fullscreenLeftMouseDragged = false;
+	private fullscreenPressedHyperlink: string | null = null;
 	private overlaySelectionRegions: FrameSelectionRegion[] = [];
 	private renderRequesterBound = new WeakSet<Component>();
 
@@ -667,6 +672,8 @@ export class TUI extends Container {
 		const enabled = this.shouldEnableFullscreenMouseTracking();
 		if (!enabled) {
 			this.stopSelectionAutoScroll();
+			this.fullscreenLeftMouseDragged = false;
+			this.fullscreenPressedHyperlink = null;
 			this.fullscreen?.viewport.clearSelection();
 		} else if (this.isFullscreenOverlayFocused()) {
 			this.stopSelectionAutoScroll();
@@ -841,6 +848,8 @@ export class TUI extends Container {
 	 */
 	enterFullscreen(options: FullscreenOptions): void {
 		if (this.fullscreen) return;
+		this.fullscreenLeftMouseDragged = false;
+		this.fullscreenPressedHyperlink = null;
 		this.fullscreen = {
 			viewport: new FullscreenViewport(),
 			scroll: options.scroll,
@@ -918,6 +927,33 @@ export class TUI extends Container {
 	/** Scroll state of the fullscreen window, or null when not fullscreen. */
 	getScrollInfo(): ScrollInfo | null {
 		return this.fullscreen?.viewport.scrollInfo() ?? null;
+	}
+
+	private openHyperlink(url: string): void {
+		if (/\p{Cc}/u.test(url)) return;
+		let href: string;
+		try {
+			const parsed = new URL(url);
+			if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+			href = parsed.href;
+		} catch {
+			return;
+		}
+		if (this.onOpenUrl) {
+			this.onOpenUrl(href);
+			return;
+		}
+		const [command, ...args] =
+			process.platform === "darwin"
+				? ["open", href]
+				: process.platform === "win32"
+					? [
+							path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "rundll32.exe"),
+							"url.dll,FileProtocolHandler",
+							href,
+						]
+					: ["xdg-open", href];
+		execFile(command, args, () => {});
 	}
 
 	private copySelection(text: string): void {
@@ -1143,6 +1179,14 @@ export class TUI extends Container {
 		if (isMouseSequence(data)) {
 			// consumed even when disabled — mouse reports are garbage downstream
 			const event = this.terminal.mouseTrackingActive ? parseSgrMouseEvent(data) : null;
+			const leftReleaseWasDrag =
+				event?.button === MOUSE_BUTTON_LEFT && !event.press ? this.fullscreenLeftMouseDragged : false;
+			if (event?.button === MOUSE_BUTTON_LEFT && event.press) {
+				this.fullscreenLeftMouseDragged = event.motion;
+				if (!event.motion) {
+					this.fullscreenPressedHyperlink = fullscreen.viewport.hyperlinkAt(event.y - 1, event.x - 1);
+				}
+			}
 			if (event && !overlayFocused) {
 				const viewport = fullscreen.viewport;
 				if (isWheelUp(event)) {
@@ -1169,6 +1213,10 @@ export class TUI extends Container {
 				} else if (!event.press) {
 					this.stopSelectionAutoScroll();
 					viewport.clearSelection();
+					if (event.button === MOUSE_BUTTON_LEFT && !event.motion && !leftReleaseWasDrag) {
+						const url = this.fullscreenPressedHyperlink ?? viewport.hyperlinkAt(event.y - 1, event.x - 1);
+						if (url) this.openHyperlink(url);
+					}
 				}
 			} else if (event && overlayFocused) {
 				this.stopSelectionAutoScroll();
@@ -1187,7 +1235,15 @@ export class TUI extends Container {
 					this.requestRender();
 				} else if (!event.press) {
 					viewport.clearSelection();
+					if (event.button === MOUSE_BUTTON_LEFT && !event.motion && !leftReleaseWasDrag) {
+						const url = this.fullscreenPressedHyperlink ?? viewport.hyperlinkAt(event.y - 1, event.x - 1);
+						if (url) this.openHyperlink(url);
+					}
 				}
+			}
+			if (event?.button === MOUSE_BUTTON_LEFT && !event.press) {
+				this.fullscreenLeftMouseDragged = false;
+				this.fullscreenPressedHyperlink = null;
 			}
 			return true;
 		}

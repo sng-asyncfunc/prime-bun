@@ -5,6 +5,7 @@ import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
 import {
+	formatFileChangeSummaryLine,
 	formatTotalChangeSummary,
 	getToolFileChanges,
 	mergeTurnFileChanges,
@@ -66,6 +67,15 @@ describe("edit summaries", () => {
 			{ path: "b.ts", added: 3, removed: 4 },
 		]);
 		expect(stripAnsi(line)).toBe("2 files changed | +5 -5");
+	});
+
+	test("keeps summary path truncation stable while the edit-diff hint flips", () => {
+		const path = "src/some/deeply/nested/directory/with-a-long-file-name.ts";
+		const pathPart = (line: string) => stripAnsi(line).replace(/\s*\+\d+ -\d+.*$/, "");
+		const expanded = formatFileChangeSummaryLine(path, undefined, { added: 3, removed: 1 }, true, 44);
+		const collapsed = formatFileChangeSummaryLine(path, undefined, { added: 3, removed: 1 }, false, 44);
+		expect(stripAnsi(expanded)).toContain("…");
+		expect(pathPart(expanded)).toBe(pathPart(collapsed));
 	});
 
 	test("coalesces direct and JavaScript edits by file", () => {

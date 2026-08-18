@@ -50,6 +50,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			executionStarted: true,
 			argsComplete: true,
 			expanded: true,
+			editDiffsExpanded: true,
 		});
 
 		// Header carries the path (no "edit" label) and the +/- line counts.
@@ -66,6 +67,61 @@ describe("JavaScriptCellComponent diff rendering", () => {
 		expect(out).toContain('await edit({ path: "sample.ts", oldStr: "gamma", newStr: "GAMMA" })');
 	});
 
+	it("toggles edit diffs independently from source and output", () => {
+		const state = {
+			code: 'const hiddenSideEffect = "only in full source";\nawait edit({ path: "sample.ts", oldStr: "old", newStr: "NEW" })',
+			details: {
+				status: "ok",
+				stdout: "hidden output",
+				diffs: [{ path: "sample.ts", oldStr: "old", newStr: "NEW", startLine: 4 }],
+			},
+			executionStarted: true,
+			argsComplete: true,
+		};
+
+		const diffsOnly = renderCell({ ...state, expanded: false, editDiffsExpanded: true });
+		expect(diffsOnly).toContain("╰─ sample.ts +1 -1");
+		expect(diffsOnly).toMatch(/4 - .*old/);
+		expect(diffsOnly).toMatch(/4 \+ .*NEW/);
+		expect(diffsOnly).not.toContain("hiddenSideEffect");
+		expect(diffsOnly).not.toContain("hidden output");
+
+		const sourceOnly = renderCell({ ...state, expanded: true, editDiffsExpanded: false });
+		expect(sourceOnly).toContain("hiddenSideEffect");
+		expect(sourceOnly).toContain("hidden output");
+		expect(sourceOnly).toContain("╰─ sample.ts +1 -1");
+		expect(sourceOnly).not.toMatch(/4 - .*old/);
+	});
+
+	it("toggles sent agent message bodies independently from source and output", () => {
+		const state = {
+			code: 'const hiddenSideEffect = "only in full source";\nawait agent_message.send("A detailed handoff", { receiverRole: "parent" })',
+			details: {
+				status: "ok",
+				sentAgentMessages: [
+					{
+						id: "agent-message-1",
+						message: "A detailed handoff",
+						deliveryStatus: "delivered" as const,
+						receiverRole: "parent" as const,
+						target: { activeSessionId: "parent-active", sessionId: "parent", sessionName: "Parent" },
+					},
+				],
+			},
+			executionStarted: true,
+			argsComplete: true,
+		};
+
+		const messagesExpanded = renderCell({ ...state, expanded: false, agentMessagesExpanded: true });
+		expect(messagesExpanded).toContain("Agent message sent");
+		expect(messagesExpanded).toContain("╰─ A detailed handoff");
+		expect(messagesExpanded).not.toContain("hiddenSideEffect");
+
+		const toolsExpanded = renderCell({ ...state, expanded: true, agentMessagesExpanded: false });
+		expect(toolsExpanded).toContain("agent_message.send");
+		expect(toolsExpanded).not.toContain("╰─ A detailed handoff");
+	});
+
 	it("renders diff rows as full-width colored blocks", () => {
 		const width = 72;
 		const lines = new JavaScriptCellComponent({
@@ -77,6 +133,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			executionStarted: true,
 			argsComplete: true,
 			expanded: true,
+			editDiffsExpanded: true,
 		}).render(width);
 		const diffRows = lines.filter((line) => /alpha|gamma|GAMMA/.test(stripAnsi(line)));
 		expect(diffRows.length).toBeGreaterThan(0);
@@ -93,9 +150,9 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			argsComplete: true,
 			expanded: true,
 		}).split("\n");
-		// Summary line and header share the same single-space indent.
+		// The cell status stays on top and the edit summary uses the stable gutter.
 		expect(done[0]).toMatch(/^ ✓ js/);
-		expect(done.find((l) => l.includes("a.ts"))).toMatch(/^ ✓ a\.ts/);
+		expect(done.find((l) => l.includes("a.ts"))).toMatch(/^ {4}╰─ a\.ts/);
 
 		const failed = renderCell({
 			code: "await edit(...)",
@@ -105,7 +162,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			expanded: true,
 			isError: true,
 		});
-		expect(failed).toMatch(/✗ a\.ts/);
+		expect(failed).toMatch(/╰─ a\.ts/);
 	});
 
 	it("renders an edit path relative to the session cwd, or absolute when outside it", () => {
@@ -117,6 +174,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			executionStarted: true,
 			argsComplete: true,
 			expanded: true,
+			editDiffsExpanded: true,
 		});
 		expect(inside).toContain("src/app.ts");
 		expect(inside).not.toContain(`${cwd}/src/app.ts`);
@@ -141,6 +199,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			executionStarted: true,
 			argsComplete: true,
 			expanded: true,
+			editDiffsExpanded: true,
 		}).render(width);
 
 		// No rendered row may exceed the terminal width (the TUI throws if one does).
@@ -167,7 +226,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 		const header = lines.map(stripAnsi).find((line) => line.includes("…"));
 		expect(header).toBeDefined();
 		// The +/- counts survive truncation; only the path is shortened.
-		expect(header).toMatch(/\+1 -1\s*$/);
+		expect(header).toMatch(/\+1 -1.*to expand\)$/);
 	});
 
 	it("renders a large diff without spreading the row array (no RangeError)", () => {
@@ -181,6 +240,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 				executionStarted: true,
 				argsComplete: true,
 				expanded: true,
+				editDiffsExpanded: true,
 			}).render(80),
 		).not.toThrow();
 	});
@@ -193,6 +253,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			executionStarted: true,
 			argsComplete: true,
 			expanded: true,
+			editDiffsExpanded: true,
 		}).split("\n");
 		const addedRows = out.filter((line) => /arg\d/.test(line));
 		expect(addedRows.length).toBeGreaterThan(1);
@@ -214,7 +275,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 		expect(out.findIndex((line) => line.includes("a.ts"))).toBeGreaterThan(2);
 	});
 
-	it("shows the full diff when collapsed", () => {
+	it("keeps the edit summary visible while the diff is collapsed", () => {
 		const collapsed = renderCell({
 			code: "await edit(...)",
 			details: { status: "ok", diffs: [{ path: "big.ts", oldStr: "old", newStr: "NEW", startLine: 1 }] },
@@ -223,7 +284,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 			expanded: false,
 		});
 		expect(collapsed).toContain("to expand");
-		expect(collapsed).not.toContain("big.ts");
+		expect(collapsed).toContain("╰─ big.ts +1 -1");
 		expect(collapsed).not.toContain("old");
 		expect(collapsed).not.toContain("NEW");
 	});
@@ -244,7 +305,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 		expect(expanded).toContain("a.ts");
 		const expandedLines = expanded.split("\n");
 		expect(expandedLines.findIndex((line) => line.includes("hiddenSideEffect ="))).toBeLessThan(
-			expandedLines.findIndex((line) => /✓ a\.ts\s+\+1 -1/.test(line)),
+			expandedLines.findIndex((line) => /╰─ a\.ts \+1 -1/.test(line)),
 		);
 	});
 
@@ -266,6 +327,7 @@ describe("JavaScriptCellComponent diff rendering", () => {
 		const out = renderCell({
 			code: "await edit(...); await edit(...); await edit(...)",
 			expanded: true,
+			editDiffsExpanded: true,
 			details: {
 				status: "ok",
 				diffs: [
@@ -297,9 +359,9 @@ describe("JavaScriptCellComponent diff rendering", () => {
 
 		// Top line is unchanged through the duration; only the trailing hint flips
 		// "to expand" → "to collapse", so nothing before it can shift.
-		expect(stripAnsi(collapsed[0])).toMatch(/^ ✓ js · .* · ↑ 1 ↓ 1 lines · 780\.0s · .*to expand$/);
-		expect(stripAnsi(expanded[0])).toMatch(/^ ✓ js · .* · ↑ 1 ↓ 1 lines · 780\.0s · .*to collapse$/);
-		const upToHint = (line: string) => stripAnsi(line).replace(/· [^·]*to (expand|collapse)$/, "");
+		expect(stripAnsi(collapsed[0])).toMatch(/^ ✓ js · .* · ↑ 1 ↓ 1 lines · 780\.0s · .*to expand\)$/);
+		expect(stripAnsi(expanded[0])).toMatch(/^ ✓ js · .* · ↑ 1 ↓ 1 lines · 780\.0s · .*to collapse\)$/);
+		const upToHint = (line: string) => stripAnsi(line).replace(/· [^·]*to (expand|collapse)\)$/, "");
 		expect(upToHint(expanded[0])).toBe(upToHint(collapsed[0]));
 
 		// No separate "javascript · done · 780.0s" header line below the top line.

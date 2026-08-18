@@ -428,6 +428,34 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered.match(/\bedit\b/g)?.length ?? 0).toBe(1);
 	});
 
+	test("keeps the edit summary visible and toggles only its diff rows", () => {
+		const component = new ToolExecutionComponent(
+			"edit",
+			"tool-edit-diff-toggle",
+			{ path: "README.md", oldText: "before", newText: "after" },
+			{},
+			createEditToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{ content: [], details: { diff: "-1 before\n+1 after", firstChangedLine: 1 }, isError: false },
+			false,
+		);
+
+		const collapsed = stripAnsi(component.render(120).join("\n"));
+		expect(collapsed).toContain("╰─ README.md +1 -1");
+		expect(collapsed).toContain("to expand");
+		expect(collapsed).not.toContain("-1 before");
+
+		component.setEditDiffsExpanded(true);
+		const expanded = stripAnsi(component.render(120).join("\n"));
+		expect(expanded).toContain("╰─ README.md +1 -1");
+		expect(expanded).toContain("to collapse");
+		expect(expanded).toContain("-1 before");
+		expect(expanded).toContain("+1 after");
+	});
+
 	test("uses the generic result fallback for legacy-named custom tools", () => {
 		const overrideDefinition: ToolDefinition = {
 			...createBaseToolDefinition("bash"),
@@ -697,11 +725,17 @@ describe("ToolExecutionComponent parity", () => {
 		component.setExpanded(true);
 		const expanded = stripAnsi(component.render(120).join("\n"));
 		expect(expanded).toContain('hiddenSideEffect = "only in full source"');
-		expect(expanded).toContain("before");
-		expect(expanded).toContain("after");
-		const expandedLines = expanded.split("\n");
-		expect(expandedLines.findIndex((line) => line.includes("hidden_side_effect ="))).toBeLessThan(
-			expandedLines.findIndex((line) => /✓ README\.md\s+\+1 -1/.test(line)),
+		expect(expanded).toContain("╰─ README.md +1 -1");
+		expect(expanded).not.toMatch(/1 - before/);
+		expect(expanded).not.toMatch(/1 \+ after/);
+
+		component.setEditDiffsExpanded(true);
+		const withDiffs = stripAnsi(component.render(120).join("\n"));
+		expect(withDiffs).toMatch(/1 - before/);
+		expect(withDiffs).toMatch(/1 \+ after/);
+		const expandedLines = withDiffs.split("\n");
+		expect(expandedLines.findIndex((line) => line.includes("hiddenSideEffect ="))).toBeLessThan(
+			expandedLines.findIndex((line) => /╰─ README\.md \+1 -1/.test(line)),
 		);
 	});
 });

@@ -431,7 +431,7 @@ export class BrandSplashHeader implements Component {
 		};
 		const extraMetadata = this.options.getExtraMetadata?.() ?? [];
 		const hideStartHint = this.options.getHideStartHint?.() ?? false;
-		const startHint = this.options.getStartHint?.() ?? "type to start";
+		const startHint = this.options.getStartHint?.() ?? "type to search sessions";
 		const metaLines = showMeta
 			? [
 					labelled("version", `v${this.version}`),

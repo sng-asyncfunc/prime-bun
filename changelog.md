@@ -4,7 +4,7 @@ This repository-level file is the handoff ledger for Prime Bun-specific work and
 
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-08-17.
+Last refreshed: 2026-08-18.
 
 - Upstream baseline: Prime Agent [`v0.7.3` / `61131b2d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61131b2d).
 - Last fully dispositioned upstream commit: [`61131b2d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61131b2d).
@@ -79,6 +79,14 @@ The daemon ports add internal on-disk authority records but no command, event, r
 - `npm run check` passed on merged `main` (biome 2.5.5, tsgo, installer render, and browser smoke).
 - Focused editor verification passed 16 custom-editor tests and 186 TUI editor tests.
 - The daemon supervisor process suite was not run to completion in this session because the agent runtime runs as a daemon worker and leaks `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1` into spawned test supervisors; a scrubbed-environment handshake confirmed the supervisor reports `appVersion 0.7.2` and protocol v8.
+
+### Verification for the 2026-08-18 synchronization
+
+- `npm run check` passed for Prime Bun 0.7.3, including biome, tsgo, installer render, and browser smoke.
+- Focused verification passed 524 coding-agent tests, 10 slow daemon ownership/recovery tests, and 53 TUI fullscreen/link tests; Fable5 independently spot-ran another 260 tests and `tsgo --noEmit`.
+- DeepSeek V4 Pro completed the repository audit in session `01a01335-b89a-7728-b216-28719bef9fa3` with eight error-free JavaScript batches, 32–37 MB source-process RSS, immediate 584-line expansion/collapse, and a responsive double-Ctrl+C exit.
+- DeepSeek V4 Flash completed fenced Markdown and template-literal structured writes/edits on its first attempt, pure JavaScript hash/parsing, bounded a 588,895-byte 100,000-line result, cancelled an active Bun cell within one second, recovered on the next cell, and resumed session `01a01339-b4a4-7719-a153-f186e3690f84`.
+- Fable5 returned `SATISFIED_PROCEED`, confirmed no Python runtime or new trace-sharing telemetry landed, and parked pre-existing fork-identity drift as follow-up work rather than a v0.7.3 blocker.
 
 ## 2026-08-08 to 2026-08-09
 

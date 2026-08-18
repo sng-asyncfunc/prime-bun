@@ -4,12 +4,12 @@ This repository-level file is the handoff ledger for Prime Bun-specific work and
 
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-08-12.
+Last refreshed: 2026-08-17.
 
-- Upstream baseline: Prime Agent [`v0.7.1` / `95afd319`](https://github.com/PrimeIntellect-ai/prime-agent/commit/95afd319).
-- Last fully dispositioned upstream commit: [`83a0f9f9`](https://github.com/PrimeIntellect-ai/prime-agent/commit/83a0f9f9).
-- Upstream `main` observed at: [`1ae59498`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1ae59498).
-- Prime Bun synchronization checkpoint: [`f4285e9b`](https://github.com/sng-asyncfunc/prime-bun/commit/f4285e9b).
+- Upstream baseline: Prime Agent [`v0.7.3` / `61131b2d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61131b2d).
+- Last fully dispositioned upstream commit: [`61131b2d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61131b2d).
+- Upstream release observed at: [`v0.7.3`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.7.3).
+- Prime Bun synchronization checkpoint: [`ae317a54`](https://github.com/sng-asyncfunc/prime-bun/commit/ae317a54).
 - Policy: port behavior selectively, adapt it to the Bun architecture, and never inherit Prime Agent telemetry, analytics, release metadata, or distribution-specific code without an explicit decision.
 
 ### Dispositioned Prime Agent commits after v0.7.1
@@ -32,20 +32,36 @@ Last refreshed: 2026-08-12.
 
 Prime Bun then added a dogfood-derived clarification in [`5c774e46`](https://github.com/sng-asyncfunc/prime-bun/commit/5c774e46): prepared JavaScript skill globals may be callable functions or method-only objects, and `rlmHeartbeat` must not be called as a wait primitive.
 
-### Known upstream commits after the completed audit
+### Prime Agent v0.7.3 disposition
 
-These commits were present at the last refresh but are not yet included in the fully dispositioned checkpoint:
+| Prime Agent source | Disposition | Prime Bun trace | Notes |
+| --- | --- | --- | --- |
+| [`1ae59498`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1ae59498) | Ported | [`750b8f65`](https://github.com/sng-asyncfunc/prime-bun/commit/750b8f65) | Tolerates null assistant content without crashing rendering. |
+| [`965941c7`](https://github.com/PrimeIntellect-ai/prime-agent/commit/965941c7), [`0987c1ba`](https://github.com/PrimeIntellect-ai/prime-agent/commit/0987c1ba), [`fd789e21`](https://github.com/PrimeIntellect-ai/prime-agent/commit/fd789e21) | Ported and hardened | [`750b8f65`](https://github.com/sng-asyncfunc/prime-bun/commit/750b8f65) | Opens OSC 8 and bare HTTP links across wrapped and wide text while preserving selection and Ghostty scrolling. |
+| [`5e268e28`](https://github.com/PrimeIntellect-ai/prime-agent/commit/5e268e28), [`324298a2`](https://github.com/PrimeIntellect-ai/prime-agent/commit/324298a2) | Ported and adapted | [`7283206e`](https://github.com/sng-asyncfunc/prime-bun/commit/7283206e) | Adds contextual Bun host contracts and reports a supported Codex discovery version without changing the daemon protocol. |
+| [`7787f074`](https://github.com/PrimeIntellect-ai/prime-agent/commit/7787f074) | Ported and hardened | [`d2eebe4e`](https://github.com/sng-asyncfunc/prime-bun/commit/d2eebe4e) | Retains exact root-kill cleanup ownership and rejects retries while the worker stop is active. |
+| [`f8d73abe`](https://github.com/PrimeIntellect-ai/prime-agent/commit/f8d73abe), [`e64fbcbf`](https://github.com/PrimeIntellect-ai/prime-agent/commit/e64fbcbf), [`875aba96`](https://github.com/PrimeIntellect-ai/prime-agent/commit/875aba96) | Ported and adapted | [`1c30b25e`](https://github.com/sng-asyncfunc/prime-bun/commit/1c30b25e) | Separates tool, agent-message, and edit-diff expansion and replaces upstream Python assumptions with Bun JavaScript cells. |
+| [`fa9e4ab1`](https://github.com/PrimeIntellect-ai/prime-agent/commit/fa9e4ab1), [`849c9211`](https://github.com/PrimeIntellect-ai/prime-agent/commit/849c9211), [`35f37ed0`](https://github.com/PrimeIntellect-ai/prime-agent/commit/35f37ed0) | Ported | [`85bb5aab`](https://github.com/sng-asyncfunc/prime-bun/commit/85bb5aab) | Improves agents-view ordering, search guidance, and model/effort context. |
+| [`2ea5ae09`](https://github.com/PrimeIntellect-ai/prime-agent/commit/2ea5ae09) | Ported and branded | [`62f1a955`](https://github.com/sng-asyncfunc/prime-bun/commit/62f1a955) | Restores bare `prime-bun --resume` and `/resume [selector]`. |
+| [`9bf49d89`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9bf49d89) | Ported | [`ae317a54`](https://github.com/sng-asyncfunc/prime-bun/commit/ae317a54) | Pins third-party workflow actions by immutable digests and disables checkout credential persistence. |
+| [`97b994c3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/97b994c3) | Ported | [`61941392`](https://github.com/sng-asyncfunc/prime-bun/commit/61941392) | Adds a bounded supervisor-owned RLM spawn ledger as family authority. |
+| [`06e4a19d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/06e4a19d) | Ported and adapted | [`f39b8e61`](https://github.com/sng-asyncfunc/prime-bun/commit/f39b8e61) | Consolidates child topology while retaining Prime Bun's idle catalog restart test. |
+| [`26f7f1a1`](https://github.com/PrimeIntellect-ai/prime-agent/commit/26f7f1a1) | Ported | [`e2a8fa8a`](https://github.com/sng-asyncfunc/prime-bun/commit/e2a8fa8a) | Moves supervisor authority out of macOS-cleaned temporary storage with a read-only legacy fallback. |
+| [`a9a86550`](https://github.com/PrimeIntellect-ai/prime-agent/commit/a9a86550) | Ported selectively | [`079f4e61`](https://github.com/sng-asyncfunc/prime-bun/commit/079f4e61) | Drops deleted child kernel state and deduplicates artifact paths; its unrelated model-test refresh was excluded. |
+| [`114a1d6a`](https://github.com/PrimeIntellect-ai/prime-agent/commit/114a1d6a) | Ported and hardened | [`2b60254c`](https://github.com/sng-asyncfunc/prime-bun/commit/2b60254c) | Resumes interrupted goals after compaction and fixes a Bun action-lifecycle race found by the imported regression. |
+| [`8edd21b0`](https://github.com/PrimeIntellect-ai/prime-agent/commit/8edd21b0), [`91977ebf`](https://github.com/PrimeIntellect-ai/prime-agent/commit/91977ebf), [`2c34b82f`](https://github.com/PrimeIntellect-ai/prime-agent/commit/2c34b82f), [`941d7b3e`](https://github.com/PrimeIntellect-ai/prime-agent/commit/941d7b3e) | Deferred | — | Model-catalog and reasoning metadata updates overlap user-owned generator changes; re-evaluate by updating the generator, never the generated file directly. |
+| [`ba4c53b3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/ba4c53b3) | Explicitly excluded | — | Promotes trace sharing and is outside Prime Bun's no-telemetry synchronization policy. |
+| [`8598deda`](https://github.com/PrimeIntellect-ai/prime-agent/commit/8598deda) | Explicitly excluded | — | Documents the upstream Python runtime and does not apply to the Bun JavaScript notebook. |
+| [`a3b3e753`](https://github.com/PrimeIntellect-ai/prime-agent/commit/a3b3e753), [`25769089`](https://github.com/PrimeIntellect-ai/prime-agent/commit/25769089), [`9f950114`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9f950114) | Not ported | — | Upstream issue templates, Bugbot rules, and contribution governance do not improve the Prime Bun runtime. |
+| [`61131b2d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61131b2d) | Informational | — | Upstream release metadata was replaced with Prime Bun-specific versioning and release notes. |
 
-| Prime Agent source | Next action | Reason |
-| --- | --- | --- |
-| [`83a0f9f9`](https://github.com/PrimeIntellect-ai/prime-agent/commit/83a0f9f9) | Informational only | Upstream v0.7.2 release metadata summarizes the ported work but Prime Bun versions and changelogs are independent. |
-| [`1ae59498`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1ae59498) | Review next | Prevents malformed provider responses containing null assistant content blocks from crashing TUI rendering. |
+The daemon ports add internal on-disk authority records but no command, event, response, capability, or startup wire change; existing daemons remain readable through the legacy registry fallback, so the daemon protocol version and schema revision remain unchanged.
 
 ### Future-agent pickup procedure
 
 1. Fetch without adding or mutating a persistent remote: `git fetch https://github.com/PrimeIntellect-ai/prime-agent.git main`.
-2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 1ae59498..FETCH_HEAD`.
-3. Resolve the two known commits above before advancing the “last fully dispositioned” checkpoint.
+2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 61131b2d..FETCH_HEAD`.
+3. Revisit the deferred model-catalog group only after the user-owned generator changes have been reconciled.
 4. Classify every upstream commit as ported, adapted, excluded, informational, or deferred; add both upstream and Prime Bun commit links here.
 5. Do not blindly cherry-pick daemon, dependency, release, Homebrew, or telemetry changes; preserve Prime Bun protocol capability gates, Bun runtime behavior, and dependency-age rules.
 6. After code ports, run `npm run check`, focused tests for every changed behavior, live DeepSeek Flash/Pro dogfood, and a Fable5 go/no-go gate when the change is cross-cutting.

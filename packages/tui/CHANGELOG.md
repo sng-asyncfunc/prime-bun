@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed fullscreen OSC 8 and bare HTTP links across wrapped, tabbed, and wide-character text while preserving drag selection and Ghostty scrolling.
+
 ## [0.7.2] - 2026-08-12
 
 - Fixed interactive input and fullscreen scrolling lag under long transcripts by prioritizing focused frames, repainting only changing components, and reusing cached viewport content.

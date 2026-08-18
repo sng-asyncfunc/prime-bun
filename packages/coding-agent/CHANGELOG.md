@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- Added contextual host requests for Bun-backed tools without breaking legacy extension handlers.
+- Added `app.edits.expand` (`ctrl+j`) to toggle edit diffs independently from tool output and agent messages.
+- Changed edit results to keep their file summary visible while expanding diffs inline beneath it.
+- Changed the agents view to sort inactive sessions by recent activity, preserve running-session order, show model and effort, and clarify that typing searches sessions.
+- Restored bare `prime-bun --resume` and `/resume`, including direct session selectors.
+- Fixed malformed null assistant content, fullscreen HTTP links, Ghostty scrolling, streaming click targets, and drag-to-select behavior.
+- Fixed Codex model discovery and Bun host-request context so subagents receive supported models and the correct caller identity.
+- Fixed root-session shutdown races, durable daemon authority across macOS temp cleanup, and retries attempted while workers are stopping.
+- Added a bounded supervisor-owned RLM spawn ledger and consolidated child topology metadata so deleted children release kernel state and artifact paths stay deduplicated.
 - Fixed the agent going silent after an automatic context compaction interrupted unfinished work: the tool loop now resumes when a threshold compaction fails or is skipped, and active goals keep continuing after a successful mid-goal threshold compaction.
 
 ## [0.7.2] - 2026-08-12

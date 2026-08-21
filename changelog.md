@@ -2,14 +2,18 @@
 
 This repository-level file is the handoff ledger for Prime Bun-specific work and selective synchronization from [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent); package release notes remain in `packages/*/CHANGELOG.md`.
 
+## Active design decisions
+
+- Retain the existing monochrome Prime butterfly terminal splash in `packages/coding-agent/src/themes/prime-logo.ts`; a muscular Prime Bun mascot replacement was explored on 2026-08-18 and explicitly declined, so do not revisit it unless the user asks.
+
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-08-18.
+Last refreshed: 2026-08-21.
 
-- Upstream baseline: Prime Agent [`v0.7.3` / `61131b2d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61131b2d).
-- Last fully dispositioned upstream commit: [`61131b2d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61131b2d).
-- Upstream release observed at: [`v0.7.3`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.7.3).
-- Prime Bun synchronization checkpoint: [`ae317a54`](https://github.com/sng-asyncfunc/prime-bun/commit/ae317a54).
+- Upstream baseline: Prime Agent [`v0.7.4` / `af0b8e00`](https://github.com/PrimeIntellect-ai/prime-agent/commit/af0b8e00).
+- Last fully dispositioned upstream commit: [`af0b8e00`](https://github.com/PrimeIntellect-ai/prime-agent/commit/af0b8e00).
+- Upstream release observed at: [`v0.7.4`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.7.4).
+- Prime Bun synchronization checkpoint: [`f0b43bb5`](https://github.com/sng-asyncfunc/prime-bun/commit/f0b43bb5).
 - Policy: port behavior selectively, adapt it to the Bun architecture, and never inherit Prime Agent telemetry, analytics, release metadata, or distribution-specific code without an explicit decision.
 
 ### Dispositioned Prime Agent commits after v0.7.1
@@ -55,16 +59,37 @@ Prime Bun then added a dogfood-derived clarification in [`5c774e46`](https://git
 | [`a3b3e753`](https://github.com/PrimeIntellect-ai/prime-agent/commit/a3b3e753), [`25769089`](https://github.com/PrimeIntellect-ai/prime-agent/commit/25769089), [`9f950114`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9f950114) | Not ported | — | Upstream issue templates, Bugbot rules, and contribution governance do not improve the Prime Bun runtime. |
 | [`61131b2d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61131b2d) | Informational | — | Upstream release metadata was replaced with Prime Bun-specific versioning and release notes. |
 
+### Prime Agent v0.7.4 disposition
+
+| Prime Agent source | Disposition | Prime Bun trace | Notes |
+| --- | --- | --- | --- |
+| [`e85a67ac`](https://github.com/PrimeIntellect-ai/prime-agent/commit/e85a67ac) | Ported and hardened | [`183547d5`](https://github.com/sng-asyncfunc/prime-bun/commit/183547d5) | Removes inherited RLM depth from new top-level resident workers. |
+| [`7ca44937`](https://github.com/PrimeIntellect-ai/prime-agent/commit/7ca44937) | Ported and adapted | [`183547d5`](https://github.com/sng-asyncfunc/prime-bun/commit/183547d5) | Adds Bun-native nonblocking work, bounded-wait, parallel-worker, progress, and concise-prose guidance. |
+| [`20b54977`](https://github.com/PrimeIntellect-ai/prime-agent/commit/20b54977) | Already superseded | [`2b60254c`](https://github.com/sng-asyncfunc/prime-bun/commit/2b60254c) | Keeps Prime Bun's more precise durable action-lifecycle continuation instead of replacing it with the upstream condition. |
+| [`032e3ee7`](https://github.com/PrimeIntellect-ai/prime-agent/commit/032e3ee7) | Not ported | — | Broad cleanup churn has no user-visible parity value and overlaps Prime Bun runtime code. |
+| [`aa0bdfa6`](https://github.com/PrimeIntellect-ai/prime-agent/commit/aa0bdfa6) | Not applicable | — | Prime Bun has none of the removed IPython asynchronous-bash guidance. |
+| [`8ee310c5`](https://github.com/PrimeIntellect-ai/prime-agent/commit/8ee310c5) | Ported | [`183547d5`](https://github.com/sng-asyncfunc/prime-bun/commit/183547d5) | Raw newlines reach the editor while configurable encoded Ctrl+J still expands edit diffs. |
+| [`d51590c4`](https://github.com/PrimeIntellect-ai/prime-agent/commit/d51590c4) | Ported and adapted | [`183547d5`](https://github.com/sng-asyncfunc/prime-bun/commit/183547d5) | Rich drafts survive full and scoped agents-view handoff and restore to the originating session. |
+| [`824a9ee3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/824a9ee3) | Ported and adapted | [`183547d5`](https://github.com/sng-asyncfunc/prime-bun/commit/183547d5) | Bun RLM children accept a validated model-supported `thinking` override. |
+| [`8189b12d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/8189b12d) | Ported and hardened | [`183547d5`](https://github.com/sng-asyncfunc/prime-bun/commit/183547d5) | Normalizes socket identity across CLI, daemon, supervisor, logs, ownership, and update restart while reading equivalent legacy spellings. |
+| [`e7b8cae9`](https://github.com/PrimeIntellect-ai/prime-agent/commit/e7b8cae9) | Explicitly excluded | — | Linear workflow policy is upstream organization governance. |
+| [`1663d443`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1663d443) | Explicitly excluded | — | IPython snapshot work does not apply to the Bun notebook. |
+| [`f8f0036c`](https://github.com/PrimeIntellect-ai/prime-agent/commit/f8f0036c) | Not ported | — | The Trendshift badge is repository promotion, not runtime parity. |
+| [`b09fbdb4`](https://github.com/PrimeIntellect-ai/prime-agent/commit/b09fbdb4) | Ported | [`183547d5`](https://github.com/sng-asyncfunc/prime-bun/commit/183547d5) | Model search ranks exact intent before prefix, token, and fuzzy matches with deterministic tie-breakers. |
+| [`af0b8e00`](https://github.com/PrimeIntellect-ai/prime-agent/commit/af0b8e00) | Recreated locally | [`f0b43bb5`](https://github.com/sng-asyncfunc/prime-bun/commit/f0b43bb5) | Releases Prime Bun-specific 0.7.4 metadata without copying upstream branding or distribution code. |
+
+Release dogfood added three Prime Bun-specific hardenings in [`f0b43bb5`](https://github.com/sng-asyncfunc/prime-bun/commit/f0b43bb5): common runtime-global declarations remain cell-local, expanded and collapsed JavaScript results use separate bounded caches, and identical unchanged successful tool-call loops stop after four executions with balanced result messages.
+
 The daemon ports add internal on-disk authority records but no command, event, response, capability, or startup wire change; existing daemons remain readable through the legacy registry fallback, so the daemon protocol version and schema revision remain unchanged.
 
 ### Future-agent pickup procedure
 
 1. Fetch without adding or mutating a persistent remote: `git fetch https://github.com/PrimeIntellect-ai/prime-agent.git main`.
-2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 61131b2d..FETCH_HEAD`.
+2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline af0b8e00..FETCH_HEAD`.
 3. Revisit the deferred model-catalog group only after the user-owned generator changes have been reconciled.
 4. Classify every upstream commit as ported, adapted, excluded, informational, or deferred; add both upstream and Prime Bun commit links here.
 5. Do not blindly cherry-pick daemon, dependency, release, Homebrew, or telemetry changes; preserve Prime Bun protocol capability gates, Bun runtime behavior, and dependency-age rules.
-6. After code ports, run `npm run check`, focused tests for every changed behavior, live DeepSeek Flash/Pro dogfood, and a Fable5 go/no-go gate when the change is cross-cutting.
+6. After code ports, run `npm run check`, focused tests for every changed behavior, live full-model dogfood, and a Fable5 go/no-go gate when the change is cross-cutting.
 
 ### Verification for the 2026-08-11 synchronization
 
@@ -87,6 +112,15 @@ The daemon ports add internal on-disk authority records but no command, event, r
 - DeepSeek V4 Pro completed the repository audit in session `01a01335-b89a-7728-b216-28719bef9fa3` with eight error-free JavaScript batches, 32–37 MB source-process RSS, immediate 584-line expansion/collapse, and a responsive double-Ctrl+C exit.
 - DeepSeek V4 Flash completed fenced Markdown and template-literal structured writes/edits on its first attempt, pure JavaScript hash/parsing, bounded a 588,895-byte 100,000-line result, cancelled an active Bun cell within one second, recovered on the next cell, and resumed session `01a01339-b4a4-7719-a153-f186e3690f84`.
 - Fable5 returned `SATISFIED_PROCEED`, confirmed no Python runtime or new trace-sharing telemetry landed, and parked pre-existing fork-identity drift as follow-up work rather than a v0.7.3 blocker.
+
+### Verification for the 2026-08-21 synchronization
+
+- `npm run check` passed for Prime Bun 0.7.4 across 945 files, tsgo, installer rendering, and browser smoke; current focused suites passed 40 agent-loop and 83 Bun worker/render tests in addition to the integrated sync, daemon, compaction, resume, thinking, and model-ranking suites.
+- Grok completed a no-edit repository audit with error-free structured JavaScript, then authored fenced Markdown containing backticks through structured write on its first attempt while declaring common `fs`, `crypto`, and `path` locals.
+- A 1,000,000-character JavaScript result remained bounded; after its first expanded render, 30 additional expansion cycles stayed responsive and UI RSS settled from 151.7 MB to 87.6 MB instead of growing monotonically.
+- A multiline bracketed paste with an image marker survived agents-view handoff, the previous manual stash remained queued behind it, explicit `--resume` restored the transcript, a 30-second Bun cell cancelled within 0.5 seconds, and the next cell executed successfully.
+- An adversarial Grok prompt that previously produced 374 identical tool calls was bounded to four successful results plus one explicit loop-guard result, with every call/result pair preserved.
+- Fable5 returned `SATISFIED_PROCEED`, verified the final shadowing, render-cache, loop-breaker, exclusion, version, and daemon-compatibility contracts, and approved fast-forward delivery.
 
 ## 2026-08-08 to 2026-08-09
 

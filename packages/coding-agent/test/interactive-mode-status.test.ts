@@ -621,6 +621,7 @@ type SubmitHandlerHarness = {
 	isBashRunning: () => boolean;
 	patchConnectionState: (patch: Record<string, unknown>) => void;
 	requestAgentsView: () => Promise<void>;
+	handleResumeCommand: (args: string) => Promise<void>;
 	agentConnection: {
 		prompt: (message: string) => Promise<void>;
 		executeBash: (command: string, options?: { excludeFromContext?: boolean }) => Promise<void>;
@@ -640,6 +641,7 @@ function createSubmitHandlerHarness(overrides: Partial<SubmitHandlerHarness> = {
 		patchConnectionState: vi.fn(),
 		promptStashState: {},
 		requestAgentsView: vi.fn(async () => {}),
+		handleResumeCommand: vi.fn(async () => {}),
 		promptStash: undefined,
 		pastedImages: new Map(),
 		getPromptStashImages: vi.fn(() => []),
@@ -1533,13 +1535,13 @@ describe("InteractiveMode connection events", () => {
 		expect(flushPendingBashComponents).toHaveBeenCalledOnce();
 	});
 
-	test("sends /resume as plain prompt text now that the command is retired", async () => {
+	test("routes /resume arguments through the restored resume command", async () => {
 		const fakeThis = createSubmitHandlerHarness();
 
 		await fakeThis.defaultEditor.onSubmit?.("/resume unexpected");
 
 		expect(fakeThis.showError).not.toHaveBeenCalled();
-		expect(fakeThis.requestAgentsView).not.toHaveBeenCalled();
+		expect(fakeThis.handleResumeCommand).toHaveBeenCalledWith("unexpected");
 	});
 
 	test("renderCurrentSessionState waits for replacement handling before rendering", async () => {
@@ -2992,6 +2994,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 	): Record<string, unknown> & { getUserInput: ReturnType<typeof vi.fn> } {
 		return {
 			init: vi.fn(async () => {}),
+			restorePromptStashOnOpen: vi.fn(),
 			options: { agentsViewOwnsStartupNotices: true, ...options },
 			modelRegistry: { getError: vi.fn(() => undefined) },
 			runStartupOnboarding: vi.fn(async () => true),

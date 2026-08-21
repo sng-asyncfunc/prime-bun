@@ -54,6 +54,11 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Runtime: Bun 1.3.14 or newer");
 		expect(prompt).toContain("Installed JavaScript skill globals (prepared): `websearch`, `refine`.");
 		expect(prompt).toContain("Bun is the agent's long-lived JavaScript notebook");
+		expect(prompt).toContain("use a nonblocking control loop");
+		expect(prompt).toContain("Start independent workers without waiting for each one sequentially");
+		expect(prompt).toContain("only one short, bounded wait");
+		expect(prompt).toContain("give concise progress updates at meaningful milestones");
+		expect(prompt).toContain("Prefer short sentences, common words, and concrete verbs");
 		expect(prompt).toContain(
 			"Default to the `actions` input for independent routine reads, searches, shell commands, and batched work",
 		);
@@ -114,7 +119,20 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).not.toContain("Static `import` declarations are not supported");
 		expect(prompt).toContain("Continual harness state is available as `rlm.harness`");
 		expect(prompt).toContain("installed JavaScript skills are prepared as globals");
-		expect(prompt).not.toMatch(/Python packages|Python REPL|%%bash|uv pip/);
+		expect(prompt).not.toMatch(/Python packages|Python REPL|IPython|%%bash|uv pip|time\.sleep|asyncio|managed job/);
+	});
+
+	test("limits user progress guidance to the root agent", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/session.jsonl",
+			activeTools: ["javascript"],
+			allowRecursion: true,
+			depth: 1,
+		});
+
+		expect(prompt).toContain("use a nonblocking control loop");
+		expect(prompt).not.toContain("give concise progress updates at meaningful milestones");
 	});
 
 	test("falls back to structured actions when dedicated file tools are inactive", () => {

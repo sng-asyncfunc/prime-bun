@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Added an explicit per-child `thinking` option to the Bun RLM API, with validation against the resolved model.
+- Changed long-running Bun RLM guidance to favor nonblocking parallel work, bounded waits, meaningful progress, and concise technical prose.
+- Changed model search to rank exact intent before prefixes and fuzzy matches, then use authentication, current model, recency, and stable order as tie-breakers.
+- Fixed raw terminal newlines toggling edit diffs instead of inserting a new line while preserving configurable encoded Ctrl+J handling.
+- Fixed drafts being blocked or lost when opening full or scoped agents views by restoring rich drafts to their originating session.
+- Fixed top-level daemon sessions inheriting a child RLM depth from their supervisor.
+- Fixed equivalent daemon socket path spellings creating split logs, identities, ownership, and worker namespaces.
 - Fixed launches hanging after an update removed the worktree used by an idle background service.
 
 ## [0.7.3] - 2026-08-18

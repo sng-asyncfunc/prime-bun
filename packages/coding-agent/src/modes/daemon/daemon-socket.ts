@@ -3,6 +3,9 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
+
+export { normalizeSocketPath } from "../../utils/daemon-socket-path.js";
+
 import { APP_NAME } from "../../config.js";
 
 const DAEMON_SOCKET_MODE = 0o600;

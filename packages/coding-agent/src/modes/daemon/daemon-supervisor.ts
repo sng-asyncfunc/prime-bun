@@ -94,6 +94,7 @@ import {
 	defaultDaemonSocketDir,
 	defaultDaemonSocketPath,
 	getDaemonSocketIdentity,
+	normalizeSocketPath,
 	prepareDaemonSocketPath,
 	restrictDaemonSocketPath,
 } from "./daemon-socket.js";
@@ -425,7 +426,8 @@ function isDaemonWorkerDescriptor(value: unknown, socketPath: string): value is 
 	const descriptor = value as Partial<DaemonWorkerDescriptor>;
 	return (
 		descriptor.version === 1 &&
-		descriptor.supervisorSocketPath === socketPath &&
+		typeof descriptor.supervisorSocketPath === "string" &&
+		normalizeSocketPath(descriptor.supervisorSocketPath) === socketPath &&
 		typeof descriptor.workerId === "string" &&
 		Number.isInteger(descriptor.pid) &&
 		(descriptor.pid ?? 0) > 0 &&
@@ -497,7 +499,7 @@ function sortCronJobs(jobs: AgentCronJob[]): AgentCronJob[] {
 }
 
 function descriptorKey(socketPath: string): string {
-	return createHash("sha256").update(socketPath).digest("hex").slice(0, 12);
+	return createHash("sha256").update(normalizeSocketPath(socketPath)).digest("hex").slice(0, 12);
 }
 
 function defaultWorkerDescriptorDir(agentDir: string, socketPath: string): string {
@@ -576,7 +578,7 @@ function mergeSessionLists(active: readonly SessionSummary[], saved: readonly Se
 }
 
 export async function runDaemonSupervisorMode(options: DaemonSupervisorOptions): Promise<never> {
-	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
+	const socketPath = normalizeSocketPath(options.socketPath ?? defaultDaemonSocketPath());
 	const supervisor = new DaemonSupervisor(socketPath, options);
 	await supervisor.start();
 	return new Promise(() => {});
@@ -934,6 +936,7 @@ export class DaemonSupervisor {
 				if (!isDaemonWorkerDescriptor(descriptor, this.socketPath)) {
 					continue;
 				}
+				descriptor.supervisorSocketPath = normalizeSocketPath(descriptor.supervisorSocketPath);
 				descriptor.lifecycle = "recovering";
 				descriptor.recoveryJournalPath ??= join(this.descriptorDir, `${descriptor.workerId}.recovery.jsonl`);
 				descriptor.orphanProcessJournalPath ??= join(this.descriptorDir, `${descriptor.workerId}.orphans.jsonl`);
@@ -961,7 +964,8 @@ export class DaemonSupervisor {
 			) as Partial<PersistedSupervisorConfig>;
 			if (
 				parsed.version !== 1 ||
-				parsed.socketPath !== this.socketPath ||
+				typeof parsed.socketPath !== "string" ||
+				normalizeSocketPath(parsed.socketPath) !== this.socketPath ||
 				!parsed.defaultSessionConfig ||
 				typeof parsed.defaultSessionConfig !== "object" ||
 				typeof parsed.defaultSessionConfig.agentDir !== "string"
@@ -2161,23 +2165,25 @@ export class DaemonSupervisor {
 		const orphanProcessJournalPath =
 			existing?.descriptor.orphanProcessJournalPath ?? join(this.descriptorDir, `${workerId}.orphans.jsonl`);
 		const launch = createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", socketPath]);
+		const workerEnvironment = createCliSubprocessEnv({
+			...process.env,
+			...launchEnv,
+			[DAEMON_WORKER_ROLE_ENV]: "1",
+			[DAEMON_WORKER_TOKEN_ENV]: token,
+			[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV]: rootActiveSessionId,
+			[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV]: this.socketPath,
+			[DAEMON_WORKER_RECOVERY_JOURNAL_ENV]: recoveryJournalPath,
+			[DAEMON_WORKER_STARTUP_GATE_FD_ENV]: String(WORKER_STARTUP_GATE_FD),
+			[ORPHAN_PROCESS_JOURNAL_ENV]: orphanProcessJournalPath,
+			[SESSION_LEASES_ENABLED_ENV]: "1",
+			[SESSION_LEASE_OWNER_ID_ENV]: rootActiveSessionId,
+		});
+		delete workerEnvironment.RLM_DEPTH;
 		await this.assertRecoveryAllowed();
 		const child: ChildProcess = spawn(launch.command, launch.args, {
 			cwd: createCommand.config?.cwd ?? process.cwd(),
 			detached: true,
-			env: createCliSubprocessEnv({
-				...process.env,
-				...launchEnv,
-				[DAEMON_WORKER_ROLE_ENV]: "1",
-				[DAEMON_WORKER_TOKEN_ENV]: token,
-				[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV]: rootActiveSessionId,
-				[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV]: this.socketPath,
-				[DAEMON_WORKER_RECOVERY_JOURNAL_ENV]: recoveryJournalPath,
-				[DAEMON_WORKER_STARTUP_GATE_FD_ENV]: String(WORKER_STARTUP_GATE_FD),
-				[ORPHAN_PROCESS_JOURNAL_ENV]: orphanProcessJournalPath,
-				[SESSION_LEASES_ENABLED_ENV]: "1",
-				[SESSION_LEASE_OWNER_ID_ENV]: rootActiveSessionId,
-			}),
+			env: workerEnvironment,
 			stdio: ["ignore", "ignore", "pipe", "pipe"],
 		});
 		const detachWorkerStderr = child.stderr

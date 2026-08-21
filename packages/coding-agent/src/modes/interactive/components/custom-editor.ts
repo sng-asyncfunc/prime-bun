@@ -198,9 +198,10 @@ export class CustomEditor extends Editor {
 			// Fall through to editor handling for delete-char-forward when not empty
 		}
 
-		// Check all other app actions
+		// A raw newline is Shift+Enter in some terminals, even though it decodes as ctrl+j.
 		for (const [action, handler] of this.actionHandlers) {
 			if (
+				data !== "\n" &&
 				action !== "app.input.clear" &&
 				action !== "app.exit" &&
 				(action !== "app.shortcuts" || this.getText().length === 0) &&

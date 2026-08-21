@@ -104,6 +104,14 @@ const child = await rlm("Audit authorization and reply to the parent.", {
 });
 ```
 
+Supported child options are:
+
+- `name`: a unique readable child session name;
+- `model`: an exact `provider/model` selector from `rlm.findModels()`; and
+- `thinking`: an explicit child reasoning level that the resolved child model supports. It defaults to the parent level, clamped to the child model.
+
+Unknown options fail instead of being ignored.
+
 Children reply explicitly:
 
 ```javascript

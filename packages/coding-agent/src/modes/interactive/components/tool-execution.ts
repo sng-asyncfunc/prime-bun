@@ -271,7 +271,12 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
 		this.expanded = expanded;
+		if (this.shouldUseJavaScriptRenderer() && this.javaScriptCellComponent) {
+			this.javaScriptCellComponent.setExpanded(expanded);
+			return;
+		}
 		this.updateDisplay();
 	}
 

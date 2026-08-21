@@ -59,6 +59,26 @@ describe("JavaScriptCellComponent structured actions", () => {
 		expect(expanded.length).toBeGreaterThan(collapsed.length);
 	});
 
+	it("reuses collapsed and expanded renders across repeated toggles", () => {
+		const component = new JavaScriptCellComponent(
+			actionState({
+				code: '"x".repeat(65_536)',
+				details: { durationMs: 3, status: "ok", stdout: "x".repeat(24_000) },
+			}),
+		);
+
+		const collapsed = component.render(120);
+		component.setExpanded(true);
+		const expanded = component.render(120);
+		component.setExpanded(false);
+		expect(component.render(120)).toBe(collapsed);
+		component.setExpanded(true);
+		expect(component.render(120)).toBe(expanded);
+
+		component.update(actionState({ expanded: true, details: { durationMs: 4, status: "ok", stdout: "new" } }));
+		expect(component.render(120)).not.toBe(expanded);
+	});
+
 	it("renders operation targets and exact shell commands when expanded", () => {
 		const output = new JavaScriptCellComponent(actionState({ expanded: true })).render(120).map(stripAnsi).join("\n");
 
@@ -131,6 +151,7 @@ describe("JavaScriptCellComponent structured actions", () => {
 					diffs: [{ path: "notes.md", oldStr: "before", newStr: "after", startLine: 3 }],
 				},
 				expanded: true,
+				editDiffsExpanded: true,
 			}),
 		)
 			.render(100)

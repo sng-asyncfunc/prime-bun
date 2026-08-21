@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-08-21
+
+- Fixed models repeatedly executing an identical successful tool call by stopping unchanged loops after four executions.
+
 ## [0.7.3] - 2026-08-18
 
 ## [0.7.2] - 2026-08-12

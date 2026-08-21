@@ -434,7 +434,8 @@ function formatJavaScriptErrorSummary(error: JavaScriptErrorDetails): string {
 }
 
 export class JavaScriptCellComponent implements Component {
-	private readonly renderCache = new VersionedRenderCache();
+	private readonly collapsedRenderCache = new VersionedRenderCache();
+	private readonly expandedRenderCache = new VersionedRenderCache();
 	private state: JavaScriptCellState;
 	private stateVersion = 0;
 
@@ -447,8 +448,13 @@ export class JavaScriptCellComponent implements Component {
 		this.stateVersion += 1;
 	}
 
+	setExpanded(expanded: boolean): void {
+		this.state.expanded = expanded;
+	}
+
 	invalidate(): void {
-		this.renderCache.invalidate();
+		this.collapsedRenderCache.invalidate();
+		this.expandedRenderCache.invalidate();
 	}
 
 	render(width: number): string[] {
@@ -461,7 +467,8 @@ export class JavaScriptCellComponent implements Component {
 			this.statusKind(details) === "running"
 				? this.stateVersion * frames + (getWorkingPulseFrame() % frames)
 				: this.stateVersion * frames;
-		const cached = this.renderCache.get(safeWidth, cacheVersion);
+		const renderCache = this.state.expanded ? this.expandedRenderCache : this.collapsedRenderCache;
+		const cached = renderCache.get(safeWidth, cacheVersion);
 		if (cached) {
 			return cached;
 		}
@@ -480,11 +487,11 @@ export class JavaScriptCellComponent implements Component {
 		}
 
 		if (!this.state.expanded) {
-			return this.renderCache.set(safeWidth, cacheVersion, lines);
+			return renderCache.set(safeWidth, cacheVersion, lines);
 		}
 
 		this.renderOutput(lines, safeWidth, details, hasCode);
-		return this.renderCache.set(safeWidth, cacheVersion, lines);
+		return renderCache.set(safeWidth, cacheVersion, lines);
 	}
 
 	private collapsedLines(details: JavaScriptDetails, width: number): string[] {

@@ -524,10 +524,19 @@ const callback = await new Promise((resolve, reject) => {
 		expect(reused).toMatchObject({ status: "ok", value: '"d"' });
 	});
 
-	it("rejects declarations that shadow runtime globals", async () => {
+	it("keeps common runtime-global shadows cell-local without replacing the prepared globals", async () => {
 		client.send({
 			cellId: "runtime-collision-cell",
-			code: "const fs = 1;",
+			code: [
+				'const fs = require("fs");',
+				'const crypto = require("crypto");',
+				'const path = "/tmp/write-proof.md";',
+				"({",
+				'  digest: crypto.createHash("sha256").update("ok").digest("hex"),',
+				"  hasWrite: typeof fs.writeFileSync,",
+				"  path,",
+				"})",
+			].join("\n"),
 			id: "runtime-collision-execute",
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			type: "execute",
@@ -536,16 +545,19 @@ const callback = await new Promise((resolve, reject) => {
 			"result",
 			(message) => message.replyTo === "runtime-collision-execute",
 		);
-		expect(collision).toMatchObject({
-			error: {
-				message: expect.stringMatching(/fs.*runtime global.*choose a different local name/i),
-			},
-			status: "error",
-		});
+		requireSuccess(collision);
+		expect(collision.bindingNames).toEqual([]);
+		expect(collision.value).toContain('hasWrite: "function"');
+		expect(collision.value).toContain('path: "/tmp/write-proof.md"');
+		expect(collision.value).toContain("2689367b205c16ce32ed4200942b8b8b1e");
 
 		client.send({
 			cellId: "runtime-collision-check-cell",
-			code: 'path.basename("/still/available");',
+			code: `({
+				filesystem: "callbacks" in fs,
+				basename: path.basename("/still/available"),
+				webCrypto: crypto === globalThis.crypto,
+			});`,
 			id: "runtime-collision-check-execute",
 			protocolVersion: BUN_WORKER_PROTOCOL_VERSION,
 			type: "execute",
@@ -554,7 +566,10 @@ const callback = await new Promise((resolve, reject) => {
 			"result",
 			(message) => message.replyTo === "runtime-collision-check-execute",
 		);
-		expect(result).toMatchObject({ status: "ok", value: '"available"' });
+		requireSuccess(result);
+		expect(result.value).toContain("filesystem: true");
+		expect(result.value).toContain('basename: "available"');
+		expect(result.value).toContain("webCrypto: true");
 	});
 
 	it("rejects package names that Bun would parse as command flags", async () => {

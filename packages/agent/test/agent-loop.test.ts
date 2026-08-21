@@ -1888,6 +1888,193 @@ describe("agentLoop with AgentMessage", () => {
 		expect(events.filter((event) => event.type === "turn_end")).toHaveLength(1);
 	});
 
+	it("stops a model loop after four identical successful tool executions", async () => {
+		const execute = vi.fn(async () => ({
+			content: [{ type: "text" as const, text: "42" }],
+			details: {},
+		}));
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [
+				{
+					name: "javascript",
+					label: "JavaScript",
+					description: "Evaluate JavaScript",
+					parameters: Type.Object({ code: Type.String() }),
+					execute,
+				},
+			],
+		};
+		let llmCalls = 0;
+		const stream = agentLoop(
+			[createUserMessage("calculate")],
+			context,
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			() => {
+				llmCalls++;
+				const mockStream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const message =
+						llmCalls <= 8
+							? createAssistantMessage(
+									[
+										{
+											type: "toolCall",
+											id: `tool-${llmCalls}`,
+											name: "javascript",
+											arguments: { code: "21 * 2" },
+										},
+									],
+									"toolUse",
+								)
+							: createAssistantMessage([{ type: "text", text: "done" }]);
+					mockStream.push({
+						type: "done",
+						reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+						message,
+					});
+				});
+				return mockStream;
+			},
+		);
+
+		for await (const _event of stream) {
+			// Drain the stream.
+		}
+
+		const messages = await stream.result();
+		const toolResults = messages.filter((message) => message.role === "toolResult");
+		expect(execute).toHaveBeenCalledTimes(4);
+		expect(llmCalls).toBe(5);
+		expect(toolResults).toHaveLength(5);
+		expect(toolResults.at(-1)?.role).toBe("toolResult");
+		if (toolResults.at(-1)?.role === "toolResult") {
+			expect(toolResults.at(-1)?.isError).toBe(true);
+			expect(toolResults.at(-1)?.content).toEqual([
+				{
+					type: "text",
+					text: "Stopped an identical tool call after four unchanged successful results to prevent a model loop.",
+				},
+			]);
+		}
+	});
+
+	it("rejects an oversized batch of identical tool calls without executing it", async () => {
+		const execute = vi.fn(async () => ({
+			content: [{ type: "text" as const, text: "42" }],
+			details: {},
+		}));
+		let llmCalls = 0;
+		const stream = agentLoop(
+			[createUserMessage("calculate")],
+			{
+				systemPrompt: "",
+				messages: [],
+				tools: [
+					{
+						name: "javascript",
+						label: "JavaScript",
+						description: "Evaluate JavaScript",
+						parameters: Type.Object({ code: Type.String() }),
+						execute,
+					},
+				],
+			},
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			() => {
+				llmCalls++;
+				const mockStream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const message =
+						llmCalls === 1
+							? createAssistantMessage(
+									Array.from({ length: 8 }, (_, index) => ({
+										type: "toolCall" as const,
+										id: `tool-${index}`,
+										name: "javascript",
+										arguments: { code: "21 * 2" },
+									})),
+									"toolUse",
+								)
+							: createAssistantMessage([{ type: "text", text: "done" }]);
+					mockStream.push({
+						type: "done",
+						reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+						message,
+					});
+				});
+				return mockStream;
+			},
+		);
+
+		for await (const _event of stream) {
+			// Drain the stream.
+		}
+
+		const messages = await stream.result();
+		const toolResults = messages.filter((message) => message.role === "toolResult");
+		expect(execute).not.toHaveBeenCalled();
+		expect(llmCalls).toBe(1);
+		expect(toolResults).toHaveLength(8);
+		expect(toolResults.every((message) => message.role === "toolResult" && message.isError)).toBe(true);
+	});
+
+	it("allows repeated polling calls while their successful results change", async () => {
+		let result = 0;
+		const execute = vi.fn(async () => ({
+			content: [{ type: "text" as const, text: String(++result) }],
+			details: {},
+		}));
+		let llmCalls = 0;
+		const stream = agentLoop(
+			[createUserMessage("poll")],
+			{
+				systemPrompt: "",
+				messages: [],
+				tools: [
+					{
+						name: "status",
+						label: "Status",
+						description: "Check status",
+						parameters: Type.Object({}),
+						execute,
+					},
+				],
+			},
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			() => {
+				llmCalls++;
+				const mockStream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const message =
+						llmCalls <= 5
+							? createAssistantMessage(
+									[{ type: "toolCall", id: `status-${llmCalls}`, name: "status", arguments: {} }],
+									"toolUse",
+								)
+							: createAssistantMessage([{ type: "text", text: "done" }]);
+					mockStream.push({
+						type: "done",
+						reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+						message,
+					});
+				});
+				return mockStream;
+			},
+		);
+
+		for await (const _event of stream) {
+			// Drain the stream.
+		}
+
+		expect(execute).toHaveBeenCalledTimes(5);
+		expect(llmCalls).toBe(6);
+	});
+
 	it("should continue after parallel tool calls when not all tool results terminate", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {

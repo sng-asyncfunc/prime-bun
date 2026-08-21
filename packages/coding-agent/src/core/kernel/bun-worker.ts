@@ -126,6 +126,7 @@ const CELL_LOCAL_RUNTIME_MODULE_SPECIFIERS: ReadonlyMap<string, ReadonlySet<stri
 	["path", new Set(["path", "node:path"])],
 	["util", new Set(["util", "node:util"])],
 ]);
+const CELL_LOCAL_COMMON_RUNTIME_GLOBAL_NAMES: ReadonlySet<string> = new Set(["crypto", "fs", "os", "path", "util"]);
 const cellContext = new AsyncLocalStorage<ActiveCell>();
 const workerGlobals = globalThis as typeof globalThis & PrimeWorkerGlobals;
 const primeFileSystem: PrimeFileSystem = Object.freeze({
@@ -1287,7 +1288,9 @@ async function executeCell(message: Extract<HostToBunWorkerMessage, { type: "exe
 		const cellLocalRuntimeBindings = new Set(
 			transformed.bindingNames.filter(
 				(name) =>
-					runtimeBindingNames.has(name) && isCellLocalRuntimeModuleImport(name, transformed.bindingRecipes[name]),
+					runtimeBindingNames.has(name) &&
+					(CELL_LOCAL_COMMON_RUNTIME_GLOBAL_NAMES.has(name) ||
+						isCellLocalRuntimeModuleImport(name, transformed.bindingRecipes[name])),
 			),
 		);
 		const conflictingBinding = transformed.bindingNames.find(

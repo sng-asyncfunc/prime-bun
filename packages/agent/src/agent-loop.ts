@@ -26,6 +26,7 @@ import type {
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 const ABORT_ERROR_MESSAGE = "Request was aborted";
+const MAX_IDENTICAL_SUCCESSFUL_TOOL_EXECUTIONS = 4;
 const EMPTY_USAGE: AssistantMessage["usage"] = {
 	input: 0,
 	output: 0,
@@ -34,6 +35,62 @@ const EMPTY_USAGE: AssistantMessage["usage"] = {
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
+
+type RepeatedToolExecutionState = {
+	callSignature: string;
+	resultSignature: string;
+	count: number;
+};
+
+function serializeForLoopDetection(value: unknown): string | undefined {
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return undefined;
+	}
+}
+
+function getToolCallSignature(toolCall: AgentToolCall): string | undefined {
+	return serializeForLoopDetection([toolCall.name, toolCall.arguments]);
+}
+
+function getHomogeneousToolCallSignature(toolCalls: readonly AgentToolCall[]): string | undefined {
+	const signature = toolCalls[0] ? getToolCallSignature(toolCalls[0]) : undefined;
+	if (signature === undefined) return undefined;
+	return toolCalls.every((toolCall) => getToolCallSignature(toolCall) === signature) ? signature : undefined;
+}
+
+function nextRepeatedToolExecutionState(
+	previous: RepeatedToolExecutionState | undefined,
+	toolCalls: readonly AgentToolCall[],
+	toolResults: readonly ToolResultMessage[],
+): RepeatedToolExecutionState | undefined {
+	if (
+		toolCalls.length === 0 ||
+		toolCalls.length !== toolResults.length ||
+		toolResults.some((result) => result.isError)
+	) {
+		return undefined;
+	}
+	const callSignature = getHomogeneousToolCallSignature(toolCalls);
+	const resultSignatures = toolResults.map((result) => serializeForLoopDetection(result.content));
+	const resultSignature = resultSignatures[0];
+	if (
+		callSignature === undefined ||
+		resultSignature === undefined ||
+		resultSignatures.some((signature) => signature !== resultSignature)
+	) {
+		return undefined;
+	}
+	return {
+		callSignature,
+		resultSignature,
+		count:
+			previous?.callSignature === callSignature && previous.resultSignature === resultSignature
+				? previous.count + toolCalls.length
+				: toolCalls.length,
+	};
+}
 
 function createAbortError(): Error {
 	return new Error(ABORT_ERROR_MESSAGE);
@@ -341,6 +398,7 @@ async function runLoop(
 ): Promise<void> {
 	let firstTurn = true;
 	let lastTurn: Parameters<NonNullable<AgentLoopConfig["getContinuationMessages"]>>[0] | undefined;
+	let repeatedToolExecutionState: RepeatedToolExecutionState | undefined;
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = await pollMessagesUnlessAborted(config.getSteeringMessages, signal);
 
@@ -362,6 +420,7 @@ async function runLoop(
 
 			// Process pending messages (inject before next assistant response)
 			if (pendingMessages.length > 0) {
+				repeatedToolExecutionState = undefined;
 				for (const message of pendingMessages) {
 					await emit({ type: "message_start", message });
 					await emit({ type: "message_end", message });
@@ -387,9 +446,22 @@ async function runLoop(
 			const toolResults: ToolResultMessage[] = [];
 			hasMoreToolCalls = false;
 			if (toolCalls.length > 0) {
-				const executedToolBatch = await executeToolCalls(currentContext, message, config, signal, emit);
+				const repeatedCallSignature = getHomogeneousToolCallSignature(toolCalls);
+				const priorRepeatedCallCount =
+					repeatedToolExecutionState && repeatedCallSignature === repeatedToolExecutionState.callSignature
+						? repeatedToolExecutionState.count
+						: 0;
+				const shouldStopRepeatedCall =
+					repeatedCallSignature !== undefined &&
+					priorRepeatedCallCount + toolCalls.length > MAX_IDENTICAL_SUCCESSFUL_TOOL_EXECUTIONS;
+				const executedToolBatch = shouldStopRepeatedCall
+					? await stopRepeatedToolCalls(toolCalls, emit)
+					: await executeToolCalls(currentContext, message, config, signal, emit);
 				toolResults.push(...executedToolBatch.messages);
 				hasMoreToolCalls = !executedToolBatch.terminate;
+				repeatedToolExecutionState = shouldStopRepeatedCall
+					? undefined
+					: nextRepeatedToolExecutionState(repeatedToolExecutionState, toolCalls, toolResults);
 
 				for (const result of toolResults) {
 					currentContext.messages.push(result);
@@ -657,6 +729,40 @@ type ExecutedToolCallBatch = {
 	messages: ToolResultMessage[];
 	terminate: boolean;
 };
+
+async function stopRepeatedToolCalls(
+	toolCalls: readonly AgentToolCall[],
+	emit: AgentEventSink,
+): Promise<ExecutedToolCallBatch> {
+	const messages: ToolResultMessage[] = [];
+	for (const toolCall of toolCalls) {
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: toolCall.arguments,
+		});
+		const finalized: FinalizedToolCallOutcome = {
+			toolCall,
+			result: {
+				content: [
+					{
+						type: "text",
+						text: "Stopped an identical tool call after four unchanged successful results to prevent a model loop.",
+					},
+				],
+				details: { reason: "repeated_tool_call" },
+				terminate: true,
+			},
+			isError: true,
+		};
+		await emitToolExecutionEnd(finalized, emit);
+		const toolResultMessage = createToolResultMessage(finalized);
+		await emitToolResultMessage(toolResultMessage, emit);
+		messages.push(toolResultMessage);
+	}
+	return { messages, terminate: true };
+}
 
 async function executeToolCallsSequential(
 	currentContext: AgentContext,

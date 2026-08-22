@@ -7193,7 +7193,10 @@ export class InteractiveMode {
 		const earlier = this.getAppKeyDisplay("app.message.moveEarlier");
 		const later = this.getAppKeyDisplay("app.message.moveLater");
 		const queue = this.getAppKeyDisplay("app.message.followUp");
-		return `${lane} ${selected.index + 1} · ${older}/${newer} browse · ${earlier}/${later} reorder · enter steers · ${queue} queues · empty deletes`;
+		return theme.fg(
+			"dim",
+			`${lane} ${selected.index + 1} · ${older}/${newer} browse · ${earlier}/${later} reorder · enter steers · ${queue} queues · empty deletes`,
+		);
 	}
 
 	private updateEditorBorderColor(): void {
@@ -7942,7 +7945,8 @@ export class InteractiveMode {
 	}
 
 	private handleFastCommand(): void {
-		const unavailableMessage = "Fast mode requires GPT-5.4, GPT-5.5, or GPT-5.6 with ChatGPT authentication";
+		const unavailableMessage =
+			"Fast mode requires GPT-5.4, GPT-5.5, or GPT-5.6 with ChatGPT or OpenAI API key authentication";
 		if (!this.currentModelSupportsFastMode()) {
 			this.showStatus(unavailableMessage);
 			return;
@@ -8672,7 +8676,12 @@ export class InteractiveMode {
 				this.showStatus(`${server} is not connected.`);
 				return;
 			}
-			authStorage.logout(`mcp:${server}`);
+			try {
+				authStorage.logout(`mcp:${server}`);
+			} catch (error: unknown) {
+				this.showError(`Logout failed: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
 			if (this.isAgentStreaming() || this.isAgentCompacting()) {
 				this.showStatus(`Disconnected ${server}. Run /reload (after the current turn) to fully unload it.`);
 			} else {

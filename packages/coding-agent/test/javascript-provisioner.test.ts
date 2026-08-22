@@ -325,6 +325,29 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 		expect(result.content).toEqual([{ type: "text", text: "[1/1 read README.md lines 1-2]\n1: title" }]);
 	});
 
+	it("ignores an empty code placeholder alongside structured actions", async () => {
+		const executeActions = vi.fn<KernelManager["executeActions"]>().mockResolvedValue(executeResult());
+		const manager = {
+			execute: vi.fn<KernelManager["execute"]>(),
+			executeActions,
+			status: { diagnostics: "", recovery: { available: false, checkpoint: "clean" }, state: "running" },
+		} as unknown as KernelManager;
+		const provisioner = { ensure: vi.fn(async () => manager) } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+		const actions = [{ op: "read", path: "README.md" }];
+
+		const result = await tool.execute(
+			"actions-with-empty-code",
+			{ actions, code: "" } as never,
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(executeActions).toHaveBeenCalledWith(actions, expect.objectContaining({ signal: undefined }));
+		expect(result).toMatchObject({ details: { status: "ok" }, isError: false });
+	});
+
 	it("keeps large output once in canonical content instead of duplicating raw details", async () => {
 		const largeResult = "x".repeat(20_000);
 		const manager = {

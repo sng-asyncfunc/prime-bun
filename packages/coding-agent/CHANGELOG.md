@@ -2,7 +2,15 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-22
+
 - Changed the minimum Bun runtime to 1.4.0 and pinned kernel CI to the same release.
+- Changed the queued-message hint and subagent summary to quieter, width-safe status cards.
+- Fixed providers adding an empty `code` placeholder to a structured JavaScript action call causing a rejected first tool execution.
+- Fixed headless completion hiding failures from scheduled post-compaction continuations.
+- Fixed active goals re-prompting while descendant Bun subagents were still running.
+- Fixed empty configured credential environment variables being treated as literal credentials.
+- Hardened user-declared MCP OAuth credentials against endpoint retargeting and failed credential removal.
 
 ## [0.7.4] - 2026-08-21
 

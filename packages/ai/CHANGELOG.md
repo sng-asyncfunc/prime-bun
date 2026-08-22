@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-22
+
+- Added fast mode for supported GPT-5.4, GPT-5.5, and GPT-5.6 models authenticated with an OpenAI API key.
+- Hardened remote MCP OAuth with protected-resource discovery, HTTPS metadata validation, and exact endpoint binding.
+
 ## [0.7.4] - 2026-08-21
 
 ## [0.7.3] - 2026-08-18

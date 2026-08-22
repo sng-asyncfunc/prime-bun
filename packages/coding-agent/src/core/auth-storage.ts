@@ -686,6 +686,19 @@ export class AuthStorage {
 		this.persistProviderChange(provider, undefined);
 	}
 
+	/** Remove a stored credential only after the disk write succeeds. */
+	removeVerified(provider: string): void {
+		this.storage.withLock((current) => {
+			const currentData = this.parseStorageData(current);
+			if (!(provider in currentData)) return { result: undefined };
+			const merged: AuthStorageData = { ...currentData };
+			delete merged[provider];
+			return { result: undefined, next: JSON.stringify(merged, null, 2) };
+		});
+		delete this.data[provider];
+		this.clearStaleAuthSource(provider, "stored");
+	}
+
 	/**
 	 * List all providers with credentials.
 	 */
@@ -753,6 +766,10 @@ export class AuthStorage {
 				this.recordError(error);
 				throw error;
 			}
+		}
+		if (provider.startsWith("mcp:")) {
+			this.removeVerified(provider);
+			return;
 		}
 		this.remove(provider);
 	}

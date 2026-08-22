@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-22
+
+- Added stable `AgentContinueError` codes for busy and invalid continuation preconditions.
+
 ## [0.7.4] - 2026-08-21
 
 - Fixed models repeatedly executing an identical successful tool call by stopping unchanged loops after four executions.

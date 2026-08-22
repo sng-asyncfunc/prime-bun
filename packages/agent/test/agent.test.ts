@@ -556,9 +556,11 @@ describe("Agent", () => {
 		expect(agent.state.isStreaming).toBe(true);
 
 		// continue() should reject
-		await expect(agent.continue()).rejects.toThrow(
-			"Agent is already processing. Wait for completion before continuing.",
-		);
+		await expect(agent.continue()).rejects.toMatchObject({
+			name: "AgentContinueError",
+			code: "busy",
+			message: "Agent is already processing. Wait for completion before continuing.",
+		});
 
 		// Cleanup
 		agent.abort();

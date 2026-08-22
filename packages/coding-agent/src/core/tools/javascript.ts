@@ -165,8 +165,8 @@ type ResolvedJavaScriptToolInput =
 	| { mode: "error"; message: string };
 
 function resolveJavaScriptToolInput(params: JavaScriptToolInput): ResolvedJavaScriptToolInput {
-	const hasCode = typeof params.code === "string";
 	const hasActions = params.actions !== undefined;
+	const hasCode = typeof params.code === "string" && (!hasActions || params.code.trim().length > 0);
 	if (Number(hasCode) + Number(hasActions) !== 1) {
 		return {
 			mode: "error",

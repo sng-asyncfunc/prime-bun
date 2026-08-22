@@ -75,7 +75,7 @@ export async function waitForHeadlessCompletion(session: AgentSession): Promise<
 	let lastPromptedProgressKey: string | undefined;
 	let repeatedProgressPrompts = 0;
 	while (true) {
-		await session.waitForIdle();
+		await session.waitForHeadlessIdle();
 		const status = session.getAutonomousStatus();
 		if (!shouldContinueAutonomousGates(status) || !status.lastGateFailure) {
 			return status;

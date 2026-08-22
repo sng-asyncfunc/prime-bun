@@ -21,6 +21,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
 	Agent,
 	type AgentContext,
+	AgentContinueError,
 	type AgentEvent,
 	type AgentMessage,
 	type AgentState,
@@ -895,6 +896,14 @@ function createAgentMessageDeferred(): AgentMessageDeferred {
 	return deferred;
 }
 
+interface PostCompactionContinuationSettlement extends AgentMessageDeferred {
+	settled: boolean;
+}
+
+function createPostCompactionContinuationSettlement(): PostCompactionContinuationSettlement {
+	return { ...createAgentMessageDeferred(), settled: false };
+}
+
 /** Result from cycleModel() */
 export interface ModelCycleResult {
 	model: Model<any>;
@@ -1125,6 +1134,7 @@ export class AgentSession {
 
 	private _goalState: GoalState = emptyGoalState();
 	private _goalAccountingStartedAt: number | undefined = undefined;
+	private _goalContinuationAwaitsRlmWork = false;
 	private _goalAccountedAssistantMessages = new WeakSet<AssistantMessage>();
 	private _goalAbortInProgress = false;
 	private _autonomousState: AutonomousRuntimeState;
@@ -1256,6 +1266,7 @@ export class AgentSession {
 	private _turnIntervalAutoRefinePending = false;
 	private _postCompactionContinuationScheduled = false;
 	private _postCompactionContinuationTimer: ReturnType<typeof setTimeout> | undefined;
+	private _postCompactionContinuationSettlement: PostCompactionContinuationSettlement | undefined;
 	private _postCompactionContinuationMessages: AgentMessage[] = [];
 	private _scheduledPostCompactionContinuationMessages: AgentMessage[] = [];
 	private _queuedAutonomousThresholdContinuations = new WeakMap<AssistantMessage, AgentMessage>();
@@ -1767,6 +1778,7 @@ export class AgentSession {
 	}
 
 	private _clearQueuedGoalContexts(): void {
+		this._goalContinuationAwaitsRlmWork = false;
 		this._pendingNextTurnMessages = this._pendingNextTurnMessages.filter(
 			(message) => message.customType !== GOAL_CONTEXT_CUSTOM_TYPE,
 		);
@@ -1798,6 +1810,7 @@ export class AgentSession {
 			updatedAt: now,
 		};
 		this._goalAccountingStartedAt = now;
+		this._goalContinuationAwaitsRlmWork = false;
 		this._setGoalState(goal);
 		return this._goalState;
 	}
@@ -2056,6 +2069,37 @@ export class AgentSession {
 				contextTools.push(javascriptTool);
 				context.tools = contextTools;
 			}
+		}
+	}
+
+	private _maybeResumeGoalContinuationAfterRlmWork(): void {
+		if (!this._goalContinuationAwaitsRlmWork) return;
+		if (this._disposed || this._disposing || this.hasRunningRlmChildren()) return;
+		if (this._goalState.status !== "active" || !this._goalState.objective) {
+			this._goalContinuationAwaitsRlmWork = false;
+			return;
+		}
+		if (this._queuedWorkPauses.size > 0 || this._sessionInputPumpSuspended) return;
+		const goalBeforeResume = this._goalState;
+		try {
+			this._ensureGoalRuntimeActive();
+			this._setGoalState({
+				...this._goalState,
+				continuationsUsed: this._goalState.continuationsUsed + 1,
+				lastReason: undefined,
+				lastError: undefined,
+			});
+			const message = createGoalContextMessage(this._goalState, "continuation");
+			const normalized = normalizeMessageContent(message.content);
+			this._admitSessionInput(
+				this._createPreparedTurnAction("followUp", normalized.text, normalized.images, {
+					message,
+					resumeIfIdle: true,
+				}),
+			);
+			this._goalContinuationAwaitsRlmWork = false;
+		} catch {
+			this._setGoalState(goalBeforeResume);
 		}
 	}
 
@@ -3244,6 +3288,11 @@ export class AgentSession {
 		if (signal?.aborted || this._goalState.status !== "active" || !this._goalState.objective) {
 			return [];
 		}
+		if (this.hasRunningRlmChildren()) {
+			this._goalContinuationAwaitsRlmWork = true;
+			return [];
+		}
+		this._goalContinuationAwaitsRlmWork = false;
 		try {
 			this._ensureGoalRuntimeActive(context.context);
 			const nextGoal = {
@@ -6456,6 +6505,7 @@ export class AgentSession {
 				released = true;
 				this._queuedWorkPauses.delete(token);
 				this._notifySessionInputCheckpointChange();
+				this._maybeResumeGoalContinuationAfterRlmWork();
 				this._scheduleSessionInputPump();
 			},
 		};
@@ -6546,6 +6596,7 @@ export class AgentSession {
 	resumeQueuedWork(): boolean {
 		this._sessionInputPumpSuspended = false;
 		this._notifySessionInputCheckpointChange();
+		this._maybeResumeGoalContinuationAfterRlmWork();
 		this._scheduleSessionInputPump();
 		return this._hasSelectableSessionInput();
 	}
@@ -6581,6 +6632,16 @@ export class AgentSession {
 			) {
 				return;
 			}
+		}
+	}
+
+	/** Waits out an owned post-compaction continuation and exposes its start failure once. */
+	async waitForHeadlessIdle(): Promise<void> {
+		while (true) {
+			await this.waitForIdle();
+			const continuation = this._postCompactionContinuationSettlement?.promise;
+			if (!continuation) return;
+			await continuation;
 		}
 	}
 
@@ -7319,6 +7380,16 @@ export class AgentSession {
 		return this._rlmDepth === 0 && this._localHarnessStateDir() !== undefined;
 	}
 
+	private _settlePostCompactionContinue(error?: Error): void {
+		if (!error && (this._postCompactionContinuationScheduled || this._postCompactionContinuationTimer)) return;
+		const settlement = this._postCompactionContinuationSettlement;
+		if (!settlement || settlement.settled) return;
+		settlement.settled = true;
+		this._postCompactionContinuationSettlement = undefined;
+		if (error) settlement.reject(error);
+		else settlement.resolve();
+	}
+
 	private _cancelPostCompactionContinue(): void {
 		if (this._postCompactionContinuationTimer) {
 			clearTimeout(this._postCompactionContinuationTimer);
@@ -7326,6 +7397,7 @@ export class AgentSession {
 		}
 		this._postCompactionContinuationScheduled = false;
 		this._scheduledPostCompactionContinuationMessages = [];
+		this._settlePostCompactionContinue();
 	}
 
 	private _discardPendingAutoRefine(options: { cancelPostCompactionContinue?: boolean } = {}): void {
@@ -7423,11 +7495,16 @@ export class AgentSession {
 		if (this._postCompactionContinuationScheduled) {
 			return;
 		}
+		if (!this._postCompactionContinuationSettlement || this._postCompactionContinuationSettlement.settled) {
+			this._postCompactionContinuationSettlement = createPostCompactionContinuationSettlement();
+		}
 		this._postCompactionContinuationScheduled = true;
 		this._scheduledPostCompactionContinuationMessages = [...this._postCompactionContinuationMessages];
 		this._postCompactionContinuationTimer = setTimeout(() => {
 			this._postCompactionContinuationTimer = undefined;
-			void this._runScheduledPostCompactionContinue();
+			void this._runScheduledPostCompactionContinue()
+				.catch(() => undefined)
+				.finally(() => this._settlePostCompactionContinue());
 		}, 100);
 	}
 
@@ -7478,9 +7555,10 @@ export class AgentSession {
 			await this.agent.continue();
 			this._forgetConsumedPostCompactionContinuations(continuationMessages);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			if (message.includes("already processing")) {
+			if (error instanceof AgentContinueError && error.code === "busy") {
 				this._schedulePostCompactionContinue();
+			} else if (!(error instanceof AgentContinueError && error.code === "nothing-to-continue")) {
+				this._settlePostCompactionContinue(this._asError(error));
 			}
 		}
 	}
@@ -10086,6 +10164,7 @@ export class AgentSession {
 					}
 				}
 				run.settled = true;
+				this._maybeResumeGoalContinuationAfterRlmWork();
 			}
 		})().catch(() => undefined);
 

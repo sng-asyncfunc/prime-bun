@@ -137,7 +137,10 @@ export class McpManager {
 			return false;
 		}
 		const cred = this.authStorage.get(this.providerId(integration.server));
-		return cred !== undefined;
+		if (cred === undefined) return false;
+		if (!integration.userDeclared) return true;
+		const endpoint = (cred as { endpoint?: string }).endpoint;
+		return typeof endpoint === "string" && endpoint === integration.url;
 	}
 
 	/** `-<server>/SKILL.md` overrides for every built-in integration the user isn't logged into. */

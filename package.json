@@ -38,7 +38,7 @@
 	},
 	"devDependencies": {
 		"@anthropic-ai/sandbox-runtime": "^0.0.55",
-		"@biomejs/biome": "2.5.5",
+		"@biomejs/biome": "2.5.7",
 		"@types/node": "^22.10.5",
 		"@typescript/native-preview": "7.0.0-dev.20260120.1",
 		"concurrently": "^9.2.4",

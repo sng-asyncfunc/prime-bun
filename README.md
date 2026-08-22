@@ -36,18 +36,21 @@ Prime Bun: A Bun-Native RLM Agent
 
 Prime Bun replaces the Python notebook with a native Bun implementation. RLM programs execute as persistent JavaScript or TypeScript directly in Bun—not through a Python wrapper or subprocess bridge—with retained session state, prepared runtime globals, native shell execution, abort and recovery handling, and snapshot support.
 
-Lower is better. **Bun faster** is the reduction in elapsed time relative to the Python implementation.
+Lower is better. These are end-to-end host/kernel timings for Prime Bun v0.7.4 on Bun 1.4.0 versus the official Prime Agent [v0.8.0](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.8.0) release on Python 3.11.15.
 
-| Operation | Bun | Python | Bun faster |
+| Operation | Prime Bun | Prime Agent | Prime Bun delta |
 |---|---:|---:|---:|
-| Startup | 57.8 ms | 789.4 ms | 92.7% |
-| Scalar cell | 2.07 ms | 2.96 ms | 30.1% |
-| 64 KiB output | 1.77 ms | 3.10 ms | 42.9% |
-| 10,000 writes | 3.20 ms | 14.98 ms | 78.6% |
-| Native shell | 1.38 ms | 9.13 ms | 84.9% |
-| Abort | 146.5 ms | 175.7 ms | 16.6% |
-| Recovery | 2.55 ms | 3.30 ms | 22.7% |
-| 32 MiB snapshot | 23.31 ms | 38.31 ms | 39.2% |
+| Cold kernel startup | 44.88 ms | 273.38 ms | 83.6% faster |
+| Scalar cell | 0.81 ms | 2.51 ms | 67.8% faster |
+| 64 KiB output | 0.96 ms | 2.64 ms | 63.7% faster |
+| 10,000 one-byte writes | 1.17 ms | 14.57 ms | 92.0% faster |
+| Shell command | 3.39 ms | 8.78 ms | 61.3% faster |
+| Abort synchronous loop | 113.13 ms | 76.32 ms | 48.2% slower |
+| First cell after recovery | 2.93 ms | 2.78 ms | 5.3% slower |
+| 32 MiB snapshot | 12.81 ms | 16.78 ms | 23.6% faster |
+| 2,000-cell loop, per cell | 0.78 ms | 2.71 ms | 71.2% faster |
+
+Measured on an Apple M1 Pro running macOS 26.4.1. Each value is the median result across three matched rounds; each round used 12 cold startups, 40 ordinary-operation samples, six abort/recovery and snapshot samples, and 2,000 scalar cells. One-time runtime installation and bootstrap were excluded.
 
 > [!NOTE]
 > Prime Bun is a fork of [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent). All credit for the original agent, RLM architecture, TUI, and surrounding ecosystem goes to Prime Intellect and the Prime Agent contributors. Their thoughtful and ambitious work created an exceptional open-source foundation; this fork focuses on a Bun-native JavaScript and TypeScript runtime.

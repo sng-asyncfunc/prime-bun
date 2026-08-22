@@ -33,6 +33,14 @@ This repository-level file is the handoff ledger for Prime Bun-specific work and
 
 The upgrade lowers steady-state memory and improves most kernel paths, but it does not materially change the long-session RSS growth slope. Native-shell and checkpoint distributions overlap the prior runtime and should be watched rather than described as wins.
 
+### Prime Agent v0.8.0 comparison — 2026-08-22
+
+- Compared Prime Bun v0.7.4 on Bun 1.4.0 with the official Prime Agent v0.8.0 release on Python 3.11.15 using matched end-to-end host/kernel operations on the same Apple M1 Pro.
+- Ran three rounds per implementation, with 12 cold startups, 40 ordinary-operation samples, six abort/recovery and explicit snapshot samples, and a 2,000-cell steady-state loop in each round; the README reports the median result across rounds.
+- Confirmed Prime Bun was faster on seven of nine paths, including 83.6% faster startup, 92.0% faster repeated writes, 23.6% faster 32 MiB snapshots, and 71.2% faster steady-state cells.
+- Recorded the two regressions honestly: Prime Bun was 48.2% slower to interrupt a synchronous loop and 5.3% slower on the first recovery cell.
+- Treated Prime Agent v0.8.0 only as the benchmark target; the selective upstream synchronization checkpoint remains v0.7.4 until its commits are separately reviewed and dispositioned.
+
 ## Upstream synchronization ledger
 
 Last refreshed: 2026-08-21.

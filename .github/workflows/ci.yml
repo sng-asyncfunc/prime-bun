@@ -97,6 +97,12 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Setup Bun
+        if: startsWith(matrix.name, 'coding-agent')
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+
       - name: Install system dependencies
         run: |
           sudo apt-get update

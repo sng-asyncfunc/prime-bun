@@ -29,7 +29,7 @@ const BOOTSTRAP_LOCK_RETRY_MS = 100;
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
 const SKILL_DEPENDENCY_STATE_FILE = ".skill-dependencies.json";
 const MAX_SKILL_UNAVAILABLE_REASON_CHARS = 512;
-const BUN_INSTALL_COMMAND = "curl -fsSL https://bun.sh/install | bash";
+const BUN_INSTALL_COMMAND = "curl -fsSL https://bun.com/install | bash";
 const RUNTIME_ASSET_NAMES = [
 	"bun-worker",
 	"bun-protocol",

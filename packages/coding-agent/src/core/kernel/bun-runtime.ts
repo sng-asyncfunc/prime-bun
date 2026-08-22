@@ -4,7 +4,7 @@ import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
-export const MINIMUM_BUN_VERSION = "1.3.14";
+export const MINIMUM_BUN_VERSION = "1.4.0";
 
 export interface ResolvedBunRuntime {
 	path: string;

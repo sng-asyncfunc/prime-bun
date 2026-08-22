@@ -69,7 +69,7 @@ prime-agent
 
 Then just talk to Prime Agent. By default, Prime Agent gives the model `javascript`, `write_file`, and `edit_file`. All three share one persistent Bun runtime: JavaScript handles computation and orchestration, while authored content and exact replacements travel through JSON fields outside JavaScript string syntax. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Prime Agent packages](#prime-agent-packages).
 
-The runtime is prepared automatically on first invocation and requires Bun 1.3.14 or newer. TypeScript syntax is transpiled for execution but is not type-checked. Set `PRIME_AGENT_KERNEL_BUN` to use a specific supported Bun executable.
+The runtime is prepared automatically on first invocation and requires Bun 1.4.0 or newer. TypeScript syntax is transpiled for execution but is not type-checked. Set `PRIME_AGENT_KERNEL_BUN` to use a specific supported Bun executable.
 
 Common runtime modules are ready as `fs`, `path`, `os`, and `util`, alongside `require`, `fetch`, `Bun`, `$`, `process`, `Buffer`, and WebCrypto. Static imports, dynamic imports, and literal `require()` bindings remain available in later cells and recover after a worker restart.
 
@@ -696,7 +696,7 @@ prime-agent --thinking high "Solve this complex problem"
 | `PRIME_API_KEY` | Prime Inference API key; also used for trace sharing if it has `agent_traces` scope |
 | `PRIME_AGENT_TRACES_API_KEY` | Prime API key used only for opt-in trace sharing |
 | `PRIME_AGENT_TRACES_BASE_URL` | Override the Prime Agent trace upload API base URL |
-| `PRIME_AGENT_KERNEL_BUN` | Use a specific Bun executable; it must be Bun 1.3.14 or newer |
+| `PRIME_AGENT_KERNEL_BUN` | Use a specific Bun executable; it must be Bun 1.4.0 or newer |
 | `PRIME_AGENT_KERNEL_BUN_DIR` | Override the prepared Bun runtime directory (default: `~/.prime/agent/kernel-bun`) |
 | `PRIME_AGENT_INSTALL_BUN` | Set to `1` to allow automatic Bun installation or `0` to require a preinstalled runtime |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |

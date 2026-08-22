@@ -78,6 +78,8 @@ npm ci
 npm link
 ```
 
+Prime Bun requires Bun 1.4.0 or newer for its persistent JavaScript runtime. The first install can prepare the official Bun runtime automatically when needed.
+
 `npm link` exposes the checkout as the `prime-bun` command. Run it from the repository or directory you want Prime Bun to work in:
 
 ```bash

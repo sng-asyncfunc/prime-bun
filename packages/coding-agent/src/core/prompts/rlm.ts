@@ -123,7 +123,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		`Working directory: ${cwd}`,
 		`Conversation log: ${messagesPath}`,
 		`Recursive agent depth: ${depth}`,
-		"Runtime: Bun 1.3.14 or newer with web APIs, TypeScript execution, Bun Shell, and top-level await.",
+		"Runtime: Bun 1.4.0 or newer with web APIs, TypeScript execution, Bun Shell, and top-level await.",
 		"Install notebook-only packages with `await installPackage('pkg')`.",
 	];
 

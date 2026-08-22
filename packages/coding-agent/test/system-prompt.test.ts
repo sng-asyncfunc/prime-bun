@@ -51,7 +51,7 @@ describe("buildRlmPrompt", () => {
 
 		expect(prompt).toContain("Working directory: /repo");
 		expect(prompt).toContain("Conversation log: /repo/.prime/sessions/session.jsonl");
-		expect(prompt).toContain("Runtime: Bun 1.3.14 or newer");
+		expect(prompt).toContain("Runtime: Bun 1.4.0 or newer");
 		expect(prompt).toContain("Installed JavaScript skill globals (prepared): `websearch`, `refine`.");
 		expect(prompt).toContain("Bun is the agent's long-lived JavaScript notebook");
 		expect(prompt).toContain("use a nonblocking control loop");

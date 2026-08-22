@@ -5,6 +5,33 @@ This repository-level file is the handoff ledger for Prime Bun-specific work and
 ## Active design decisions
 
 - Retain the existing monochrome Prime butterfly terminal splash in `packages/coding-agent/src/themes/prime-logo.ts`; a muscular Prime Bun mascot replacement was explored on 2026-08-18 and explicitly declined, so do not revisit it unless the user asks.
+- Require Bun 1.4.0 or newer for the JavaScript kernel; keep `.bun-version`, runtime validation, current docs, and kernel CI on the same floor.
+
+## Bun runtime ledger
+
+### Bun v1.4.0 upgrade — 2026-08-22
+
+- Upgraded the local runtime from Bun `1.3.14+0d9b296af` to `1.4.0+34cbb9a40`, moved the installer to the official `bun.com` endpoint, and pinned coding-agent and nightly process-stress CI to Bun 1.4.0.
+- Added `packages/coding-agent/test/bun-runtime-version-bench.ts` so future runtime upgrades can repeat the production-protocol startup, cell, output, shell, checkpoint, abort/recovery, long-session, and RSS probes.
+- Compared three matched runs per version on the same machine. Each run used 12 startup samples, 40 ordinary-operation samples, six checkpoint and recovery samples, and 2,000 long-session scalar cells; the table reports the median result across those runs.
+
+| Prime Bun operation | Bun 1.3.14 | Bun 1.4.0 | Change |
+| --- | ---: | ---: | ---: |
+| Cold kernel startup | 46.68 ms | 43.10 ms | 7.7% faster |
+| Scalar cell | 0.837 ms | 0.771 ms | 7.9% faster |
+| 64 KiB output | 1.068 ms | 0.976 ms | 8.7% faster |
+| 10,000 one-byte writes | 1.352 ms | 1.149 ms | 15.0% faster |
+| Native Bun Shell | 3.169 ms | 3.328 ms | 5.0% slower |
+| 32 MiB checkpoint | 10.279 ms | 10.302 ms | effectively flat |
+| Abort synchronous loop | 113.82 ms | 113.33 ms | 0.4% faster |
+| First cell after recovery | 3.105 ms | 2.820 ms | 9.2% faster |
+| 2,000 scalar cells | 1,509.2 ms | 1,468.9 ms | 2.7% faster |
+| Worker RSS before long loop | 40.98 MiB | 34.55 MiB | 15.7% lower |
+| Worker RSS after long loop | 61.98 MiB | 55.52 MiB | 10.4% lower |
+| RSS growth across long loop | 21.09 MiB | 21.67 MiB | effectively flat |
+| Worker RSS with 32 MiB state | 165.20 MiB | 160.17 MiB | 3.0% lower |
+
+The upgrade lowers steady-state memory and improves most kernel paths, but it does not materially change the long-session RSS growth slope. Native-shell and checkpoint distributions overlap the prior runtime and should be watched rather than described as wins.
 
 ## Upstream synchronization ledger
 

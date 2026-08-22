@@ -43,7 +43,7 @@ describe("KernelManager startup", () => {
 			bun,
 			[
 				"#!/bin/sh",
-				'if [ "$1" = "--version" ]; then echo "1.3.14"; exit 0; fi',
+				'if [ "$1" = "--version" ]; then echo "1.4.0"; exit 0; fi',
 				'echo "fake Bun worker died before initialization" >&2',
 				"exit 42",
 				"",

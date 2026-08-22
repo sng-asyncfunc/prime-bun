@@ -12,7 +12,7 @@ function writeExecutable(filePath: string, content: string): void {
 	chmodSync(filePath, 0o755);
 }
 
-function installFakeBun(version = "1.3.14"): { bun: string; logPath: string } {
+function installFakeBun(version = "1.4.0"): { bun: string; logPath: string } {
 	const binDir = join(tempDir, "bin");
 	const bun = join(binDir, "bun");
 	const logPath = join(tempDir, "bun.log");
@@ -50,6 +50,7 @@ function createRuntimeAssets(): string {
 		"bun-protocol",
 		"bun-cell-transform",
 		"bun-actions",
+		"bun-shell-runner",
 		"bun-rlm-runtime",
 		"bun-runtime-globals",
 		"state-snapshot",
@@ -127,7 +128,7 @@ describe("Bun kernel bootstrap", () => {
 
 		const runtime = await ensureKernelBun({ runtimeSourceDirectory: createRuntimeAssets() });
 
-		expect(runtime).toMatchObject({ path: bun, version: "1.3.14" });
+		expect(runtime).toMatchObject({ path: bun, version: "1.4.0" });
 		expectProvisioned(runtime, kernelDirectory);
 		expect(readFileSync(join(kernelDirectory, "bun-actions.ts"), "utf8")).toContain("bun_actions");
 		expect(readFileSync(logPath, "utf8")).toBe("install --production\n");
@@ -265,16 +266,16 @@ describe("Bun kernel bootstrap", () => {
 	});
 
 	it("rejects Bun versions older than the supported baseline", async () => {
-		installFakeBun("1.3.13");
+		installFakeBun("1.3.14");
 
 		await expect(ensureKernelBun({ runtimeSourceDirectory: createRuntimeAssets() })).rejects.toThrow(
-			/requires Bun 1\.3\.14 or newer/,
+			/requires Bun 1\.4\.0 or newer/,
 		);
 	});
 
 	it("reports the official installer when Bun is unavailable", async () => {
 		await expect(ensureKernelBun({ runtimeSourceDirectory: createRuntimeAssets() })).rejects.toThrow(
-			/curl -fsSL https:\/\/bun\.sh\/install \| bash/,
+			/curl -fsSL https:\/\/bun\.com\/install \| bash/,
 		);
 	});
 
@@ -288,11 +289,11 @@ describe("Bun kernel bootstrap", () => {
 		const runtime = await ensureKernelBun({ installRuntime, runtimeSourceDirectory: createRuntimeAssets() });
 
 		expect(installRuntime).toHaveBeenCalledOnce();
-		expect(runtime.version).toBe("1.3.14");
+		expect(runtime.version).toBe("1.4.0");
 	});
 
 	it("uses the newly installed home Bun when PATH still contains an old release", async () => {
-		installFakeBun("1.3.13");
+		installFakeBun("1.3.14");
 		process.env.PRIME_AGENT_INSTALL_BUN = "1";
 		const installedBun = join(tempDir, ".bun", "bin", "bun");
 		const installRuntime = vi.fn(async () => {
@@ -301,7 +302,7 @@ describe("Bun kernel bootstrap", () => {
 				installedBun,
 				[
 					"#!/bin/sh",
-					'if [ "$1" = "--version" ]; then printf "1.3.14\\n"; exit 0; fi',
+					'if [ "$1" = "--version" ]; then printf "1.4.0\\n"; exit 0; fi',
 					'if [ "$1" = "install" ]; then',
 					"  /bin/mkdir -p node_modules/acorn node_modules/@modelcontextprotocol/sdk",
 					'  printf "{}\\n" > node_modules/acorn/package.json',
@@ -317,6 +318,6 @@ describe("Bun kernel bootstrap", () => {
 		const runtime = await ensureKernelBun({ installRuntime, runtimeSourceDirectory: createRuntimeAssets() });
 
 		expect(installRuntime).toHaveBeenCalledOnce();
-		expect(runtime).toMatchObject({ path: installedBun, version: "1.3.14" });
+		expect(runtime).toMatchObject({ path: installedBun, version: "1.4.0" });
 	});
 });

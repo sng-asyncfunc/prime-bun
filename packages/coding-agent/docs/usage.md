@@ -359,7 +359,7 @@ prime-agent --tools javascript -p "Review the code"
 | `PRIME_API_KEY` | Prime Inference API key; also used for trace sharing when it has `agent_traces` scope |
 | `PRIME_AGENT_TRACES_API_KEY` | Prime API key used only for opt-in trace sharing |
 | `PRIME_AGENT_TRACES_BASE_URL` | Override the Prime Agent trace upload API base URL |
-| `PRIME_AGENT_KERNEL_BUN` | Use a specific Bun executable; it must be Bun 1.3.14 or newer |
+| `PRIME_AGENT_KERNEL_BUN` | Use a specific Bun executable; it must be Bun 1.4.0 or newer |
 | `PRIME_AGENT_KERNEL_BUN_DIR` | Override the prepared Bun runtime directory; default is `~/.prime/agent/kernel-bun` |
 | `PRIME_AGENT_INSTALL_BUN` | Set to `1` to allow automatic Bun installation or `0` to require a preinstalled runtime |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |

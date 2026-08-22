@@ -27,7 +27,7 @@ The worker is a durable control process, not a second agent implementation. Prov
 
 ## Runtime resolution and provisioning
 
-Prime Agent requires Bun 1.3.14 or newer. Resolution order is:
+Prime Agent requires Bun 1.4.0 or newer. Resolution order is:
 
 1. `PRIME_AGENT_KERNEL_BUN`, when set;
 2. `bun` on `PATH`; or

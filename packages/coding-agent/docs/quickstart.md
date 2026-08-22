@@ -71,7 +71,7 @@ Once Prime Agent starts, type a request and press Enter:
 Summarize this repository and tell me how to run its checks.
 ```
 
-Prime Agent gives the model one built-in tool, `javascript`. The long-lived Bun notebook is a control environment for reading and editing files, running project commands, inspecting data, retaining JavaScript state, and invoking installed skills. The runtime is prepared automatically on first use and requires Bun 1.3.14 or newer; set `PRIME_AGENT_KERNEL_BUN` to use a specific supported executable.
+Prime Agent gives the model one built-in tool, `javascript`. The long-lived Bun notebook is a control environment for reading and editing files, running project commands, inspecting data, retaining JavaScript state, and invoking installed skills. The runtime is prepared automatically on first use and requires Bun 1.4.0 or newer; set `PRIME_AGENT_KERNEL_BUN` to use a specific supported executable.
 
 The notebook preloads `fs`, `path`, `os`, `util`, and `require`; Bun and web globals such as `Bun`, `$`, `fetch`, `process`, `Buffer`, and `crypto` are also ready. Static imports and literal `require()` bindings persist across cells, so packages only need to be loaded once.
 

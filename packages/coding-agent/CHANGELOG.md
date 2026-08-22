@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed the minimum Bun runtime to 1.4.0 and pinned kernel CI to the same release.
+
 ## [0.7.4] - 2026-08-21
 
 - Added an explicit per-child `thinking` option to the Bun RLM API, with validation against the resolved model.

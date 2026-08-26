@@ -437,6 +437,7 @@ describe("default model selection", () => {
 
 	test("ai-gateway default tracks current model", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
+		expect(defaultModelPerProvider["cloudflare-ai-gateway"]).toBe("claude-sonnet-4-5");
 	});
 
 	test("findInitialModel accepts explicit provider custom model ids", async () => {

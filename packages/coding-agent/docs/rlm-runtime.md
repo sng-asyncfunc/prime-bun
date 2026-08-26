@@ -2,6 +2,8 @@
 
 Prime Agent gives each agent session a persistent Bun notebook and a native recursive subagent interface. JavaScript code runs in a dedicated Bun worker; the TypeScript host owns child execution, persistence, usage accounting, and lifecycle.
 
+New sessions default to a maximum RLM depth of 2, so a root agent can create children and grandchildren. Set `/rlm-max-depth`, `RLM_MAX_DEPTH`, or the saved setting to override it.
+
 ## Components
 
 ```mermaid

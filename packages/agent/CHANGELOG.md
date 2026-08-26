@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-26
+
 ## [0.8.0] - 2026-08-22
 
 - Added stable `AgentContinueError` codes for busy and invalid continuation preconditions.

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-26
+
+- Fixed OpenAI-compatible providers losing opaque reasoning details across multi-turn continuations.
+
 ## [0.8.0] - 2026-08-22
 
 - Added fast mode for supported GPT-5.4, GPT-5.5, and GPT-5.6 models authenticated with an OpenAI API key.

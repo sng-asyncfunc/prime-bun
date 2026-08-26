@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-26
+
+- Changed new sessions to default to an RLM maximum depth of 2.
+- Changed the Cloudflare AI Gateway default to a current Anthropic route while keeping Workers AI on its separate provider.
+- Fixed ACP assistant chunks losing message boundaries across thinking and visible text.
+
 ## [0.8.0] - 2026-08-22
 
 - Changed the minimum Bun runtime to 1.4.0 and pinned kernel CI to the same release.

@@ -75,6 +75,43 @@ function isImageContentBlock(block: { type: string }): block is ImageContent {
 	return block.type === "image";
 }
 
+const REASONING_DETAILS_SIGNATURE_TYPE = "openai-completions.reasoning_details.v1";
+
+interface ReasoningDetailsSignature {
+	type: typeof REASONING_DETAILS_SIGNATURE_TYPE;
+	details: Record<string, unknown>[];
+}
+
+type ChatCompletionAssistantMessageWithReasoningDetails = ChatCompletionAssistantMessageParam & {
+	reasoning_details?: Record<string, unknown>[];
+};
+
+type ChatCompletionDeltaWithReasoningDetails = ChatCompletionChunk.Choice.Delta & {
+	reasoning_details?: unknown;
+};
+
+function isReasoningDetailRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function encodeReasoningDetails(details: Record<string, unknown>[]): string {
+	return JSON.stringify({ type: REASONING_DETAILS_SIGNATURE_TYPE, details } satisfies ReasoningDetailsSignature);
+}
+
+function decodeReasoningDetails(signature?: string): Record<string, unknown>[] | undefined {
+	if (!signature?.startsWith("{")) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(signature);
+		if (!isReasoningDetailRecord(parsed) || parsed.type !== REASONING_DETAILS_SIGNATURE_TYPE) return undefined;
+		if (!Array.isArray(parsed.details) || parsed.details.some((detail) => !isReasoningDetailRecord(detail))) {
+			return undefined;
+		}
+		return parsed.details;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface OpenAICompletionsOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -173,6 +210,9 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			let thinkingBlock: ThinkingContent | null = null;
 			const toolCallBlocksByIndex = new Map<number, StreamingToolCallBlock>();
 			const toolCallBlocksById = new Map<string, StreamingToolCallBlock>();
+			const reasoningDetailsByIndex = new Map<number, Record<string, unknown>>();
+			let nextReasoningDetailsIndex = 0;
+			let reasoningDetailsBlock: ThinkingContent | null = null;
 			const blocks = output.content as StreamingBlock[];
 			const getContentIndex = (block: StreamingBlock) => blocks.indexOf(block);
 			const finishBlock = (block: StreamingBlock) => {
@@ -367,10 +407,24 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 						}
 					}
 
-					const reasoningDetails = (choice.delta as any).reasoning_details;
-					if (reasoningDetails && Array.isArray(reasoningDetails)) {
+					const reasoningDetails = (choice.delta as ChatCompletionDeltaWithReasoningDetails).reasoning_details;
+					if (Array.isArray(reasoningDetails)) {
 						for (const detail of reasoningDetails) {
-							if (detail.type === "reasoning.encrypted" && detail.id && detail.data) {
+							if (!isReasoningDetailRecord(detail)) continue;
+							const explicitIndex = typeof detail.index === "number" ? detail.index : undefined;
+							const index = explicitIndex ?? nextReasoningDetailsIndex;
+							nextReasoningDetailsIndex = Math.max(nextReasoningDetailsIndex, index + 1);
+							const previousDetail = reasoningDetailsByIndex.get(index);
+							const mergedDetail = { ...previousDetail, ...detail };
+							for (const field of ["text", "summary"] as const) {
+								const previousFragment = previousDetail?.[field];
+								const fragment = detail[field];
+								if (typeof previousFragment === "string" && typeof fragment === "string") {
+									mergedDetail[field] = previousFragment + fragment;
+								}
+							}
+							reasoningDetailsByIndex.set(index, mergedDetail);
+							if (detail.type === "reasoning.encrypted" && typeof detail.id === "string" && detail.data) {
 								const matchingToolCall = output.content.find(
 									(b) => b.type === "toolCall" && b.id === detail.id,
 								) as ToolCall | undefined;
@@ -378,6 +432,22 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 									matchingToolCall.thoughtSignature = JSON.stringify(detail);
 								}
 							}
+						}
+						if (reasoningDetailsByIndex.size > 0) {
+							if (!reasoningDetailsBlock) {
+								reasoningDetailsBlock = { type: "thinking", thinking: "", redacted: true };
+								blocks.push(reasoningDetailsBlock);
+								stream.push({
+									type: "thinking_start",
+									contentIndex: getContentIndex(reasoningDetailsBlock),
+									partial: output,
+								});
+							}
+							reasoningDetailsBlock.thinkingSignature = encodeReasoningDetails(
+								[...reasoningDetailsByIndex.entries()]
+									.sort(([left], [right]) => left - right)
+									.map(([, detail]) => detail),
+							);
 						}
 					}
 				}
@@ -803,7 +873,7 @@ export function convertMessages(
 			}
 		} else if (msg.role === "assistant") {
 			// Some providers don't accept null content, use empty string instead
-			const assistantMsg: ChatCompletionAssistantMessageParam = {
+			const assistantMsg: ChatCompletionAssistantMessageWithReasoningDetails = {
 				role: "assistant",
 				content: compat.requiresAssistantAfterToolResult ? "" : null,
 			};
@@ -820,8 +890,16 @@ export function convertMessages(
 				);
 			const assistantText = assistantTextParts.map((part) => part.text).join("");
 
+			const replayReasoningDetails = msg.content
+				.filter(isThinkingContentBlock)
+				.flatMap((block) => decodeReasoningDetails(block.thinkingSignature) ?? []);
+			if (replayReasoningDetails.length > 0) {
+				assistantMsg.reasoning_details = replayReasoningDetails;
+			}
+
 			const nonEmptyThinkingBlocks = msg.content
 				.filter(isThinkingContentBlock)
+				.filter((block) => decodeReasoningDetails(block.thinkingSignature) === undefined)
 				.filter((block) => block.thinking.trim().length > 0);
 			if (nonEmptyThinkingBlocks.length > 0) {
 				if (compat.requiresThinkingAsText) {
@@ -888,8 +966,8 @@ export function convertMessages(
 						}
 					})
 					.filter(Boolean);
-				if (reasoningDetails.length > 0) {
-					(assistantMsg as any).reasoning_details = reasoningDetails;
+				if (reasoningDetails.length > 0 && replayReasoningDetails.length === 0) {
+					assistantMsg.reasoning_details = reasoningDetails;
 				}
 			}
 			if (
@@ -898,6 +976,9 @@ export function convertMessages(
 				(assistantMsg as { reasoning_content?: string }).reasoning_content === undefined
 			) {
 				(assistantMsg as { reasoning_content?: string }).reasoning_content = "";
+			}
+			if (replayReasoningDetails.length > 0 && assistantMsg.content === null && !assistantMsg.tool_calls) {
+				assistantMsg.content = "";
 			}
 			// Skip assistant messages that have no content and no tool calls.
 			// Some providers require "either content or tool_calls, but not none".
@@ -908,7 +989,7 @@ export function convertMessages(
 				content !== null &&
 				content !== undefined &&
 				(typeof content === "string" ? content.length > 0 : content.length > 0);
-			if (!hasContent && !assistantMsg.tool_calls) {
+			if (!hasContent && !assistantMsg.tool_calls && replayReasoningDetails.length === 0) {
 				continue;
 			}
 			params.push(assistantMsg);

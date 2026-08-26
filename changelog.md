@@ -213,7 +213,7 @@ No Python/IPython runtime, telemetry, analytics, trace sharing, promotional badg
 - Grok wrote and verified an exact 111-byte fenced Markdown payload containing nested backticks, quotes, and a template literal through structured write on its first attempt; the independently reproduced SHA-256 was `fd9dc8d9924ffef13f70d728332e01e387ab7e9f816b1cfd518a3fdfa70b6548`.
 - A 2 MiB JavaScript result stayed bounded; after 20 expansion toggles, source-process RSS settled from 125,824 KiB to 124,128 KiB instead of growing monotonically.
 - Ctrl-C cancelled an active 30-second Bun cell while preserving a draft containing quotes and backticks; the replacement worker restored persistent state, accepted a recovery cell in 4 ms, and explicit session resume restored both transcript and snapshot.
-- Fable5 review remains a delivery gate: both the approved helper and direct CLI were rejected before inference by the authenticated Claude account's monthly spend limit, so this branch was not fast-forwarded or pushed to `main`.
+- Both Fable5 invocation paths were rejected before inference by the authenticated Claude account's monthly spend limit; at the user's explicit direction, a fresh full-diff self-review and repeated verification replaced that unavailable external gate for delivery.
 
 ## 2026-08-08 to 2026-08-09
 

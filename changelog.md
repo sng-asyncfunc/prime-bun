@@ -43,12 +43,12 @@ The upgrade lowers steady-state memory and improves most kernel paths, but it do
 
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-08-26.
+Last refreshed: 2026-09-01.
 
-- Upstream baseline: Prime Agent [`v0.8.1` / `51463372`](https://github.com/PrimeIntellect-ai/prime-agent/commit/51463372).
-- Last fully dispositioned upstream commit: [`51463372`](https://github.com/PrimeIntellect-ai/prime-agent/commit/51463372).
-- Upstream release observed at: [`v0.8.1`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.8.1).
-- Prime Bun synchronization checkpoint: [`v0.8.1` / `ceb13a2d`](https://github.com/sng-asyncfunc/prime-bun/commit/ceb13a2d).
+- Upstream baseline: Prime Agent [`v0.9.1` / `81ae3cb3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/81ae3cb3).
+- Last fully dispositioned upstream commit: [`81ae3cb3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/81ae3cb3).
+- Upstream release observed at: [`v0.9.1`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.1).
+- Prime Bun synchronization checkpoint: [`v0.9.1` / `2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b).
 - Policy: port behavior selectively, adapt it to the Bun architecture, and never inherit Prime Agent telemetry, analytics, release metadata, or distribution-specific code without an explicit decision.
 
 ### Dispositioned Prime Agent commits after v0.7.1
@@ -157,10 +157,46 @@ Prime Bun delivery [`4489e1e3`](https://github.com/sng-asyncfunc/prime-bun/commi
 
 No Python/IPython runtime, telemetry, analytics, trace sharing, promotional badges, daemon wire schema, upstream distribution machinery, or generated model catalog change was included in the v0.8.1 synchronization.
 
+### Prime Agent v0.9.0 and v0.9.1 disposition
+
+| Prime Agent source | Disposition | Prime Bun trace | Notes |
+| --- | --- | --- | --- |
+| [`0940833b`](https://github.com/PrimeIntellect-ai/prime-agent/commit/0940833b), [`61eb6474`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61eb6474), [`80902713`](https://github.com/PrimeIntellect-ai/prime-agent/commit/80902713), [`d60fab8a`](https://github.com/PrimeIntellect-ai/prime-agent/commit/d60fab8a) | Not applicable | — | Async Python bash, CPython REPL, and Python kernel protocol work do not apply to the Bun JavaScript runtime. |
+| [`bc0fa760`](https://github.com/PrimeIntellect-ai/prime-agent/commit/bc0fa760) | Already superseded | — | Prime Bun already covers delivery between root siblings in its supervisor process suite. |
+| [`0fa717d4`](https://github.com/PrimeIntellect-ai/prime-agent/commit/0fa717d4) | Excluded | — | The generated model snapshot remains excluded from direct edits and overlaps local generator work. |
+| [`90343dca`](https://github.com/PrimeIntellect-ai/prime-agent/commit/90343dca) | Ported | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Worker mode now trusts supervisor-approved renames without rechecking the worker-local sibling set. |
+| [`8c4ab8f5`](https://github.com/PrimeIntellect-ai/prime-agent/commit/8c4ab8f5), [`378e32d5`](https://github.com/PrimeIntellect-ai/prime-agent/commit/378e32d5), [`05601462`](https://github.com/PrimeIntellect-ai/prime-agent/commit/05601462), [`18fe5d5b`](https://github.com/PrimeIntellect-ai/prime-agent/commit/18fe5d5b), [`8ca52555`](https://github.com/PrimeIntellect-ai/prime-agent/commit/8ca52555), [`bcf69db5`](https://github.com/PrimeIntellect-ai/prime-agent/commit/bcf69db5) | Excluded | — | Test-seam and unused-export cleanup has no user-visible parity value and would add broad churn. |
+| [`0f6a3885`](https://github.com/PrimeIntellect-ai/prime-agent/commit/0f6a3885), [`d90062b6`](https://github.com/PrimeIntellect-ai/prime-agent/commit/d90062b6), [`bab12421`](https://github.com/PrimeIntellect-ai/prime-agent/commit/bab12421), [`85c236d5`](https://github.com/PrimeIntellect-ai/prime-agent/commit/85c236d5) | Excluded | — | These interactive-state refactors do not fix a demonstrated Prime Bun behavior and cross its diverged TUI lifecycle. |
+| [`5e0e288a`](https://github.com/PrimeIntellect-ai/prime-agent/commit/5e0e288a) | Not applicable | — | The removed upstream kernel seams are absent from the Bun worker. |
+| [`ceb41804`](https://github.com/PrimeIntellect-ai/prime-agent/commit/ceb41804), [`c0334a17`](https://github.com/PrimeIntellect-ai/prime-agent/commit/c0334a17), [`dfffea27`](https://github.com/PrimeIntellect-ai/prime-agent/commit/dfffea27) | Excluded | — | The agent-admission and RLM projection refactors are coupled to upstream lifecycle architecture; Prime Bun retains its tested Bun projections. |
+| [`af14f066`](https://github.com/PrimeIntellect-ai/prime-agent/commit/af14f066) | Not applicable | — | The host-reply envelope fixes a Python kernel dispatcher path not used by Prime Bun. |
+| [`80bf72c8`](https://github.com/PrimeIntellect-ai/prime-agent/commit/80bf72c8) | Ported | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | A remote agent message is sent once after transport connection, so reconnect errors cannot duplicate a delivered prompt. |
+| [`ee8fd699`](https://github.com/PrimeIntellect-ai/prime-agent/commit/ee8fd699) | Adapted | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Session reuse now waits for recovery and validates current ownership, root presence, and readiness. |
+| [`9db2722e`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9db2722e) | Excluded | — | Telemetry implementation changes remain outside Prime Bun policy. |
+| [`dab03c00`](https://github.com/PrimeIntellect-ai/prime-agent/commit/dab03c00) | Excluded | — | The quiescence rewrite depends on upstream post-compaction scheduling and needs a dedicated Bun compatibility cycle. |
+| [`853041ec`](https://github.com/PrimeIntellect-ai/prime-agent/commit/853041ec) | Adapted | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Every concurrent Bash call owns an abort controller, and one abort reaches all in-flight calls. |
+| [`6322b7bb`](https://github.com/PrimeIntellect-ai/prime-agent/commit/6322b7bb) | Ported | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Daemon close awaits the tracked Bash completion chain instead of polling session state. |
+| [`5b6c0e94`](https://github.com/PrimeIntellect-ai/prime-agent/commit/5b6c0e94) | Adapted | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Concurrent opens join only after owner validation and cannot reuse a still-starting worker. |
+| [`a903d4b6`](https://github.com/PrimeIntellect-ai/prime-agent/commit/a903d4b6) | Excluded | — | Contributor-vouch governance is upstream repository administration. |
+| [`c382f098`](https://github.com/PrimeIntellect-ai/prime-agent/commit/c382f098) | Excluded | — | Inline Mermaid adds rendering dependencies and memory surface without addressing a Prime Bun reliability need. |
+| [`c718bf3c`](https://github.com/PrimeIntellect-ai/prime-agent/commit/c718bf3c), [`1b5830f0`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1b5830f0), [`71c01082`](https://github.com/PrimeIntellect-ai/prime-agent/commit/71c01082), [`85ac06e9`](https://github.com/PrimeIntellect-ai/prime-agent/commit/85ac06e9) | Not applicable | — | Python bash guidance, Python snapshot optimization, and Python-cell presentation do not apply to Bun JavaScript cells. |
+| [`cbc0f7d7`](https://github.com/PrimeIntellect-ai/prime-agent/commit/cbc0f7d7) | Ported | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Empty unnamed sessions report idle and are passivated after their last client detaches. |
+| [`9f5edc19`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9f5edc19), [`74c8d39e`](https://github.com/PrimeIntellect-ai/prime-agent/commit/74c8d39e) | Excluded | — | The spawn-error and startup-ownership patches depend on the newer upstream supervisor transport and require a separate daemon migration. |
+| [`9f712708`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9f712708) | Ported | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Anthropic-compatible prompt caching now advances its rolling cache marker across tool results. |
+| [`4e42fab2`](https://github.com/PrimeIntellect-ai/prime-agent/commit/4e42fab2), [`8d5722ee`](https://github.com/PrimeIntellect-ai/prime-agent/commit/8d5722ee), [`1d2e91d3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1d2e91d3), [`173d845a`](https://github.com/PrimeIntellect-ai/prime-agent/commit/173d845a), [`0749e066`](https://github.com/PrimeIntellect-ai/prime-agent/commit/0749e066) | Excluded | — | The status, roster subscription, and direct-session transport stack is a coupled daemon protocol change and cannot be imported without negotiated capability gates. |
+| [`15ef4566`](https://github.com/PrimeIntellect-ai/prime-agent/commit/15ef4566), [`23e55152`](https://github.com/PrimeIntellect-ai/prime-agent/commit/23e55152), [`c32f2725`](https://github.com/PrimeIntellect-ai/prime-agent/commit/c32f2725) | Not applicable | — | These repair the excluded reconnect-loop, direct-viewer, and roster-backed catalog paths. |
+| [`6179a608`](https://github.com/PrimeIntellect-ai/prime-agent/commit/6179a608) | Adapted | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Identical RLM child snapshots are suppressed before they reach transcript and UI subscribers. |
+| [`083c68dc`](https://github.com/PrimeIntellect-ai/prime-agent/commit/083c68dc) | Excluded | — | The Node TUI process-replacement path is distribution-specific and overlaps Prime Bun's source launcher recovery. |
+| [`3d639f7b`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3d639f7b), [`48c69d41`](https://github.com/PrimeIntellect-ai/prime-agent/commit/48c69d41) | Already superseded | — | The prompt change and immediate revert are net-zero. |
+| [`3da8c5a1`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3da8c5a1) | Excluded | — | Trace-upload and doomed Python snapshot handling mixes proprietary trace sharing with Python runtime behavior. |
+| [`c394506e`](https://github.com/PrimeIntellect-ai/prime-agent/commit/c394506e), [`81ae3cb3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/81ae3cb3) | Adapted | [`2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b) | Recreated Prime Bun lockstep 0.9.1 metadata without upstream publication, tags, distribution code, or changelog fragments. |
+
+No Python/IPython runtime, telemetry, analytics, trace sharing, roster/direct-transport wire change, upstream distribution machinery, or generated model catalog change was included in the v0.9.1 synchronization. The selected daemon fixes are internal behavior changes behind existing commands and event shapes, so the daemon protocol version and schema revision remain unchanged.
+
 ### Future-agent pickup procedure
 
 1. Fetch without adding or mutating a persistent remote: `git fetch https://github.com/PrimeIntellect-ai/prime-agent.git main`.
-2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 51463372..FETCH_HEAD`.
+2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 81ae3cb3..FETCH_HEAD`.
 3. Revisit the deferred model-catalog group only after the user-owned generator changes have been reconciled.
 4. Classify every upstream commit as ported, adapted, excluded, informational, or deferred; add both upstream and Prime Bun commit links here.
 5. Do not blindly cherry-pick daemon, dependency, release, Homebrew, or telemetry changes; preserve Prime Bun protocol capability gates, Bun runtime behavior, and dependency-age rules.
@@ -214,6 +250,14 @@ No Python/IPython runtime, telemetry, analytics, trace sharing, promotional badg
 - A 2 MiB JavaScript result stayed bounded; after 20 expansion toggles, source-process RSS settled from 125,824 KiB to 124,128 KiB instead of growing monotonically.
 - Ctrl-C cancelled an active 30-second Bun cell while preserving a draft containing quotes and backticks; the replacement worker restored persistent state, accepted a recovery cell in 4 ms, and explicit session resume restored both transcript and snapshot.
 - Both Fable5 invocation paths were rejected before inference by the authenticated Claude account's monthly spend limit; at the user's explicit direction, a fresh full-diff self-review and repeated verification replaced that unavailable external gate for delivery.
+
+### Verification for the 2026-09-01 synchronization
+
+- `npm run check` passed for Prime Bun 0.9.1 across 948 files, tsgo, installer rendering, and browser smoke; focused AI and coding-agent suites passed 445 tests covering cache placement, concurrent Bash cancellation, daemon close, message delivery, session lifecycle, worker recovery, and child-update deduplication.
+- Authenticated Grok 4.3 completed a bounded no-edit repository audit with five error-free JavaScript action batches and no syntax or string-literal error, then wrote and independently byte-verified an exact 102-byte fenced Markdown payload containing nested backticks, quotes, and a template expression.
+- A raw 2 MiB JavaScript result stayed bounded to a 65,536-character expanded render; across 20 additional expansion toggles, client RSS stayed at 23,488 KiB, supervisor RSS settled from 40,848 KiB to 40,784 KiB, and the resident worker retained one 9,600 KiB render cache rather than growing per toggle.
+- Ctrl-C interrupted a synchronous 30-second Bun cell, the replacement worker accepted a recovery cell in 8 ms, an exact quoted/backticked draft survived stash and agents-view reopen, and explicit resume restored session `01a05f17-440c-734f-b3ef-8e38b448e3f1`; after settling, supervisor, resident-worker, and kernel RSS were 26,512 KiB, 31,216 KiB, and 2,512 KiB respectively.
+- Fable5 independently reran all eight changed test files, verified the lifecycle and exclusion contracts plus all 54 dispositions, and returned `SATISFIED_PROCEED` for fast-forward delivery.
 
 ## 2026-08-08 to 2026-08-09
 

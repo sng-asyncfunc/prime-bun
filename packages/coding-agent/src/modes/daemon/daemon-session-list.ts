@@ -111,6 +111,17 @@ export function isSessionSummaryBusy(summary: SessionSummary): boolean {
 	return summary.isSessionActive || summary.hasRunningRlmChildren === true;
 }
 
+/** Naming signals intent to return, so named sessions are exempt even when empty. */
+export function isEvictableEmptySessionSummary(summary: SessionSummary): boolean {
+	return (
+		summary.messageCount === 0 &&
+		!summary.sessionName &&
+		!isSessionSummaryBusy(summary) &&
+		summary.hasRegisteredHeartbeat !== true &&
+		summary.hasRegisteredCronJob !== true
+	);
+}
+
 export function buildSessionList(
 	activeSessions: readonly ActiveSessionState[],
 	savedSessions: readonly SessionInfo[],
@@ -458,6 +469,10 @@ export function activeActivityForSession(activeSession: ActiveSessionState): Ses
 	// A finished subagent is resident but never gets a summarizer verdict, so don't hold
 	// it at "working" waiting for one — a not-busy subagent is simply idle/done.
 	if (activeSession.runtime.metadata?.kind === "subagent") {
+		return "idle";
+	}
+	// An empty session never gets a summarizer verdict; don't hold it at "working" forever.
+	if (activeSession.runtime.session.messages.length === 0) {
 		return "idle";
 	}
 	// Hold at "working" until the idle verdict is current, so the view never

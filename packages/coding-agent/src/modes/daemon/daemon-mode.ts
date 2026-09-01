@@ -3969,7 +3969,7 @@ export class AgentDaemon {
 				if (!name) {
 					throw new Error("Session name cannot be empty");
 				}
-				await this.setStateSessionName(state, name);
+				await this.setStateSessionNameForCommand(state, name);
 				return success(command.id, "rename", summaryForActiveSession(state));
 			}
 
@@ -3983,7 +3983,7 @@ export class AgentDaemon {
 					throw new Error("Session name cannot be empty");
 				}
 				if (state) {
-					await this.setStateSessionName(state, name);
+					await this.setStateSessionNameForCommand(state, name);
 				} else {
 					const info = await readSessionInfo(command.sessionPath);
 					if (!info) throw new Error(`Session not found: ${command.sessionPath}`);
@@ -4337,28 +4337,23 @@ export class AgentDaemon {
 				}
 				// Respond before completion (bash can outlive the client request
 				// timeout); output and completion stream via bash_* session events.
-				void state.runtime.session
-					.runUserBash(command.command, {
-						excludeFromContext: command.excludeFromContext,
-						transient: command.transient,
-						runId: command.runId,
-					})
-					.catch((error) => {
-						this.broadcastToSession(
-							state,
-							failure(undefined, "execute_bash", error, serializeDaemonError(error)),
-						);
-					});
+				const bash = state.runtime.session.runUserBash(command.command, {
+					excludeFromContext: command.excludeFromContext,
+					transient: command.transient,
+					runId: command.runId,
+				});
+				state.inFlightBash = Promise.allSettled([state.inFlightBash, bash]).then(() => undefined);
+				void bash.catch((error) => {
+					this.broadcastToSession(state, failure(undefined, "execute_bash", error, serializeDaemonError(error)));
+				});
 				return success(command.id, "execute_bash");
 			}
 
 			case "execute_bash_and_wait": {
 				const state = this.getSessionState(command.activeSessionId);
-				return success(
-					command.id,
-					"execute_bash_and_wait",
-					await state.runtime.session.executeBash(command.command),
-				);
+				const bash = state.runtime.session.executeBash(command.command);
+				state.inFlightBash = Promise.allSettled([state.inFlightBash, bash]).then(() => undefined);
+				return success(command.id, "execute_bash_and_wait", await bash);
 			}
 
 			case "abort_bash": {
@@ -4759,7 +4754,7 @@ export class AgentDaemon {
 				if (!name) {
 					throw new Error("Session name cannot be empty");
 				}
-				await this.setStateSessionName(state, name);
+				await this.setStateSessionNameForCommand(state, name);
 				return success(command.id, "set_session_name");
 			}
 
@@ -5433,6 +5428,15 @@ export class AgentDaemon {
 		}
 	}
 
+	private setStateSessionNameForCommand(state: ActiveSessionState, name: string): Promise<void> {
+		return this.options.worker ? this.applyStateSessionName(state, name) : this.setStateSessionName(state, name);
+	}
+
+	private async applyStateSessionName(state: ActiveSessionState, name: string): Promise<void> {
+		state.runtime.session.setSessionName(name);
+		await this.appendRlmLedgerRenameForState(state, name);
+	}
+
 	private async setStateSessionName(state: ActiveSessionState, name: string): Promise<void> {
 		const normalizedName = name.trim();
 		if (!normalizedName) {
@@ -5455,8 +5459,7 @@ export class AgentDaemon {
 			},
 			async () => {
 				await this.assertStateSessionNameAvailable(state, normalizedName);
-				state.runtime.session.setSessionName(normalizedName);
-				await this.appendRlmLedgerRenameForState(state, normalizedName);
+				await this.applyStateSessionName(state, normalizedName);
 			},
 		);
 	}
@@ -5766,42 +5769,45 @@ export class AgentDaemon {
 			throw new Error(`Unknown active session: ${targetSelector}`);
 		}
 		const deadline = Date.now() + 30_000;
+		let client: DaemonClient | undefined;
 		let lastError: unknown;
 		while (Date.now() < deadline && !this.shuttingDown) {
-			const client = new DaemonClient(supervisorSocketPath);
-			let receivedResponse = false;
+			const candidate = new DaemonClient(supervisorSocketPath);
 			try {
-				await client.connect(1000);
-				await client.waitForHello(1000);
-				const response = await client.request(
-					{
-						type: "send_message",
-						targetActiveSessionId: targetSelector,
-						message,
-						fromActiveSessionId: fromState.activeSessionId,
-						agentOrigin: true,
-					},
-					30_000,
-				);
-				receivedResponse = true;
-				if (!response.success) {
-					throw deserializeDaemonError(response);
-				}
-				if (!response.data || typeof response.data !== "object") {
-					throw new Error("Supervisor returned an invalid agent-message receipt");
-				}
-				return response.data as AgentSessionMessageReceipt;
+				await candidate.connect(1000);
+				await candidate.waitForHello(1000);
+				client = candidate;
+				break;
 			} catch (error) {
 				lastError = error;
-				if (receivedResponse) {
-					throw error;
-				}
-			} finally {
-				client.close();
+				candidate.close();
 			}
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
 		}
-		throw lastError instanceof Error ? lastError : new Error(`Unknown active session: ${targetSelector}`);
+		if (!client) {
+			throw lastError instanceof Error ? lastError : new Error(`Unknown active session: ${targetSelector}`);
+		}
+		try {
+			const response = await client.request(
+				{
+					type: "send_message",
+					targetActiveSessionId: targetSelector,
+					message,
+					fromActiveSessionId: fromState.activeSessionId,
+					agentOrigin: true,
+				},
+				30_000,
+			);
+			if (!response.success) {
+				throw deserializeDaemonError(response);
+			}
+			if (!response.data || typeof response.data !== "object") {
+				throw new Error("Supervisor returned an invalid agent-message receipt");
+			}
+			return response.data as AgentSessionMessageReceipt;
+		} finally {
+			client.close();
+		}
 	}
 
 	private async acceptAgentSessionMessage(
@@ -6319,14 +6325,12 @@ export class AgentDaemon {
 	}
 
 	private async abortBashForClose(state: ActiveSessionState): Promise<void> {
-		if (!state.runtime.session.isBashRunning) {
+		const session = state.runtime.session;
+		if (!session.isBashRunning) {
 			return;
 		}
-		state.runtime.session.abortBash();
-		const deadline = Date.now() + UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS;
-		while (state.runtime.session.isBashRunning && Date.now() < deadline) {
-			await delay(50);
-		}
+		session.abortBash();
+		await Promise.race([state.inFlightBash ?? Promise.resolve(), delay(UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS)]);
 	}
 
 	private async closeSessionOnce(

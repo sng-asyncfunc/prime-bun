@@ -31,6 +31,7 @@ interface SupervisorInternals {
 	workers: Map<string, WorkerFixture>;
 	clients: Set<{ id: string; attachedActiveSessionIds: Set<string> }>;
 	idleEvictionFence?: Promise<void>;
+	mutationDrain: { begin(): void; end(): void };
 	catalog: { resolve: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> };
 	createOrReuseWorker: ReturnType<typeof vi.fn>;
 	stopWorker: ReturnType<typeof vi.fn>;
@@ -440,5 +441,186 @@ describe("daemon supervisor whole-tree eviction", () => {
 			}),
 		).rejects.toThrow('Ambiguous session selector "target"');
 		expect(supervisor.createOrReuseWorker).not.toHaveBeenCalled();
+	});
+});
+
+describe("daemon supervisor empty-session eviction on detach", () => {
+	function makeDetachClient(id: string, attached: string[]) {
+		return { id, attachedActiveSessionIds: new Set(attached), socket: { destroyed: true } };
+	}
+
+	async function settle(): Promise<void> {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+
+	it("evicts only abandoned empty unnamed sessions, and only on the last detach", async () => {
+		const now = Date.parse("2026-08-01T12:00:00.000Z");
+		const supervisor = makeSupervisor();
+		const empty = makeWorker("empty", [makeSummary("empty-root", now, { messageCount: 0 })]);
+		const exempt = [
+			makeWorker("named", [makeSummary("named-root", now, { messageCount: 0, sessionName: "keep me" })]),
+			makeWorker("busy", [makeSummary("busy-root", now, { messageCount: 0, isSessionActive: true })]),
+			makeWorker("one-message", [makeSummary("one-message-root", now)]),
+			makeWorker("heartbeat", [
+				makeSummary("heartbeat-root", now, { messageCount: 0, hasRegisteredHeartbeat: true }),
+			]),
+			makeWorker("cron", [makeSummary("cron-root", now, { messageCount: 0, hasRegisteredCronJob: true })]),
+			makeWorker("owned", [makeSummary("owned-root", now, { messageCount: 0 })]),
+		];
+		exempt[5]!.descriptor.ownerClientId = "owner";
+		for (const worker of [empty, ...exempt]) {
+			supervisor.workers.set(worker.descriptor.workerId, worker);
+		}
+		const first = makeDetachClient("first", ["empty-root"]);
+		const viewer = makeDetachClient("viewer", [
+			"empty-root",
+			"named-root",
+			"busy-root",
+			"one-message-root",
+			"heartbeat-root",
+			"cron-root",
+			"owned-root",
+		]);
+		supervisor.clients.add(first);
+		supervisor.clients.add(viewer);
+
+		await supervisor.handleCommand(first, { id: "detach-1", type: "detach", activeSessionId: "empty-root" });
+		await settle();
+		expect(supervisor.stopWorker).not.toHaveBeenCalled();
+
+		await supervisor.handleCommand(viewer, { id: "detach-all", type: "detach" });
+		await vi.waitFor(() => expect(supervisor.stopWorker).toHaveBeenCalledWith(empty, true));
+		await settle();
+		expect(supervisor.stopWorker).toHaveBeenCalledTimes(1);
+		expect([...supervisor.workers.keys()].sort()).toEqual([
+			"busy",
+			"cron",
+			"heartbeat",
+			"named",
+			"one-message",
+			"owned",
+		]);
+		expect(supervisor.log).toHaveBeenCalledWith(expect.stringContaining("Evicted empty session worker empty"));
+	});
+
+	it("does not stop a worker that was replaced while its summary refresh was in flight", async () => {
+		const now = Date.parse("2026-08-01T12:00:00.000Z");
+		const supervisor = makeSupervisor();
+		const worker = makeWorker("swap", [makeSummary("swap-root", now, { messageCount: 0 })]);
+		let releaseList!: () => void;
+		worker.client!.request.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					releaseList = () => resolve(success(undefined, "list", { sessions: [...worker.summaries.values()] }));
+				}),
+		);
+		supervisor.workers.set("swap", worker);
+		const client = makeDetachClient("viewer", ["swap-root"]);
+		supervisor.clients.add(client);
+
+		await supervisor.handleCommand(client, { id: "detach", type: "detach", activeSessionId: "swap-root" });
+		await vi.waitFor(() => expect(worker.client!.request).toHaveBeenCalled());
+		const successor = makeWorker("swap", [makeSummary("swap-root", now, { messageCount: 0 })]);
+		supervisor.workers.set("swap", successor);
+		releaseList();
+		await settle();
+
+		expect(supervisor.stopWorker).not.toHaveBeenCalled();
+		expect(supervisor.workers.get("swap")).toBe(successor);
+	});
+
+	it("does not evict when a mutation admitted during the refresh registers a schedule", async () => {
+		const now = Date.parse("2026-08-01T12:00:00.000Z");
+		const supervisor = makeSupervisor();
+		const worker = makeWorker("gap", [makeSummary("gap-root", now, { messageCount: 0 })]);
+		let releaseList!: () => void;
+		worker.client!.request.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					releaseList = () =>
+						resolve(
+							success(undefined, "list", { sessions: [makeSummary("gap-root", now, { messageCount: 0 })] }),
+						);
+				}),
+		);
+		supervisor.workers.set("gap", worker);
+		const client = makeDetachClient("viewer", ["gap-root"]);
+		supervisor.clients.add(client);
+
+		await supervisor.handleCommand(client, { id: "detach", type: "detach", activeSessionId: "gap-root" });
+		await vi.waitFor(() => expect(worker.client!.request).toHaveBeenCalled());
+		// A heartbeat_set admitted mid-refresh registers a schedule before the eviction decision.
+		supervisor.mutationDrain.begin();
+		worker.client!.request.mockImplementation(async () =>
+			success(undefined, "list", {
+				sessions: [makeSummary("gap-root", now, { messageCount: 0, hasRegisteredHeartbeat: true })],
+			}),
+		);
+		releaseList();
+		await settle();
+		supervisor.mutationDrain.end();
+		await settle();
+
+		expect(supervisor.stopWorker).not.toHaveBeenCalled();
+		expect(supervisor.workers.get("gap")).toBe(worker);
+	});
+
+	it("evicts every empty draft when one client detaches from several at once", async () => {
+		const now = Date.parse("2026-08-01T12:00:00.000Z");
+		const supervisor = makeSupervisor();
+		const draftA = makeWorker("draft-a", [makeSummary("draft-a-root", now, { messageCount: 0 })]);
+		const draftB = makeWorker("draft-b", [makeSummary("draft-b-root", now, { messageCount: 0 })]);
+		supervisor.workers.set("draft-a", draftA);
+		supervisor.workers.set("draft-b", draftB);
+		const client = makeDetachClient("viewer", ["draft-a-root", "draft-b-root"]);
+		supervisor.clients.add(client);
+
+		await supervisor.handleCommand(client, { id: "detach-all", type: "detach" });
+
+		await vi.waitFor(() => expect(supervisor.stopWorker).toHaveBeenCalledTimes(2));
+		expect(supervisor.workers.size).toBe(0);
+	});
+
+	it("makes a starting sweep wait for the detach fence instead of overwriting it", async () => {
+		const now = Date.parse("2026-08-01T12:00:00.000Z");
+		const supervisor = makeSupervisor();
+		// Recent activity keeps the worker out of the sweep's own idle candidates.
+		const emptySessions = () => [
+			makeSummary("gap-root", now, { messageCount: 0, lastActivityAt: new Date(now).toISOString() }),
+		];
+		const worker = makeWorker("gap", emptySessions());
+		let releaseSweepList!: () => void;
+		let releaseHookList!: () => void;
+		worker
+			.client!.request.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						releaseSweepList = () => resolve(success(undefined, "list", { sessions: emptySessions() }));
+					}),
+			)
+			.mockImplementationOnce(async () => success(undefined, "list", { sessions: emptySessions() }))
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						releaseHookList = () => resolve(success(undefined, "list", { sessions: emptySessions() }));
+					}),
+			);
+		supervisor.workers.set("gap", worker);
+		const client = makeDetachClient("viewer", ["gap-root"]);
+		supervisor.clients.add(client);
+
+		const sweep = supervisor.runIdleEvictionSweep(now);
+		await vi.waitFor(() => expect(worker.client!.request).toHaveBeenCalledTimes(1));
+		await supervisor.handleCommand(client, { id: "detach", type: "detach", activeSessionId: "gap-root" });
+		await vi.waitFor(() => expect(worker.client!.request).toHaveBeenCalledTimes(3));
+		releaseSweepList();
+		await settle();
+
+		// The hook is still mid-decision, so its fence must still be in the slot.
+		expect(supervisor.idleEvictionFence).toBeDefined();
+		releaseHookList();
+		await sweep;
+		expect(supervisor.stopWorker).toHaveBeenCalledTimes(1);
+		expect(supervisor.stopWorker).toHaveBeenCalledWith(worker, true);
 	});
 });

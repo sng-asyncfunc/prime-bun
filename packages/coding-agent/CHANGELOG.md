@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-01
+
+- Fixed concurrent Bash calls sharing cancellation state, and changed daemon shutdown to await active Bash calls without polling.
+- Fixed remote agent messages being redelivered after reconnect and supervised renames being attributed to the wrong session.
+- Fixed empty unnamed sessions reporting busy, lingering after their last client detached, and repeating unchanged child updates.
+- Fixed worker-open races reusing a recovering or foreign-owned session before it was ready.
+
 ## [0.8.1] - 2026-08-26
 
 - Changed new sessions to default to an RLM maximum depth of 2.

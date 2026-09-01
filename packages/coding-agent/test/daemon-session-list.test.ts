@@ -229,6 +229,12 @@ describe("buildSessionList", () => {
 
 		expect(summary.sessionActions).toMatchObject({ queuedCount: 0, active: { kind: "turn" } });
 		expect(summary.unfinishedActionCount).toBe(3);
+		expect(summary.activity).toBe("working");
+	});
+
+	it("marks an empty resident session idle instead of holding it at working", () => {
+		const summary = summaryForActiveSession(makeState({ activeSessionId: "empty" }));
+		expect(summary.activity).toBe("idle");
 	});
 
 	it("marks a finished subagent idle instead of holding it at working", () => {

@@ -97,6 +97,8 @@ interface InspectableRlmRun {
 	status: string;
 	settled: boolean;
 	error?: string;
+	activity?: { kind: string };
+	emitUpdate?: () => void;
 	detachedDeletion?: Awaited<ReturnType<AgentSession["listRlmSubagents"]>>["subagents"][number];
 	session?: AgentSession;
 }
@@ -2983,6 +2985,44 @@ setTimeout(() => void rlm("slow child").catch(() => undefined), 10);
 			releaseChild();
 			await manager.dispose();
 		}
+	});
+
+	it("suppresses repeated child updates whose snapshot did not change", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const root = createSession({
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				const stream = createAssistantMessageEventStream();
+				childStarted = true;
+				void release.then(() => {
+					stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+				});
+				return stream;
+			},
+		});
+		let updates = 0;
+		root.subscribe((event) => {
+			if (event.type === "rlm_child_update") updates += 1;
+		});
+
+		await root.runRlmChild("slow shard");
+		await waitFor(() => childStarted);
+		const run = [...(root as unknown as InspectableRlmSession)._activeRlmChildRuns.values()][0];
+		if (!run?.emitUpdate || !run.session) throw new Error("Missing child run emit");
+		run.emitUpdate();
+		const before = updates;
+		run.emitUpdate();
+		run.emitUpdate();
+		expect(updates).toBe(before);
+		run.session.setCurrentRecap("changed recap");
+		await waitFor(() => updates === before + 1);
+
+		releaseChild();
+		await waitFor(() => run.status === "done");
 	});
 });
 

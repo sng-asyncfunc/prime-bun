@@ -82,6 +82,7 @@ import { getDaemonRuntimeIdentity } from "./daemon-runtime-identity.js";
 import { matchesSessionIdSuffix } from "./daemon-session-id.js";
 import {
 	classifySessionRosterStatus,
+	isEvictableEmptySessionSummary,
 	isSessionSummaryBusy,
 	type SessionSummary,
 	summaryForInactiveSession,
@@ -842,17 +843,7 @@ export class DaemonSupervisor {
 		);
 		if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
 
-		let releaseFence: () => void = () => {};
-		const fence = new Promise<void>((resolveFence) => {
-			releaseFence = resolveFence;
-		});
-		this.idleEvictionFence = fence;
-		try {
-			await this.mutationDrain.waitForDrain(
-				0,
-				AbortSignal.timeout(IDLE_EVICTION_DRAIN_TIMEOUT_MS),
-				"Timed out draining daemon mutations for idle eviction",
-			);
+		await this.withEvictionFence("Timed out draining daemon mutations for idle eviction", async () => {
 			if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
 			await Promise.all(
 				candidates.map((worker) => this.refreshWorkerSummaries(worker).catch(() => refreshed.delete(worker))),
@@ -881,10 +872,94 @@ export class DaemonSupervisor {
 					);
 				}),
 			);
-		} finally {
+		});
+	}
+
+	/** Waits for any held eviction fence, then takes the slot; release clears it only if still ours. */
+	private async acquireIdleEvictionFence(): Promise<() => void> {
+		while (this.idleEvictionFence) await this.idleEvictionFence;
+		let releaseFence: () => void = () => {};
+		const fence = new Promise<void>((resolveFence) => {
+			releaseFence = resolveFence;
+		});
+		this.idleEvictionFence = fence;
+		return () => {
 			if (this.idleEvictionFence === fence) this.idleEvictionFence = undefined;
 			releaseFence();
+		};
+	}
+
+	/** Runs a passivation decision under the eviction fence after draining admitted mutations. */
+	private async withEvictionFence(drainMessage: string, action: () => Promise<void>): Promise<void> {
+		const releaseFence = await this.acquireIdleEvictionFence();
+		try {
+			await this.mutationDrain.waitForDrain(0, AbortSignal.timeout(IDLE_EVICTION_DRAIN_TIMEOUT_MS), drainMessage);
+			await action();
+		} finally {
+			releaseFence();
 		}
+	}
+
+	/** Re-validates one worker on fresh summaries under the caller's fence, then passivates it. */
+	private async passivateWorkerIfStillEligible(
+		worker: ResidentWorker,
+		isStillEligible: () => boolean,
+		describeEvicted: () => string,
+	): Promise<void> {
+		await this.refreshWorkerSummaries(worker);
+		if (!isStillEligible()) return;
+		await this.stopWorker(worker, true);
+		this.log(describeEvicted());
+	}
+
+	private async evictEmptySessionOnLastDetach(activeSessionId: string): Promise<void> {
+		if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
+		const worker = this.matchWorkers(activeSessionId)[0]?.worker;
+		if (
+			!worker ||
+			worker.descriptor.lifecycle !== "ready" ||
+			!worker.client ||
+			worker.descriptor.ownerClientId !== undefined || // owned workers have their own cleanup path
+			this.isWorkerStopping(worker)
+		) {
+			return;
+		}
+		try {
+			await this.refreshWorkerSummaries(worker);
+		} catch {
+			return;
+		}
+		if (!this.isEmptyDetachEvictionCandidate(worker)) return;
+		try {
+			// Idle-sweep coordination: fence new mutations, drain admitted ones, re-read before deciding.
+			await this.withEvictionFence("Timed out draining daemon mutations for empty-session eviction", () =>
+				this.passivateWorkerIfStillEligible(
+					worker,
+					() => this.isEmptyDetachEvictionCandidate(worker),
+					() =>
+						`Evicted empty session worker ${worker.descriptor.workerId} root=${worker.descriptor.rootSessionId ?? worker.descriptor.rootActiveSessionId} on last client detach`,
+				),
+			);
+		} catch (error) {
+			this.log(`Empty-session eviction failed for worker ${worker.descriptor.workerId}: ${String(error)}`);
+		}
+	}
+
+	private isEmptyDetachEvictionCandidate(worker: ResidentWorker): boolean {
+		if (
+			this.shuttingDown ||
+			this.updateRestartPhase !== undefined ||
+			this.workers.get(worker.descriptor.workerId) !== worker ||
+			this.isWorkerStopping(worker)
+		) {
+			return false;
+		}
+		const summaries = [...worker.summaries.values()];
+		const hasAttachedClient = summaries.some((summary) => {
+			const summaryActiveSessionId = summary.activeSessionId ?? summary.id;
+			return [...this.clients].some((client) => client.attachedActiveSessionIds.has(summaryActiveSessionId));
+		});
+		return summaries.length > 0 && !hasAttachedClient && summaries.every(isEvictableEmptySessionSummary);
 	}
 
 	private async assertCurrentOwnership(): Promise<void> {
@@ -1067,6 +1142,7 @@ export class DaemonSupervisor {
 			for (const activeSessionId of [...client.attachedActiveSessionIds]) {
 				client.attachedActiveSessionIds.delete(activeSessionId);
 				void this.syncWorkerExtensionUi(activeSessionId);
+				void this.evictEmptySessionOnLastDetach(activeSessionId);
 			}
 			this.scheduleOwnedWorkerCleanupForClient(this.protocolClientId(client));
 		};
@@ -2030,8 +2106,17 @@ export class DaemonSupervisor {
 		const ownerClientId = command.lifecycle === "client_owned" ? clientId : undefined;
 		if (command.sessionPath) {
 			const activeMatches = this.matchWorkers(command.sessionPath);
-			if (activeMatches.length === 1 && !(await this.reclaimStaleWorkerRegistration(activeMatches[0]!.worker))) {
-				return this.reuseWorkerForCreate(activeMatches[0]!.worker, ownerClientId, command.sessionPath);
+			if (activeMatches.length === 1) {
+				const activeKey = looksLikeSessionPath(command.sessionPath)
+					? canonicalSessionPath(resolve(command.sessionPath))
+					: undefined;
+				const pending = activeKey ? this.openingWorkers.get(activeKey) : undefined;
+				if (pending) {
+					return this.joinOpeningWorker(pending, ownerClientId, command.sessionPath);
+				}
+				if (!(await this.reclaimStaleWorkerRegistration(activeMatches[0]!.worker))) {
+					return this.reuseWorkerForCreate(activeMatches[0]!.worker, ownerClientId, command.sessionPath);
+				}
 			}
 			if (activeMatches.length > 1) {
 				throw new Error(`Ambiguous active session "${command.sessionPath}"`);
@@ -2053,7 +2138,7 @@ export class DaemonSupervisor {
 			: `new:${command.id ? createCommandIdempotencyKey(clientId, command.id) : createActiveSessionId()}`;
 		const pending = this.openingWorkers.get(key);
 		if (pending) {
-			return pending;
+			return this.joinOpeningWorker(pending, ownerClientId, createCommand.sessionPath ?? key);
 		}
 		const opening = (async () => {
 			if (!createCommand.name) return this.launchWorker(createCommand, undefined, ownerClientId);
@@ -2082,15 +2167,68 @@ export class DaemonSupervisor {
 		}
 	}
 
-	private reuseWorkerForCreate(
+	private async reuseWorkerForCreate(
 		worker: ResidentWorker,
 		ownerClientId: string | undefined,
 		sessionPath: string,
-	): ResidentWorker {
-		if (worker.descriptor.ownerClientId === ownerClientId) {
-			return worker;
+	): Promise<ResidentWorker> {
+		if (worker.descriptor.lifecycle === "failed") {
+			throw new Error(
+				`Session "${sessionPath}" is registered to a failed worker that could not be safely reclaimed`,
+			);
 		}
-		throw new SessionAlreadyActiveError(sessionPath, worker.descriptor.rootActiveSessionId);
+		this.assertWorkerCreateOwner(worker, ownerClientId, sessionPath);
+		if (!this.isWorkerReadyForCreate(worker)) {
+			if (worker.recovery) {
+				await worker.recovery;
+			} else if (this.isWorkerRecoveryEligible(worker)) {
+				await this.recoverWorker(worker);
+			}
+		}
+		const current = this.workers.get(worker.descriptor.workerId);
+		if (!current) {
+			throw new Error(`Session "${sessionPath}" worker recovery was interrupted; retry opening the session`);
+		}
+		this.assertWorkerCreateOwner(current, ownerClientId, sessionPath);
+		if (!this.isWorkerReadyForCreate(current)) {
+			if (!current.summaries.has(current.descriptor.rootActiveSessionId)) {
+				throw new Error(
+					`Session "${sessionPath}" worker is unavailable for reuse: assigned root session is missing`,
+				);
+			}
+			const detail = current.descriptor.lastError ? `: ${current.descriptor.lastError}` : "";
+			throw new Error(`Session "${sessionPath}" worker is ${this.effectiveWorkerState(current)}${detail}`);
+		}
+		return current;
+	}
+
+	private async joinOpeningWorker(
+		pending: Promise<ResidentWorker>,
+		ownerClientId: string | undefined,
+		sessionPath: string,
+	): Promise<ResidentWorker> {
+		const worker = await pending;
+		this.assertWorkerCreateOwner(worker, ownerClientId, sessionPath);
+		return worker;
+	}
+
+	private assertWorkerCreateOwner(
+		worker: ResidentWorker,
+		ownerClientId: string | undefined,
+		sessionPath: string,
+	): void {
+		if (worker.descriptor.ownerClientId !== ownerClientId) {
+			throw new SessionAlreadyActiveError(sessionPath, worker.descriptor.rootActiveSessionId);
+		}
+	}
+
+	private isWorkerReadyForCreate(worker: ResidentWorker): boolean {
+		return (
+			worker.descriptor.lifecycle === "ready" &&
+			worker.client !== undefined &&
+			worker.summaries.has(worker.descriptor.rootActiveSessionId) &&
+			!this.isWorkerStopping(worker)
+		);
 	}
 
 	/** Complete an interrupted stop when resume encounters a confirmed-dead registration. */
@@ -2973,7 +3111,12 @@ export class DaemonSupervisor {
 		}
 		const response = await worker.client.request({ type: "list" }, 5000);
 		const summaries = sessionSummariesFromResponse(response);
-		worker.summaries = new Map(summaries.map((summary) => [summary.activeSessionId ?? summary.id, summary]));
+		const nextSummaries = new Map(summaries.map((summary) => [summary.activeSessionId ?? summary.id, summary]));
+		const root = nextSummaries.get(worker.descriptor.rootActiveSessionId);
+		if (recovery && !root) {
+			throw new Error("Session worker omitted its root session during recovery");
+		}
+		worker.summaries = nextSummaries;
 		for (const summary of summaries) {
 			const activeSessionId = summary.activeSessionId ?? summary.id;
 			if (summary.streamingMessage?.role === "assistant") {
@@ -2982,7 +3125,6 @@ export class DaemonSupervisor {
 				this.streamReconstructor.clear(activeSessionId);
 			}
 		}
-		const root = worker.summaries.get(worker.descriptor.rootActiveSessionId);
 		if (root) {
 			if (recovery) {
 				await this.assertRecoveryAllowed();
@@ -3819,6 +3961,7 @@ export class DaemonSupervisor {
 			client.catchupPurposes?.delete(resolvedId);
 			this.write(client, { type: "session_detached", activeSessionId: resolvedId });
 			void this.syncWorkerExtensionUi(resolvedId);
+			void this.evictEmptySessionOnLastDetach(resolvedId);
 		}
 	}
 

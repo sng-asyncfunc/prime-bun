@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-01
+
+- Fixed Anthropic-compatible prompt caching so the rolling cache marker advances to the latest tool result.
+
 ## [0.8.1] - 2026-08-26
 
 - Fixed OpenAI-compatible providers losing opaque reasoning details across multi-turn continuations.

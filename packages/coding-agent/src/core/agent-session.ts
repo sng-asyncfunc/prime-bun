@@ -961,6 +961,7 @@ interface RlmChildRun {
 	detachedDeletion?: RlmSubagentRegistryEntry;
 	/** Re-emits the run's rlm_child_update snapshot with its current status. */
 	emitUpdate?: () => void;
+	lastEmittedUpdate?: string;
 	/** Idempotent child-event forwarder cleanup, once the child runtime exists. */
 	unsubscribe?: () => void;
 }
@@ -1167,7 +1168,7 @@ export class AgentSession {
 	private readonly _unpersistedCompactionOutcomes: CustomMessage[] = [];
 
 	// Bash execution state
-	private _bashAbortController: AbortController | undefined = undefined;
+	private _bashAbortControllers = new Set<AbortController>();
 	private _userBashRunning = false;
 	private _userBashAbortRequested = false;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
@@ -9885,25 +9886,29 @@ export class AgentSession {
 		this._activeRlmChildRuns.set(run.id, run);
 		const emitChildUpdate = () => {
 			const childModel = childSession?.model ?? modelSelection.model;
+			const child: RlmChildAgentSnapshot = {
+				id: childNodeId,
+				parentId: this._rlmParentNodeId,
+				sessionName: childSession?.sessionName ?? sessionName,
+				model: `${childModel.provider}/${childModel.id}`,
+				label,
+				status: run.status,
+				durationMs,
+				answerPreview,
+				toolUseCount: toolUseCount > 0 ? toolUseCount : undefined,
+				tokenCount: childSession?._contextTokensForCurrentMessages(),
+				recap: childSession?.getCurrentRecap(),
+				sessionDir: childSessionDir,
+				activity,
+				repliedSinceTask: childSession?._repliedToParentSinceTask,
+				error: run.error,
+			};
+			const serialized = JSON.stringify(child);
+			if (serialized === run.lastEmittedUpdate) return;
+			run.lastEmittedUpdate = serialized;
 			this._emit({
 				type: "rlm_child_update",
-				child: {
-					id: childNodeId,
-					parentId: this._rlmParentNodeId,
-					sessionName: childSession?.sessionName ?? sessionName,
-					model: `${childModel.provider}/${childModel.id}`,
-					label,
-					status: run.status,
-					durationMs,
-					answerPreview,
-					toolUseCount: toolUseCount > 0 ? toolUseCount : undefined,
-					tokenCount: childSession?._contextTokensForCurrentMessages(),
-					recap: childSession?.getCurrentRecap(),
-					sessionDir: childSessionDir,
-					activity,
-					repliedSinceTask: childSession?._repliedToParentSinceTask,
-					error: run.error,
-				},
+				child,
 			});
 		};
 		run.emitUpdate = emitChildUpdate;
@@ -10538,7 +10543,8 @@ export class AgentSession {
 			transient?: boolean;
 		},
 	): Promise<BashResult> {
-		this._bashAbortController = new AbortController();
+		const abortController = new AbortController();
+		this._bashAbortControllers.add(abortController);
 
 		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
 		const prefix = this.settingsManager.getShellCommandPrefix();
@@ -10552,7 +10558,7 @@ export class AgentSession {
 				options?.operations ?? createLocalBashOperations({ shellPath }),
 				{
 					onChunk,
-					signal: this._bashAbortController.signal,
+					signal: abortController.signal,
 				},
 			);
 
@@ -10561,7 +10567,7 @@ export class AgentSession {
 			}
 			return result;
 		} finally {
-			this._bashAbortController = undefined;
+			this._bashAbortControllers.delete(abortController);
 		}
 	}
 
@@ -10737,15 +10743,17 @@ export class AgentSession {
 	abortBash(): void {
 		// A user bash command may not have spawned yet (extension dispatch in
 		// progress); flag the request so runUserBash cancels before executing.
-		if (this._userBashRunning && this._bashAbortController === undefined) {
+		if (this._userBashRunning) {
 			this._userBashAbortRequested = true;
 		}
-		this._bashAbortController?.abort();
+		for (const controller of this._bashAbortControllers) {
+			controller.abort();
+		}
 	}
 
 	/** Whether a bash command is currently running */
 	get isBashRunning(): boolean {
-		return this._bashAbortController !== undefined || this._userBashRunning;
+		return this._bashAbortControllers.size > 0 || this._userBashRunning;
 	}
 
 	/** Whether there are pending bash messages waiting to be flushed */

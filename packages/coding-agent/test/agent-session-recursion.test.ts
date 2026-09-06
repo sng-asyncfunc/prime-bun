@@ -2296,6 +2296,94 @@ try {
 		expect(root.cancelRlmChildRun(childId)).toBe(false);
 	});
 
+	it("walks dual-membership RLM chains once per session", () => {
+		const levels = 12;
+		const sessions = Array.from({ length: levels + 1 }, (_, level) =>
+			createSession({ rlmSessionDir: join(tempDir, `chain-${level}`) }),
+		);
+		let cancelPrimitiveCalls = 0;
+		let runMapIterations = 0;
+		for (const [level, session] of sessions.entries()) {
+			const target = session as unknown as {
+				_activeRlmChildRuns: Map<string, unknown>;
+				_rlmChildSessions: Map<string, AgentSession>;
+				_cancelRlmChildRun(run: unknown, reason: string): boolean;
+			};
+			const original = target._cancelRlmChildRun.bind(session);
+			target._cancelRlmChildRun = (run, reason) => {
+				cancelPrimitiveCalls++;
+				return original(run, reason);
+			};
+			const originalValues = target._activeRlmChildRuns.values.bind(target._activeRlmChildRuns);
+			target._activeRlmChildRuns.values = () => {
+				runMapIterations++;
+				return originalValues();
+			};
+			if (level === 0) continue;
+			const parent = sessions[level - 1] as unknown as {
+				_activeRlmChildRuns: Map<string, unknown>;
+				_rlmChildSessions: Map<string, AgentSession>;
+			};
+			parent._activeRlmChildRuns.set(`chain-${level}`, {
+				id: `chain-${level}`,
+				status: "done",
+				settled: true,
+				session,
+				abort: vi.fn(),
+				publication: { reject: vi.fn() },
+				emitUpdate: vi.fn(),
+			});
+			parent._rlmChildSessions.set(`chain-${level}`, session);
+		}
+		const leafAbort = vi.fn();
+		const leafRun = {
+			id: "leaf-run",
+			status: "running",
+			settled: false,
+			abort: leafAbort,
+			publication: { reject: vi.fn() },
+			emitUpdate: vi.fn(),
+		};
+		(sessions[levels] as unknown as { _activeRlmChildRuns: Map<string, typeof leafRun> })._activeRlmChildRuns.set(
+			"leaf-run",
+			leafRun,
+		);
+
+		expect(sessions[0]!.hasRunningRlmChildren()).toBe(true);
+		expect(runMapIterations).toBeLessThanOrEqual(3 * (levels + 1));
+		expect(sessions[0]!.cancelRunningRlmDescendants()).toBe(true);
+		expect(leafRun.status).toBe("cancelled");
+		expect(leafAbort).toHaveBeenCalled();
+		expect(cancelPrimitiveCalls).toBeLessThanOrEqual(levels + 1);
+		expect(sessions[0]!.hasRunningRlmChildren()).toBe(false);
+	});
+
+	it("keeps a colliding child id reachable past a finished retained match", () => {
+		const root = createSession({ rlmSessionDir: join(tempDir, "collide-root") });
+		const finished = createSession({ rlmSessionDir: join(tempDir, "collide-finished") });
+		const otherParent = createSession({ rlmSessionDir: join(tempDir, "collide-other") });
+		const rootChildren = (root as unknown as { _rlmChildSessions: Map<string, AgentSession> })._rlmChildSessions;
+		rootChildren.set("sub-dup", finished);
+		rootChildren.set("other-parent", otherParent);
+		const abort = vi.fn();
+		const collidingRun = {
+			id: "sub-dup",
+			status: "running",
+			settled: false,
+			abort,
+			publication: { reject: vi.fn() },
+			emitUpdate: vi.fn(),
+		};
+		(otherParent as unknown as { _activeRlmChildRuns: Map<string, typeof collidingRun> })._activeRlmChildRuns.set(
+			"sub-dup",
+			collidingRun,
+		);
+
+		expect(root.cancelRlmChildRun("sub-dup")).toBe(true);
+		expect(collidingRun.status).toBe("cancelled");
+		expect(abort).toHaveBeenCalled();
+	});
+
 	it("reports a shared running outcome to concurrent inactive-delete callers", async () => {
 		let runningChecks = 0;
 		const isExternallyRunning = () => ++runningChecks >= 5;

@@ -110,12 +110,17 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
-type ProcessQuery = (command: string, args: string[]) => string;
+interface ProcessQueryOptions {
+	env?: NodeJS.ProcessEnv;
+}
 
-function runProcessQuery(command: string, args: string[]): string {
+type ProcessQuery = (command: string, args: string[], options?: ProcessQueryOptions) => string;
+
+function runProcessQuery(command: string, args: string[], options?: ProcessQueryOptions): string {
 	return execFileSync(command, args, {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
+		env: options?.env,
 	});
 }
 
@@ -137,12 +142,36 @@ export function getWindowsProcessStartId(pid: number, query: ProcessQuery = runP
 	}
 }
 
-export function getProcessStartId(pid: number): string | undefined {
+export function getPsProcessStartId(pid: number, query: ProcessQuery = runProcessQuery): string | undefined {
+	if (!Number.isInteger(pid) || pid <= 0) {
+		return undefined;
+	}
+	try {
+		// `lstart` is rendered in the subprocess timezone and locale, so pin both for a durable identity.
+		const startTime = query("ps", ["-p", String(pid), "-o", "lstart="], {
+			env: { ...process.env, LC_ALL: "C", LC_TIME: "C", LANG: "C", TZ: "UTC" },
+		}).trim();
+		return startTime ? `ps:${startTime}` : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function getLegacyPsProcessStartId(pid: number, query: ProcessQuery): string | undefined {
+	try {
+		const startTime = query("ps", ["-p", String(pid), "-o", "lstart="]).trim();
+		return startTime ? `ps:${startTime}` : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function getProcessStartId(pid: number, query: ProcessQuery = runProcessQuery): string | undefined {
 	if (!Number.isInteger(pid) || pid <= 0) {
 		return undefined;
 	}
 	if (process.platform === "win32") {
-		return getWindowsProcessStartId(pid);
+		return getWindowsProcessStartId(pid, query);
 	}
 	try {
 		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -155,12 +184,25 @@ export function getProcessStartId(pid: number): string | undefined {
 	} catch {
 		// Fall through to the portable process listing used on macOS and BSD.
 	}
-	try {
-		const startTime = runProcessQuery("ps", ["-p", String(pid), "-o", "lstart="]).trim();
-		return startTime ? `ps:${startTime}` : undefined;
-	} catch {
-		return undefined;
+	return getPsProcessStartId(pid, query);
+}
+
+/** Returns undefined when the process identity cannot be verified safely. */
+export function processStartIdMatches(
+	pid: number,
+	expected: string,
+	query: ProcessQuery = runProcessQuery,
+): boolean | undefined {
+	const observed = getProcessStartId(pid, query);
+	if (observed === undefined || observed === expected) {
+		return observed === undefined ? undefined : true;
 	}
+	if (!observed.startsWith("ps:") || !expected.startsWith("ps:")) {
+		return false;
+	}
+	// Before 0.9.2, portable identities inherited the caller's timezone and locale.
+	const legacy = getLegacyPsProcessStartId(pid, query);
+	return legacy === undefined ? undefined : legacy === expected;
 }
 
 let currentProcessStartId: string | undefined;
@@ -181,8 +223,7 @@ function isLeaseOwnerAlive(owner: SessionLeaseOwner): boolean {
 	if (!owner.processStartId) {
 		return true;
 	}
-	const currentStartId = getProcessStartId(owner.pid);
-	return currentStartId === undefined || currentStartId === owner.processStartId;
+	return processStartIdMatches(owner.pid, owner.processStartId) !== false;
 }
 
 function withLeaseGuard<T>(directory: string, action: () => T): T {

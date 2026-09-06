@@ -348,6 +348,51 @@ try { await attachImage(); } catch (error) { console.log(error instanceof Error 
 		expect(result).toMatchObject({ details: { status: "ok" }, isError: false });
 	});
 
+	it('ignores a literal "undefined" code placeholder alongside structured actions', async () => {
+		const executeActions = vi.fn<KernelManager["executeActions"]>().mockResolvedValue(executeResult());
+		const manager = {
+			execute: vi.fn<KernelManager["execute"]>(),
+			executeActions,
+			status: { diagnostics: "", recovery: { available: false, checkpoint: "clean" }, state: "running" },
+		} as unknown as KernelManager;
+		const provisioner = { ensure: vi.fn(async () => manager) } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+		const actions = [{ op: "read", path: "README.md" }];
+
+		const result = await tool.execute(
+			"actions-with-undefined-code",
+			{ actions, code: "undefined" } as never,
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(executeActions).toHaveBeenCalledWith(actions, expect.objectContaining({ signal: undefined }));
+		expect(result).toMatchObject({ details: { status: "ok" }, isError: false });
+	});
+
+	it('keeps a literal "undefined" code cell when no structured actions are present', async () => {
+		const execute = vi.fn<KernelManager["execute"]>().mockResolvedValue(executeResult({ result: "undefined" }));
+		const manager = {
+			execute,
+			executeActions: vi.fn<KernelManager["executeActions"]>(),
+			status: { diagnostics: "", recovery: { available: false, checkpoint: "clean" }, state: "running" },
+		} as unknown as KernelManager;
+		const provisioner = { ensure: vi.fn(async () => manager) } as unknown as BunKernelProvisioner;
+		const tool = createJavaScriptToolDefinition(tempDir, { provisioner });
+
+		const result = await tool.execute(
+			"undefined-code-cell",
+			{ code: "undefined" },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(execute).toHaveBeenCalledWith("undefined", expect.objectContaining({ signal: undefined }));
+		expect(result).toMatchObject({ details: { status: "ok" }, isError: false });
+	});
+
 	it("keeps large output once in canonical content instead of duplicating raw details", async () => {
 		const largeResult = "x".repeat(20_000);
 		const manager = {

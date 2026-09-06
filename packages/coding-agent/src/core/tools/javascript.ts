@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
@@ -166,7 +167,9 @@ type ResolvedJavaScriptToolInput =
 
 function resolveJavaScriptToolInput(params: JavaScriptToolInput): ResolvedJavaScriptToolInput {
 	const hasActions = params.actions !== undefined;
-	const hasCode = typeof params.code === "string" && (!hasActions || params.code.trim().length > 0);
+	const trimmedCode = typeof params.code === "string" ? params.code.trim() : undefined;
+	const hasCode =
+		trimmedCode !== undefined && (!hasActions || (trimmedCode.length > 0 && trimmedCode !== "undefined"));
 	if (Number(hasCode) + Number(hasActions) !== 1) {
 		return {
 			mode: "error",
@@ -498,6 +501,7 @@ export class BunKernelProvisioner {
 				javascriptSkills: this.options?.javascriptSkills,
 				sessionId: this.options?.sessionId,
 				shellPath: this.options?.shellPath,
+				stderrLogPath: snapshotDir ? join(snapshotDir, "kernel-stderr.log") : undefined,
 				snapshot: snapshotDir
 					? { manifestPath: manifestPathIn(snapshotDir), path: snapshotPathIn(snapshotDir) }
 					: undefined,

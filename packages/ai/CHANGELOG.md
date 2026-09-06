@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-06
+
+- Fixed Fable 5.x OAuth requests being rejected because Prime Bun advertised an outdated Claude Code version.
+
 ## [0.9.1] - 2026-09-01
 
 - Fixed Anthropic-compatible prompt caching so the rolling cache marker advances to the latest tool result.

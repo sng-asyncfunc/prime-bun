@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-06
+
+- Fixed timezone changes invalidating daemon process identity on macOS and BSD while retaining rolling-upgrade compatibility with existing local-time records.
+- Fixed retained RLM child trees freezing during running-state checks and cancellation.
+- Fixed providers serializing an absent JavaScript code field as `"undefined"` causing valid structured actions to fail.
+- Added a bounded rotating session log for raw Bun worker diagnostics while retaining a small in-memory tail.
+
 ## [0.9.1] - 2026-09-01
 
 - Fixed concurrent Bash calls sharing cancellation state, and changed daemon shutdown to await active Bash calls without polling.

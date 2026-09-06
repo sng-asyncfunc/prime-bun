@@ -31,6 +31,7 @@ import {
 	type SnapshotResult,
 	snapshotPathIn,
 } from "./state-snapshot.js";
+import { KernelStderrLog } from "./stderr-log.js";
 
 const DEFAULT_MAX_OUTPUT_CHARS = 65_536;
 const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 1_500;
@@ -153,6 +154,7 @@ export interface KernelManagerOptions {
 	skillFactoryTimeoutMs?: number;
 	checkpointTimeoutMs?: number;
 	structuredShellTimeoutMs?: number;
+	stderrLogPath?: string;
 }
 
 export interface KernelStartOptions {
@@ -515,9 +517,15 @@ export class KernelManager {
 	private lastRecoveryRestore?: RestoreResult;
 	private recoverySnapshotConfig?: KernelSnapshotConfig;
 	private recoveryTempDir?: string;
+	private readonly stderrLog?: KernelStderrLog;
 
 	constructor(options: KernelManagerOptions = {}) {
 		this.options = options;
+		this.stderrLog = options.stderrLogPath
+			? new KernelStderrLog(options.stderrLogPath, {
+					onError: (error) => this.appendKernelDiagnostic(`kernel stderr log failed: ${errorMessage(error)}`),
+				})
+			: undefined;
 		const environment = { ...process.env, ...options.env };
 		this.harnessHostHandlers = environment.RLM_GLOBAL_HARNESS_STATE_DIR
 			? createHarnessHostHandlers({
@@ -706,6 +714,7 @@ export class KernelManager {
 
 	private handleWorkerStream(worker: ChildProcess, chunk: string, name: "stdout" | "stderr"): void {
 		if (this.worker !== worker) return;
+		if (name === "stderr") this.stderrLog?.append(chunk);
 		this.appendKernelDiagnostic(`${name}: ${chunk}`);
 	}
 
@@ -1519,6 +1528,7 @@ export class KernelManager {
 		liveKernels.delete(this);
 		this.stopCurrentWorker("SIGKILL", new Error("Kernel was killed"));
 		this.cleanupTemporaryState();
+		await this.stderrLog?.close();
 	}
 
 	async shutdown(options: { snapshot?: boolean } = {}): Promise<void> {
@@ -1536,6 +1546,7 @@ export class KernelManager {
 		} catch {}
 		this.stopCurrentWorker("SIGTERM", new Error("Kernel has been shut down"));
 		this.cleanupTemporaryState();
+		await this.stderrLog?.close();
 	}
 
 	dispose(): Promise<void> {
@@ -1561,6 +1572,7 @@ export class KernelManager {
 		liveKernels.delete(this);
 		this.stopCurrentWorker("SIGTERM", new Error("Kernel has been shut down"));
 		this.cleanupTemporaryState();
+		this.stderrLog?.dispose();
 	}
 
 	private withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {

@@ -41,7 +41,12 @@ import {
 	type IdleEvictionMinutes,
 	type WorkerEvictionSnapshot,
 } from "../../core/session-action-store.js";
-import { canonicalSessionPath, getProcessStartId, SessionAlreadyActiveError } from "../../core/session-lease.js";
+import {
+	canonicalSessionPath,
+	getProcessStartId,
+	processStartIdMatches,
+	SessionAlreadyActiveError,
+} from "../../core/session-lease.js";
 import { getSessionArtifactPathForFile, readSessionInfo, type SessionInfo } from "../../core/session-manager.js";
 import { SettingsManager } from "../../core/settings-manager.js";
 import { isProcessAlive, processIdExists, signalProcessGroupOrProcess } from "../../utils/child-process.js";
@@ -2930,9 +2935,12 @@ export class DaemonSupervisor {
 					await this.assertRecoveryAllowed();
 					const processAlive = isProcessAlive(worker.descriptor.pid);
 					const observedProcessStartId = processAlive ? getProcessStartId(worker.descriptor.pid) : undefined;
+					const persistedIdentityMatch =
+						processAlive && worker.descriptor.processStartId !== undefined
+							? processStartIdMatches(worker.descriptor.pid, worker.descriptor.processStartId)
+							: undefined;
 					const processIdentityMatches =
-						worker.descriptor.processStartId === undefined ||
-						observedProcessStartId === worker.descriptor.processStartId;
+						worker.descriptor.processStartId === undefined || persistedIdentityMatch === true;
 					if (processAlive && processIdentityMatches) {
 						try {
 							await this.connectWorker(worker, 1500);
@@ -2967,7 +2975,7 @@ export class DaemonSupervisor {
 					}
 					if (
 						processAlive &&
-						(worker.descriptor.processStartId === undefined || observedProcessStartId === undefined)
+						(worker.descriptor.processStartId === undefined || persistedIdentityMatch === undefined)
 					) {
 						throw new Error(
 							`Cannot safely replace live session worker ${worker.descriptor.workerId} without a verified process identity`,
@@ -4768,9 +4776,9 @@ export class DaemonSupervisor {
 	): "current" | "replaced" | "gone" | "unknown" {
 		if (!isProcessAlive(pid)) return "gone";
 		if (processStartId === undefined) return "unknown";
-		const observed = getProcessStartId(pid);
-		if (observed === undefined) return "unknown";
-		return observed === processStartId ? "current" : "replaced";
+		const match = processStartIdMatches(pid, processStartId);
+		if (match === undefined) return "unknown";
+		return match ? "current" : "replaced";
 	}
 
 	/**
@@ -4975,9 +4983,9 @@ export class DaemonSupervisor {
 				stoppedVerdict = true;
 				stoppedCanSignal = false;
 			} else {
-				const observed = getProcessStartId(pid);
-				stoppedVerdict = observed !== processStartId ? observed === undefined : true;
-				stoppedCanSignal = observed === processStartId;
+				const match = processStartIdMatches(pid, processStartId);
+				stoppedVerdict = match !== false;
+				stoppedCanSignal = match === true;
 			}
 			return stoppedVerdict;
 		};
@@ -4987,8 +4995,7 @@ export class DaemonSupervisor {
 			if (!isStopGenerationCurrent()) return;
 			if (!isStoppedProcessAlive()) break;
 			if (!killed && stoppedCanSignal && Date.now() >= sigkillDeadline) {
-				const observedNow = processStartId === undefined ? undefined : getProcessStartId(pid);
-				if (processStartId === undefined || observedNow === processStartId) {
+				if (processStartId !== undefined && processStartIdMatches(pid, processStartId) === true) {
 					signalProcessGroupOrProcess(pid, "SIGKILL");
 					killed = true;
 				}

@@ -43,12 +43,12 @@ The upgrade lowers steady-state memory and improves most kernel paths, but it do
 
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-09-01.
+Last refreshed: 2026-09-06.
 
-- Upstream baseline: Prime Agent [`v0.9.1` / `81ae3cb3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/81ae3cb3).
-- Last fully dispositioned upstream commit: [`81ae3cb3`](https://github.com/PrimeIntellect-ai/prime-agent/commit/81ae3cb3).
-- Upstream release observed at: [`v0.9.1`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.1).
-- Prime Bun synchronization checkpoint: [`v0.9.1` / `2210e27b`](https://github.com/sng-asyncfunc/prime-bun/commit/2210e27b).
+- Upstream baseline: Prime Agent [`v0.9.2` / `9c54a35d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9c54a35d).
+- Last fully dispositioned upstream commit: [`9c54a35d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9c54a35d).
+- Upstream release observed at: [`v0.9.2`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.2).
+- Prime Bun synchronization checkpoint: [`v0.9.2` / `cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a).
 - Policy: port behavior selectively, adapt it to the Bun architecture, and never inherit Prime Agent telemetry, analytics, release metadata, or distribution-specific code without an explicit decision.
 
 ### Dispositioned Prime Agent commits after v0.7.1
@@ -193,10 +193,38 @@ No Python/IPython runtime, telemetry, analytics, trace sharing, promotional badg
 
 No Python/IPython runtime, telemetry, analytics, trace sharing, roster/direct-transport wire change, upstream distribution machinery, or generated model catalog change was included in the v0.9.1 synchronization. The selected daemon fixes are internal behavior changes behind existing commands and event shapes, so the daemon protocol version and schema revision remain unchanged.
 
+### Prime Agent v0.9.2 disposition
+
+| Prime Agent source | Disposition | Prime Bun trace | Notes |
+| --- | --- | --- | --- |
+| [`e72da005`](https://github.com/PrimeIntellect-ai/prime-agent/commit/e72da005) | Not ported | — | Upstream issue-form requirements are repository administration, not a Prime Bun runtime improvement. |
+| [`408e7490`](https://github.com/PrimeIntellect-ai/prime-agent/commit/408e7490) | Explicitly excluded | — | Linear ticket defaults are upstream internal governance. |
+| [`0ba0423c`](https://github.com/PrimeIntellect-ai/prime-agent/commit/0ba0423c) | Ported and hardened | [`cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a) | Pins portable process-start queries to UTC and the C locale while matching pre-0.9.2 local-time identities during rolling upgrades. |
+| [`3f02aa5d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3f02aa5d) | Ported | [`cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a) | Advertises Claude Code 2.1.257 for OAuth-backed Fable 5.x compatibility. |
+| [`cd10724f`](https://github.com/PrimeIntellect-ai/prime-agent/commit/cd10724f) | Explicitly excluded | — | npm 12 remote-policy handling changes the upstream binary distribution installer and release CI, which this sync does not inherit. |
+| [`7f21fa34`](https://github.com/PrimeIntellect-ai/prime-agent/commit/7f21fa34) | Not applicable | — | ACP MCP registration is implemented through a CPython proxy absent from Prime Bun's Bun-native tool runtime. |
+| [`7941b318`](https://github.com/PrimeIntellect-ai/prime-agent/commit/7941b318) | Explicitly excluded | — | Disk-cursor agent-trace upload scheduling is proprietary trace-sharing infrastructure. |
+| [`4f301527`](https://github.com/PrimeIntellect-ai/prime-agent/commit/4f301527) | Not applicable | — | Idle-verdict currency republishes through the roster stack that Prime Bun intentionally has not adopted. |
+| [`118c1d90`](https://github.com/PrimeIntellect-ai/prime-agent/commit/118c1d90) | Not ported | — | Extracting a generic event-log substrate is internal refactoring without standalone behavior and is coupled to the excluded trace stack. |
+| [`d72beaf9`](https://github.com/PrimeIntellect-ai/prime-agent/commit/d72beaf9) | Deferred | — | Heartbeat residency and durable wake rewrite the newer roster/direct-session lifecycle across daemon and UI boundaries; parity requires a separate capability-gated migration. |
+| [`1768ace5`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1768ace5) | Explicitly excluded | — | ACP semantic-edge provenance is trace collection infrastructure outside Prime Bun's no-telemetry policy. |
+| [`1c07eaad`](https://github.com/PrimeIntellect-ai/prime-agent/commit/1c07eaad) | Explicitly excluded | — | Semantic-edge delivery depends on the proprietary agent-traces upload outbox. |
+| [`61655728`](https://github.com/PrimeIntellect-ai/prime-agent/commit/61655728) | Deferred | — | Busy-descendant counts alter the excluded roster response and agents-view state stack without negotiated daemon capability gates. |
+| [`6950bc88`](https://github.com/PrimeIntellect-ai/prime-agent/commit/6950bc88) | Not applicable | — | Late compaction settlement and daemon lineage only repair the excluded semantic-edge producer. |
+| [`d74a75fe`](https://github.com/PrimeIntellect-ai/prime-agent/commit/d74a75fe) | Deferred | — | Agents-view token and cost details add uncapped daemon response fields and depend on the excluded roster/ledger projection. |
+| [`87fa4998`](https://github.com/PrimeIntellect-ai/prime-agent/commit/87fa4998) | Ported and adapted | [`cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a) | Routes Prime Bun's direct-session RLM lookup, state checks, deletion, and cancellation through one cycle-safe iterative visited walk. |
+| [`3484f06a`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3484f06a) | Deferred | — | The live generated model refresh overlaps user-owned generator/catalog changes and remains excluded from direct generated-file edits. |
+| [`5c2750bd`](https://github.com/PrimeIntellect-ai/prime-agent/commit/5c2750bd) | Ported and adapted | [`cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a) | Replaces the Python stderr logger with an ordered Bun-worker log that rotates at 5 MiB while retaining the existing 16 KiB in-memory tail. |
+| [`3b51ce33`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3b51ce33) | Deferred | — | GPT-6 and Qwen catalog generator changes overlap active user-owned model work and require reconciliation before regeneration. |
+| [`36751122`](https://github.com/PrimeIntellect-ai/prime-agent/commit/36751122) | Deferred | — | Usage columns, legends, sorting, and striping build on the excluded cost and roster state contracts and need a separate UI/protocol design. |
+| [`9c54a35d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9c54a35d) | Recreated locally | [`cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a) | Updates Prime Bun's lockstep metadata to 0.9.2 without upstream publication, tags, changelog fragments, example-version churn, or distribution code. |
+
+No Python/IPython runtime, telemetry, analytics, trace sharing, semantic-edge provenance, roster/direct-transport wire change, upstream distribution machinery, or generated model catalog change was included in the v0.9.2 synchronization. The selected daemon fix only normalizes an internal process query, so the daemon protocol version and schema revision remain unchanged.
+
 ### Future-agent pickup procedure
 
 1. Fetch without adding or mutating a persistent remote: `git fetch https://github.com/PrimeIntellect-ai/prime-agent.git main`.
-2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 81ae3cb3..FETCH_HEAD`.
+2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 9c54a35d..FETCH_HEAD`.
 3. Revisit the deferred model-catalog group only after the user-owned generator changes have been reconciled.
 4. Classify every upstream commit as ported, adapted, excluded, informational, or deferred; add both upstream and Prime Bun commit links here.
 5. Do not blindly cherry-pick daemon, dependency, release, Homebrew, or telemetry changes; preserve Prime Bun protocol capability gates, Bun runtime behavior, and dependency-age rules.
@@ -258,6 +286,15 @@ No Python/IPython runtime, telemetry, analytics, trace sharing, roster/direct-tr
 - A raw 2 MiB JavaScript result stayed bounded to a 65,536-character expanded render; across 20 additional expansion toggles, client RSS stayed at 23,488 KiB, supervisor RSS settled from 40,848 KiB to 40,784 KiB, and the resident worker retained one 9,600 KiB render cache rather than growing per toggle.
 - Ctrl-C interrupted a synchronous 30-second Bun cell, the replacement worker accepted a recovery cell in 8 ms, an exact quoted/backticked draft survived stash and agents-view reopen, and explicit resume restored session `01a05f17-440c-734f-b3ef-8e38b448e3f1`; after settling, supervisor, resident-worker, and kernel RSS were 26,512 KiB, 31,216 KiB, and 2,512 KiB respectively.
 - Fable5 independently reran all eight changed test files, verified the lifecycle and exclusion contracts plus all 54 dispositions, and returned `SATISFIED_PROCEED` for fast-forward delivery.
+
+### Verification for the 2026-09-06 synchronization
+
+- Two consecutive final `npm run check` runs passed for Prime Bun 0.9.2 across 951 files, tsgo, installer rendering, and browser smoke; `git diff --check` also passed.
+- Focused suites passed 4 timezone/rolling-identity, 4 Bun stderr-log, 99 RLM recursion, and 16 JavaScript provisioner tests; 66 related identity/lifecycle tests, 95 supervisor recovery tests, and 10 process-level supervisor tests also passed, with 6 intentional platform skips.
+- Authenticated Grok 4.3 completed a bounded no-edit repository audit, preserved JavaScript state across cells and explicit resume, and live-verified that structured actions tolerate a provider-supplied `code: "undefined"` placeholder without weakening standalone `undefined` cells or meaningful mixed-input rejection.
+- Grok wrote and byte-verified an exact 96-byte fenced Markdown payload containing nested backticks, quotes, and a template expression; the independently reproduced SHA-256 was `70dc9c10eeeb6dd8a1559dfa7b566855f0356bc8dce2e0522da6d4cf87c689d5`.
+- A 2,000,000-character JavaScript result stayed bounded to 65,536 expanded characters; 20 additional toggles remained responsive without monotonic RSS growth, Ctrl-C interrupted a synchronous 30-second cell, the next cell recovered, and a quoted/backticked draft survived agents-view handoff.
+- Fable5 twice blocked delivery on rolling-upgrade identity gaps, first across shared lifecycle consumers and then persisted supervisor worker descriptors; after tri-state legacy matching and red/green regressions covered both, its final verdict was `SATISFIED_PROCEED` for implementation commit, ledger hash substitution, main fast-forward, and non-force push.
 
 ## 2026-08-08 to 2026-08-09
 

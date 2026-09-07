@@ -43,6 +43,7 @@ describe("GitHub Copilot OAuth device flow", () => {
 
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
 			const url = getUrl(input);
+			const headers = new Headers(init?.headers);
 
 			if (url.endsWith("/login/device/code")) {
 				expect(init?.method).toBe("POST");
@@ -52,6 +53,7 @@ describe("GitHub Copilot OAuth device flow", () => {
 				});
 				expect(String(init?.body)).toContain("client_id=");
 				expect(String(init?.body)).toContain("scope=read%3Auser");
+				expect(headers.get("User-Agent")).toBe("GitHubCopilotChat/0.48.1");
 				return jsonResponse({
 					device_code: "device-code",
 					user_code: "ABCD-EFGH",
@@ -71,6 +73,7 @@ describe("GitHub Copilot OAuth device flow", () => {
 				expect(String(init?.body)).toContain("client_id=");
 				expect(String(init?.body)).toContain("device_code=device-code");
 				expect(String(init?.body)).toContain("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code");
+				expect(headers.get("User-Agent")).toBe("GitHubCopilotChat/0.48.1");
 				const response = accessTokenResponses.shift();
 				if (!response) {
 					throw new Error("Unexpected extra access token poll");
@@ -79,6 +82,9 @@ describe("GitHub Copilot OAuth device flow", () => {
 			}
 
 			if (url.includes("/copilot_internal/v2/token")) {
+				expect(headers.get("User-Agent")).toBe("GitHubCopilotChat/0.48.1");
+				expect(headers.get("Editor-Version")).toBe("vscode/1.136.1");
+				expect(headers.get("Editor-Plugin-Version")).toBe("copilot-chat/0.48.1");
 				return jsonResponse({
 					token: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;",
 					expires_at: 9999999999,

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-09-07
+
+- Fixed ChatGPT model discovery omitting GPT-6 Astra by advertising Codex client compatibility 0.153.4.
+
 ## [0.9.2] - 2026-09-06
 
 - Fixed timezone changes invalidating daemon process identity on macOS and BSD while retaining rolling-upgrade compatibility with existing local-time records.

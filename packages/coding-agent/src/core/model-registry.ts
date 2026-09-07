@@ -373,7 +373,7 @@ function readOpenAICodexAccountId(token: string): string | undefined {
 }
 
 // Codex gates the discovered catalog on the reported CLI compatibility version.
-const OPENAI_CODEX_CLIENT_VERSION = "0.147.0";
+const OPENAI_CODEX_CLIENT_VERSION = "0.153.4";
 
 function openAICodexModelsUrl(baseUrl: string): string {
 	const normalized = baseUrl.replace(/\/+$/, "");

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-09-07
+
+- Added GPT-6 Astra fallbacks for ChatGPT Codex and GitHub Copilot with mandatory reasoning levels.
+- Changed GitHub Copilot requests to advertise Copilot Chat 0.48.1 and VS Code 1.136.1 consistently.
+- Changed Anthropic OAuth requests to advertise Claude Code 2.1.261.
+- Fixed OpenRouter pricing generation selecting lower base tariffs when higher time-window tariffs can apply.
+
 ## [0.9.2] - 2026-09-06
 
 - Fixed Fable 5.x OAuth requests being rejected because Prime Bun advertised an outdated Claude Code version.

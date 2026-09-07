@@ -43,12 +43,12 @@ The upgrade lowers steady-state memory and improves most kernel paths, but it do
 
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-09-06.
+Last refreshed: 2026-09-07.
 
-- Upstream baseline: Prime Agent [`v0.9.2` / `9c54a35d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9c54a35d).
-- Last fully dispositioned upstream commit: [`9c54a35d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9c54a35d).
-- Upstream release observed at: [`v0.9.2`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.2).
-- Prime Bun synchronization checkpoint: [`v0.9.2` / `cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a).
+- Upstream baseline: Prime Agent [`v0.9.3` / `915c78f4`](https://github.com/PrimeIntellect-ai/prime-agent/commit/915c78f4).
+- Last fully dispositioned upstream commit: [`915c78f4`](https://github.com/PrimeIntellect-ai/prime-agent/commit/915c78f4).
+- Upstream release observed at: [`v0.9.3`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.3).
+- Prime Bun synchronization checkpoint: [`v0.9.3` / `bde357e4`](https://github.com/sng-asyncfunc/prime-bun/commit/bde357e4).
 - Policy: port behavior selectively, adapt it to the Bun architecture, and never inherit Prime Agent telemetry, analytics, release metadata, or distribution-specific code without an explicit decision.
 
 ### Dispositioned Prime Agent commits after v0.7.1
@@ -215,17 +215,27 @@ No Python/IPython runtime, telemetry, analytics, trace sharing, roster/direct-tr
 | [`87fa4998`](https://github.com/PrimeIntellect-ai/prime-agent/commit/87fa4998) | Ported and adapted | [`cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a) | Routes Prime Bun's direct-session RLM lookup, state checks, deletion, and cancellation through one cycle-safe iterative visited walk. |
 | [`3484f06a`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3484f06a) | Deferred | — | The live generated model refresh overlaps user-owned generator/catalog changes and remains excluded from direct generated-file edits. |
 | [`5c2750bd`](https://github.com/PrimeIntellect-ai/prime-agent/commit/5c2750bd) | Ported and adapted | [`cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a) | Replaces the Python stderr logger with an ordered Bun-worker log that rotates at 5 MiB while retaining the existing 16 KiB in-memory tail. |
-| [`3b51ce33`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3b51ce33) | Deferred | — | GPT-6 and Qwen catalog generator changes overlap active user-owned model work and require reconciliation before regeneration. |
+| [`3b51ce33`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3b51ce33) | Ported selectively with v0.9.3 | [`bde357e4`](https://github.com/sng-asyncfunc/prime-bun/commit/bde357e4) | Reconciled the GPT-6 reasoning metadata, Copilot Responses routing, and dated Qwen 3.8 Max alias required by the v0.9.3 Astra fallback while retaining the deferred broad live-catalog refresh. |
 | [`36751122`](https://github.com/PrimeIntellect-ai/prime-agent/commit/36751122) | Deferred | — | Usage columns, legends, sorting, and striping build on the excluded cost and roster state contracts and need a separate UI/protocol design. |
 | [`9c54a35d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9c54a35d) | Recreated locally | [`cc08eb4a`](https://github.com/sng-asyncfunc/prime-bun/commit/cc08eb4a) | Updates Prime Bun's lockstep metadata to 0.9.2 without upstream publication, tags, changelog fragments, example-version churn, or distribution code. |
 
 No Python/IPython runtime, telemetry, analytics, trace sharing, semantic-edge provenance, roster/direct-transport wire change, upstream distribution machinery, or generated model catalog change was included in the v0.9.2 synchronization. The selected daemon fix only normalizes an internal process query, so the daemon protocol version and schema revision remain unchanged.
 
+### Prime Agent v0.9.3 disposition
+
+| Prime Agent source | Disposition | Prime Bun trace | Notes |
+| --- | --- | --- | --- |
+| [`47f94a0e`](https://github.com/PrimeIntellect-ai/prime-agent/commit/47f94a0e) | Ported and adapted | [`bde357e4`](https://github.com/sng-asyncfunc/prime-bun/commit/bde357e4) | Added GPT-6 Astra fallbacks for ChatGPT Codex and GitHub Copilot, raised Codex discovery compatibility to 0.153.4, and preserved the Bun-native provider architecture. |
+| [`a062ed22`](https://github.com/PrimeIntellect-ai/prime-agent/commit/a062ed22) | Ported and hardened | [`bde357e4`](https://github.com/sng-asyncfunc/prime-bun/commit/bde357e4) | Centralized Copilot 0.48.1 and VS Code 1.136.1 request identity, advertised Claude Code 2.1.261, and deterministically selected peak numeric UTC-window OpenRouter tariffs without accepting malformed tiers. |
+| [`915c78f4`](https://github.com/PrimeIntellect-ai/prime-agent/commit/915c78f4) | Recreated locally | [`bde357e4`](https://github.com/sng-asyncfunc/prime-bun/commit/bde357e4) | Updated Prime Bun's lockstep metadata and dated package changelogs to 0.9.3 without upstream publication, tags, distribution code, or changelog fragments. |
+
+The previously deferred [`3b51ce33`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3b51ce33) generator prerequisite was selectively reconciled through a deterministic existing-catalog update mode; [`3484f06a`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3484f06a) remains deferred because a broad mutable catalog refresh would overwrite unrelated user-owned model work. No Python/IPython runtime, telemetry, analytics, trace sharing, internal governance, upstream distribution machinery, or daemon protocol change was included in the v0.9.3 synchronization.
+
 ### Future-agent pickup procedure
 
 1. Fetch without adding or mutating a persistent remote: `git fetch https://github.com/PrimeIntellect-ai/prime-agent.git main`.
-2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 9c54a35d..FETCH_HEAD`.
-3. Revisit the deferred model-catalog group only after the user-owned generator changes have been reconciled.
+2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 915c78f4..FETCH_HEAD`.
+3. Revisit the deferred broad model-catalog refresh only after the user-owned generator changes have been reconciled; retain the scoped existing-catalog update path for release-critical identity and fallback changes.
 4. Classify every upstream commit as ported, adapted, excluded, informational, or deferred; add both upstream and Prime Bun commit links here.
 5. Do not blindly cherry-pick daemon, dependency, release, Homebrew, or telemetry changes; preserve Prime Bun protocol capability gates, Bun runtime behavior, and dependency-age rules.
 6. After code ports, run `npm run check`, focused tests for every changed behavior, live full-model dogfood, and a Fable5 go/no-go gate when the change is cross-cutting.
@@ -295,6 +305,16 @@ No Python/IPython runtime, telemetry, analytics, trace sharing, semantic-edge pr
 - Grok wrote and byte-verified an exact 96-byte fenced Markdown payload containing nested backticks, quotes, and a template expression; the independently reproduced SHA-256 was `70dc9c10eeeb6dd8a1559dfa7b566855f0356bc8dce2e0522da6d4cf87c689d5`.
 - A 2,000,000-character JavaScript result stayed bounded to 65,536 expanded characters; 20 additional toggles remained responsive without monotonic RSS growth, Ctrl-C interrupted a synchronous 30-second cell, the next cell recovered, and a quoted/backticked draft survived agents-view handoff.
 - Fable5 twice blocked delivery on rolling-upgrade identity gaps, first across shared lifecycle consumers and then persisted supervisor worker descriptors; after tri-state legacy matching and red/green regressions covered both, its final verdict was `SATISFIED_PROCEED` for implementation commit, ledger hash substitution, main fast-forward, and non-force push.
+
+### Verification for the 2026-09-07 synchronization
+
+- `npm run check` passed for Prime Bun 0.9.3 across 953 files, tsgo, installer rendering, and browser smoke; focused AI and coding-agent suites passed 23 tests covering peak tariff selection, shared Copilot identity, GPT-6 Astra reasoning/routes, OAuth headers, and the Codex discovery floor.
+- The scoped existing-catalog generator produced the same `563dd69cddb1997479753f52e640e71f4e51c04c4a3a8529cf062bac39e5a172` SHA-256 across three consecutive runs and changed only existing Copilot identity/routes plus the two GPT-6 Astra rows.
+- Authenticated Grok 4.3 completed a bounded no-edit repository audit, wrote an exact 120-byte fenced Markdown payload containing quotes, an apostrophe, backticks, and a template expression through one structured write, and executed persistent plain JavaScript state without syntax errors.
+- A 2,000,000-character JavaScript result remained bounded and responsive; after 20 rapid expansion toggles aggregate source-process RSS settled lower rather than growing monotonically, a synchronous 30-second cell cancelled, and the replacement worker restored the global for a 6 ms recovery cell.
+- A draft containing quotes, backticks, and a template expression survived stash/restore exactly; explicit fresh-client resume restored the transcript and returned the persisted global in 123 ms.
+- Grok placed `timeoutSeconds` on one search action during the audit, received a precise validation error, removed it on the next turn, and completed; Fable5 classified this recoverable model/schema mismatch as non-blocking because the structured-action schema was unchanged by the sync.
+- Fable5 first blocked delivery on missing dated package release headers and the deferred Qwen/GPT-6 prerequisite trace; after both were corrected, its final verdict was `SATISFIED_PROCEED` for safe fast-forward and non-force push.
 
 ## 2026-08-08 to 2026-08-09
 

@@ -1,9 +1,13 @@
-import { type ChildProcess, execFileSync } from "node:child_process";
+import { type ChildProcess, execFileSync, type SpawnOptions, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { basename } from "node:path";
 
 const EXIT_STDIO_GRACE_MS = 100;
+
+export function spawnHidden(command: string, args: readonly string[], options: SpawnOptions = {}): ChildProcess {
+	return spawn(command, args, { ...options, windowsHide: true });
+}
 
 const WINDOWS_SHELL_COMMANDS = new Set(["npm", "npx", "pnpm", "yarn", "yarnpkg", "corepack"]);
 

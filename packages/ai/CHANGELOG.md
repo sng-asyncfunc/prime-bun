@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-09-09
+
+- Changed package builds to use the committed model catalog instead of refreshing live provider data.
+
 ## [0.9.3] - 2026-09-07
 
 - Added GPT-6 Astra fallbacks for ChatGPT Codex and GitHub Copilot with mandatory reasoning levels.

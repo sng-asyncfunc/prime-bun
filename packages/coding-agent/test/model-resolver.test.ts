@@ -1,4 +1,4 @@
-import type { Model } from "@earendil-works/pi-ai";
+import { getModels, type Model } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
 import {
 	defaultModelPerProvider,
@@ -429,7 +429,7 @@ describe("default model selection", () => {
 	});
 
 	test("zai, minimax, and cerebras defaults track current models", () => {
-		expect(defaultModelPerProvider.zai).toBe("glm-5.1");
+		expect(defaultModelPerProvider.zai).toBe("glm-5.2");
 		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
 		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
 		expect(defaultModelPerProvider.cerebras).toBe("zai-glm-4.7");
@@ -438,6 +438,13 @@ describe("default model selection", () => {
 	test("ai-gateway default tracks current model", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
 		expect(defaultModelPerProvider["cloudflare-ai-gateway"]).toBe("claude-sonnet-4-5");
+	});
+
+	test("Prime Inference and Z.ai defaults exist in the committed catalog", () => {
+		expect(
+			getModels("prime-inference").some((model) => model.id === defaultModelPerProvider["prime-inference"]),
+		).toBe(true);
+		expect(getModels("zai").some((model) => model.id === defaultModelPerProvider.zai)).toBe(true);
 	});
 
 	test("findInitialModel accepts explicit provider custom model ids", async () => {

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-09-09
+
+- Fixed repeated session listings rescanning complete transcripts, returning duplicate objects, and trusting replaced or truncated files.
+- Fixed interrupted session writes leaving unreadable JSONL tails by repairing crash damage before append or resume and rewriting session files atomically.
+- Fixed shell output-spill failures escaping into the agent and reporting unavailable full-output paths.
+- Fixed oversized single-line output truncation losing its content when the result ended with a newline.
+- Fixed malformed high-bit WebP chunk sizes hanging image metadata inspection and UTF-8 BOMs hiding frontmatter.
+- Fixed compaction failing when trailing tool results left no later valid cut point.
+- Changed piped stdin, file context, and CLI instructions to remain separate prompt blocks.
+- Changed the Z.ai default to the committed GLM 5.2 model while retaining Prime Inference GLM 5.2 until GLM 5.3 is cataloged.
+- Changed non-interactive shell processes to stay hidden on Windows.
+
 ## [0.9.3] - 2026-09-07
 
 - Fixed ChatGPT model discovery omitting GPT-6 Astra by advertising Codex client compatibility 0.153.4.

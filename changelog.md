@@ -43,12 +43,12 @@ The upgrade lowers steady-state memory and improves most kernel paths, but it do
 
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-09-07.
+Last refreshed: 2026-09-09.
 
-- Upstream baseline: Prime Agent [`v0.9.3` / `915c78f4`](https://github.com/PrimeIntellect-ai/prime-agent/commit/915c78f4).
-- Last fully dispositioned upstream commit: [`915c78f4`](https://github.com/PrimeIntellect-ai/prime-agent/commit/915c78f4).
-- Upstream release observed at: [`v0.9.3`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.3).
-- Prime Bun synchronization checkpoint: [`v0.9.3` / `bde357e4`](https://github.com/sng-asyncfunc/prime-bun/commit/bde357e4).
+- Upstream baseline: Prime Agent [`v0.9.4` / `f771dfce`](https://github.com/PrimeIntellect-ai/prime-agent/commit/f771dfce).
+- Last fully dispositioned upstream commit: [`f771dfce`](https://github.com/PrimeIntellect-ai/prime-agent/commit/f771dfce).
+- Upstream release observed at: [`v0.9.4`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.4).
+- Prime Bun synchronization checkpoint: `v0.9.4` on `codex/sync-prime-agent-v0.9.4`; replace this branch trace with the final implementation commit after verification.
 - Policy: port behavior selectively, adapt it to the Bun architecture, and never inherit Prime Agent telemetry, analytics, release metadata, or distribution-specific code without an explicit decision.
 
 ### Dispositioned Prime Agent commits after v0.7.1
@@ -231,10 +231,27 @@ No Python/IPython runtime, telemetry, analytics, trace sharing, semantic-edge pr
 
 The previously deferred [`3b51ce33`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3b51ce33) generator prerequisite was selectively reconciled through a deterministic existing-catalog update mode; [`3484f06a`](https://github.com/PrimeIntellect-ai/prime-agent/commit/3484f06a) remains deferred because a broad mutable catalog refresh would overwrite unrelated user-owned model work. No Python/IPython runtime, telemetry, analytics, trace sharing, internal governance, upstream distribution machinery, or daemon protocol change was included in the v0.9.3 synchronization.
 
+### Prime Agent v0.9.4 disposition
+
+| Prime Agent source | Disposition | Prime Bun trace | Notes |
+| --- | --- | --- | --- |
+| [`844e8554`](https://github.com/PrimeIntellect-ai/prime-agent/commit/844e8554) | Ported selectively and adapted | Pending final implementation commit | Added bounded incremental session scans, crash-tail repair, atomic session rewrites, output-spill degradation, correct oversized-line truncation, safe compaction fallback, separated initial prompt blocks, BOM frontmatter support, and terminating WebP metadata scans. Excluded Python, event-log, semantic-edge, telemetry, and coupled daemon-topology changes. |
+| [`8a1e9580`](https://github.com/PrimeIntellect-ai/prime-agent/commit/8a1e9580) | Deferred | — | Retry ownership and structured authentication recovery span agent, provider, compaction, daemon, and refinement lifecycles; a partial port would create competing retry owners and needs its own compatibility cycle. |
+| [`2ce44317`](https://github.com/PrimeIntellect-ai/prime-agent/commit/2ce44317) | Ported selectively | Pending final implementation commit | Kept the portable hidden-spawn path used by Bash tools; Python-kernel and broad Windows daemon changes are not applicable or require a dedicated platform pass. |
+| [`b9cf467e`](https://github.com/PrimeIntellect-ai/prime-agent/commit/b9cf467e) | Deferred selectively | — | The live Prime Inference catalog overlaps user-owned generator work, background Bash is Python-runtime work, and root-session/agents-view changes cross intentionally diverged daemon and UI contracts. |
+| [`9c8230df`](https://github.com/PrimeIntellect-ai/prime-agent/commit/9c8230df) | Deferred | — | Headless daemon theme initialization is useful but modifies the diverged daemon worker lifecycle and needs a focused compatibility regression before adoption. |
+| [`bf8894af`](https://github.com/PrimeIntellect-ai/prime-agent/commit/bf8894af) | Deferred | — | Resolving assistant Markdown links against session cwd is valuable but crosses the diverged interactive renderer; it remains isolated follow-up work rather than release-critical churn. |
+| [`0894de1d`](https://github.com/PrimeIntellect-ai/prime-agent/commit/0894de1d) | Ported | Pending final implementation commit | Package builds now consume the reviewed committed model catalog instead of changing artifacts through live provider fetches. |
+| [`0c687325`](https://github.com/PrimeIntellect-ai/prime-agent/commit/0c687325) | Not ported | — | Removing the inactive-session toggle deletes intentional configurable behavior and requires explicit product approval under Prime Bun's development rules. |
+| [`4ec05a09`](https://github.com/PrimeIntellect-ai/prime-agent/commit/4ec05a09) | Deferred and hardened locally | Pending final implementation commit | GLM 5.3 is absent from Prime Bun's committed catalog, so Prime Inference retains resolvable GLM 5.2 and direct Z.ai moves from its dangling GLM 5.1 default to cataloged GLM 5.2. |
+| [`f771dfce`](https://github.com/PrimeIntellect-ai/prime-agent/commit/f771dfce) | Recreated locally | Pending final implementation commit | Updates Prime Bun's lockstep package metadata and dated changelogs to 0.9.4 without upstream publication, tags, fragments, Python runtime, or distribution machinery. |
+
+The v0.9.4 synchronization changes no daemon command, event, response shape, capability, protocol version, or schema revision. No Python/IPython runtime, proprietary telemetry, analytics, trace sharing, semantic-edge collection, internal governance, upstream release machinery, or generated model catalog edit was included.
+
 ### Future-agent pickup procedure
 
 1. Fetch without adding or mutating a persistent remote: `git fetch https://github.com/PrimeIntellect-ai/prime-agent.git main`.
-2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 915c78f4..FETCH_HEAD`.
+2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline f771dfce..FETCH_HEAD`.
 3. Revisit the deferred broad model-catalog refresh only after the user-owned generator changes have been reconciled; retain the scoped existing-catalog update path for release-critical identity and fallback changes.
 4. Classify every upstream commit as ported, adapted, excluded, informational, or deferred; add both upstream and Prime Bun commit links here.
 5. Do not blindly cherry-pick daemon, dependency, release, Homebrew, or telemetry changes; preserve Prime Bun protocol capability gates, Bun runtime behavior, and dependency-age rules.

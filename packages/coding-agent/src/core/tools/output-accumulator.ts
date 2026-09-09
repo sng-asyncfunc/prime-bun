@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
+import { createWriteStream, rmSync, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.js";
@@ -19,6 +19,59 @@ export interface OutputSnapshot {
 function defaultTempFilePath(prefix: string): string {
 	const id = randomBytes(8).toString("hex");
 	return join(tmpdir(), `${prefix}-${id}.log`);
+}
+
+export class OutputSpill {
+	private path?: string;
+	private stream?: WriteStream;
+	private failed = false;
+
+	constructor(private readonly prefix: string) {}
+
+	get isOpen(): boolean {
+		return this.stream !== undefined;
+	}
+
+	get currentPath(): string | undefined {
+		return this.path;
+	}
+
+	open(replay: Iterable<Buffer | string>): void {
+		if (this.stream || this.failed) return;
+		this.path = defaultTempFilePath(this.prefix);
+		const stream = createWriteStream(this.path);
+		stream.on("error", () => {
+			this.failed = true;
+			const partial = this.path;
+			this.path = undefined;
+			if (this.stream === stream) this.stream = undefined;
+			stream.once("close", () => {
+				try {
+					if (partial) rmSync(partial, { force: true });
+				} catch {
+					// Cleanup is best-effort after a degraded spill.
+				}
+			});
+		});
+		this.stream = stream;
+		for (const chunk of replay) stream.write(chunk);
+	}
+
+	write(chunk: Buffer | string): void {
+		this.stream?.write(chunk);
+	}
+
+	async finalize(): Promise<string | undefined> {
+		const stream = this.stream;
+		this.stream = undefined;
+		if (stream && !stream.closed) {
+			await new Promise<void>((resolve) => {
+				stream.once("close", resolve);
+				stream.end();
+			});
+		}
+		return this.failed ? undefined : this.path;
+	}
 }
 
 function byteLength(text: string): number {
@@ -49,14 +102,14 @@ export class OutputAccumulator {
 	private currentLineBytes = 0;
 	private finished = false;
 
-	private tempFilePath: string | undefined;
-	private tempFileStream: WriteStream | undefined;
+	private readonly spill: OutputSpill;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 		this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 		this.maxRollingBytes = Math.max(this.maxBytes * 2, 1);
 		this.tempFilePrefix = options.tempFilePrefix ?? "pi-output";
+		this.spill = new OutputSpill(this.tempFilePrefix);
 	}
 
 	append(data: Buffer): void {
@@ -67,9 +120,9 @@ export class OutputAccumulator {
 		this.totalRawBytes += data.length;
 		this.appendDecodedText(this.decoder.decode(data, { stream: true }));
 
-		if (this.tempFileStream || this.shouldUseTempFile()) {
+		if (this.spill.isOpen || this.shouldUseTempFile()) {
 			this.ensureTempFile();
-			this.tempFileStream?.write(data);
+			this.spill.write(data);
 		} else if (data.length > 0) {
 			this.rawChunks.push(data);
 		}
@@ -86,7 +139,7 @@ export class OutputAccumulator {
 		}
 	}
 
-	snapshot(options: { persistIfTruncated?: boolean } = {}): OutputSnapshot {
+	snapshot(): OutputSnapshot {
 		const tailTruncation = truncateTail(this.getSnapshotText(), {
 			maxLines: this.maxLines,
 			maxBytes: this.maxBytes,
@@ -105,38 +158,15 @@ export class OutputAccumulator {
 			maxBytes: this.maxBytes,
 		};
 
-		if (options.persistIfTruncated && truncation.truncated) {
-			this.ensureTempFile();
-		}
-
 		return {
 			content: truncation.content,
 			truncation,
-			fullOutputPath: this.tempFilePath,
+			fullOutputPath: this.spill.currentPath,
 		};
 	}
 
 	async closeTempFile(): Promise<void> {
-		if (!this.tempFileStream) {
-			return;
-		}
-
-		const stream = this.tempFileStream;
-		this.tempFileStream = undefined;
-
-		await new Promise<void>((resolve, reject) => {
-			const onError = (error: Error) => {
-				stream.off("finish", onFinish);
-				reject(error);
-			};
-			const onFinish = () => {
-				stream.off("error", onError);
-				resolve();
-			};
-			stream.once("error", onError);
-			stream.once("finish", onFinish);
-			stream.end();
-		});
+		await this.spill.finalize();
 	}
 
 	getLastLineBytes(): number {
@@ -203,14 +233,7 @@ export class OutputAccumulator {
 	}
 
 	private ensureTempFile(): void {
-		if (this.tempFilePath) {
-			return;
-		}
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix);
-		this.tempFileStream = createWriteStream(this.tempFilePath);
-		for (const chunk of this.rawChunks) {
-			this.tempFileStream.write(chunk);
-		}
+		this.spill.open(this.rawChunks);
 		this.rawChunks = [];
 	}
 }

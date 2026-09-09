@@ -1,6 +1,7 @@
+import type * as PhotonModule from "@silvia-odwyer/photon-node";
 import type { PhotonImageType } from "./photon.js";
 
-type Photon = typeof import("@silvia-odwyer/photon-node");
+type Photon = Pick<typeof PhotonModule, "PhotonImage" | "fliph" | "flipv">;
 
 function readOrientationFromTiff(bytes: Uint8Array, tiffStart: number): number {
 	if (tiffStart + 8 > bytes.length) return 1;
@@ -14,7 +15,7 @@ function readOrientationFromTiff(bytes: Uint8Array, tiffStart: number): number {
 	};
 
 	const read32 = (pos: number): number => {
-		if (le) return bytes[pos] | (bytes[pos + 1] << 8) | (bytes[pos + 2] << 16) | (bytes[pos + 3] << 24);
+		if (le) return (bytes[pos] | (bytes[pos + 1] << 8) | (bytes[pos + 2] << 16) | (bytes[pos + 3] << 24)) >>> 0;
 		return ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
 	};
 
@@ -67,7 +68,7 @@ function findWebpTiffOffset(bytes: Uint8Array): number {
 	while (offset + 8 <= bytes.length) {
 		const chunkId = String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
 		const chunkSize =
-			bytes[offset + 4] | (bytes[offset + 5] << 8) | (bytes[offset + 6] << 16) | (bytes[offset + 7] << 24);
+			(bytes[offset + 4] | (bytes[offset + 5] << 8) | (bytes[offset + 6] << 16) | (bytes[offset + 7] << 24)) >>> 0;
 		const dataStart = offset + 8;
 
 		if (chunkId === "EXIF") {

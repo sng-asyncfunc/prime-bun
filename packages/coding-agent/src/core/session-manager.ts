@@ -3,23 +3,23 @@ import type { AssistantMessage, ImageContent, Message, ServiceTier, TextContent,
 import { randomUUID } from "crypto";
 import {
 	appendFileSync,
-	chmodSync,
 	chownSync,
+	closeSync,
 	existsSync,
+	fstatSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	readFileSync,
-	realpathSync,
-	renameSync,
-	rmSync,
+	readSync,
 	statSync,
-	writeFileSync,
 } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
-import { readFirstLineSync, readLinesAsBuffers } from "../utils/file-lines.js";
+import { realpathIfPresentSync, writeFileAtomicSync } from "../utils/atomic-file.js";
+import { readBytesSync, readFirstLineSync, readLinesAsBuffers } from "../utils/file-lines.js";
 import { captureGitContext, type GitContext, gitContextsEqual } from "../utils/git.js";
 import {
 	type BashExecutionMessage,
@@ -52,15 +52,6 @@ const CONTENT_ENTRY_TYPES = new Set([
 	"compaction",
 	"branch_summary",
 ]);
-
-function realpathIfPresent(path: string): string {
-	try {
-		return realpathSync(path);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return path;
-		throw error;
-	}
-}
 
 function statMetadataIfPresent(path: string): { mode: number; uid: number; gid: number } | undefined {
 	try {
@@ -660,6 +651,118 @@ async function parseEntriesFromBufferAsync(buffer: Buffer): Promise<FileEntry[]>
 	return entries;
 }
 
+const REPAIR_SUSPICION_WINDOW_BYTES = 1024 * 1024;
+
+function tailLooksDamaged(targetPath: string): boolean {
+	let descriptor: number;
+	try {
+		descriptor = openSync(targetPath, "r");
+	} catch {
+		return false;
+	}
+	try {
+		const size = fstatSync(descriptor).size;
+		if (size === 0) return false;
+		const windowBytes = Math.min(size, REPAIR_SUSPICION_WINDOW_BYTES);
+		const window = Buffer.allocUnsafe(windowBytes);
+		readSync(descriptor, window, 0, windowBytes, size - windowBytes);
+		if (window.includes(0)) return true;
+		if (window[windowBytes - 1] !== 0x0a) return true;
+		const previousNewline = window.lastIndexOf(0x0a, windowBytes - 2);
+		if (previousNewline === -1 && windowBytes < size) return true;
+		const lastLine = window.subarray(previousNewline + 1, windowBytes - 1);
+		return lastLine.length > 0 && !parsesAsJson(lastLine);
+	} catch {
+		return true;
+	} finally {
+		closeSync(descriptor);
+	}
+}
+
+function repairJsonlDamage(filePath: string): void {
+	const targetPath = realpathIfPresentSync(filePath);
+	if (!tailLooksDamaged(targetPath)) return;
+	let buffer: Buffer;
+	let snapshot: { size: number; mtimeMs: number };
+	try {
+		buffer = readFileSync(targetPath);
+		const measured = statSync(targetPath);
+		snapshot = { size: measured.size, mtimeMs: measured.mtimeMs };
+	} catch {
+		return;
+	}
+	if (buffer.length === 0 || snapshot.size !== buffer.length) return;
+	const keptLines: Buffer[] = [];
+	let recoveredNulLines = 0;
+	let droppedLines = 0;
+	let repairedTail = false;
+	let dirty = false;
+	let start = 0;
+	while (start < buffer.length) {
+		let end = buffer.indexOf(0x0a, start);
+		const terminated = end !== -1;
+		if (!terminated) end = buffer.length;
+		let lineStart = start;
+		while (lineStart < end && buffer[lineStart] === 0) lineStart++;
+		const line = buffer.subarray(lineStart, end);
+		if (lineStart > start) {
+			dirty = true;
+			if (line.length > 0 && parsesAsJson(line)) {
+				keptLines.push(line);
+				recoveredNulLines++;
+			} else {
+				droppedLines++;
+			}
+		} else if (!terminated) {
+			dirty = true;
+			if (line.length > 0 && parsesAsJson(line)) {
+				keptLines.push(line);
+				repairedTail = true;
+			} else {
+				droppedLines++;
+			}
+		} else if (end + 1 >= buffer.length && line.length > 0 && !parsesAsJson(line)) {
+			dirty = true;
+			droppedLines++;
+		} else {
+			keptLines.push(line);
+		}
+		start = end + 1;
+	}
+	if (!dirty) return;
+	const metadata = statMetadataIfPresent(targetPath);
+	const content = keptLines.length > 0 ? `${keptLines.map((line) => line.toString("utf8")).join("\n")}\n` : "";
+	try {
+		writeFileAtomicSync(targetPath, content, {
+			...(metadata === undefined ? {} : { mode: metadata.mode }),
+			beforeRename: (tempPath) => {
+				if (metadata !== undefined) chownSync(tempPath, metadata.uid, metadata.gid);
+				const current = statSync(targetPath);
+				if (current.size !== snapshot.size || current.mtimeMs !== snapshot.mtimeMs) {
+					throw new RepairSupersededError();
+				}
+			},
+		});
+	} catch (error) {
+		if (error instanceof RepairSupersededError) return;
+		throw error;
+	}
+	console.error(
+		`Repaired crash damage in ${targetPath}: recovered ${recoveredNulLines} zero-filled line(s), dropped ${droppedLines} unrecoverable line(s)${repairedTail ? ", restored the trailing newline" : ""}`,
+	);
+}
+
+class RepairSupersededError extends Error {}
+
+function parsesAsJson(line: Buffer): boolean {
+	try {
+		JSON.parse(line.toString("utf8"));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function finalizeLoadedEntries(entries: FileEntry[]): FileEntry[] {
 	if (entries.length === 0) return entries;
 	const header = entries[0];
@@ -1003,140 +1106,226 @@ function extractOversizedMessageSummary(line: string): {
 	};
 }
 
-interface SessionInfoCacheEntry {
-	size: number;
+interface SessionScanAccumulator {
+	header?: SessionHeader;
+	invalid: boolean;
+	messageCount: number;
+	firstMessage: string;
+	allMessagesText: string;
+	name?: string;
+	state?: SessionState;
+	agentStatus?: AgentStatus;
+	lastActivityTime?: number;
+}
+
+interface SessionScanState {
+	fileSize: number;
 	mtimeMs: number;
+	dev: number;
+	ino: number;
+	offset: number;
+	tail: Buffer;
+	accumulator: SessionScanAccumulator;
 	info: SessionInfo | null;
 }
 
-// Session files are append-only, so an unchanged (size, mtimeMs) means identical
-// content: cache list metadata and rescan only files that changed.
-const sessionInfoCache = new Map<string, SessionInfoCacheEntry>();
+const SESSION_SCAN_RESUME_TAIL_BYTES = 16;
+const SESSION_SCAN_MAX_STATES = 256;
+const NEWLINE_BUFFER = Buffer.from("\n");
+const sessionScanStates = new Map<string, SessionScanState>();
+const sessionScanQueue = new Map<string, Promise<SessionInfo | null>>();
 
-export async function readSessionInfo(filePath: string): Promise<SessionInfo | null> {
+export function readSessionInfo(filePath: string): Promise<SessionInfo | null> {
+	const previous = sessionScanQueue.get(filePath);
+	const scan = previous
+		? previous.then(
+				() => scanSessionInfo(filePath),
+				() => scanSessionInfo(filePath),
+			)
+		: scanSessionInfo(filePath);
+	sessionScanQueue.set(filePath, scan);
+	const cleanup = () => {
+		if (sessionScanQueue.get(filePath) === scan) sessionScanQueue.delete(filePath);
+	};
+	scan.then(cleanup, cleanup);
+	return scan;
+}
+
+function dropSessionScanState(filePath: string): void {
+	sessionScanStates.delete(filePath);
+}
+
+function storeSessionScanState(filePath: string, state: SessionScanState): void {
+	sessionScanStates.delete(filePath);
+	sessionScanStates.set(filePath, state);
+	for (const oldest of sessionScanStates.keys()) {
+		if (sessionScanStates.size <= SESSION_SCAN_MAX_STATES) break;
+		sessionScanStates.delete(oldest);
+	}
+}
+
+function createSessionScanAccumulator(): SessionScanAccumulator {
+	return { invalid: false, messageCount: 0, firstMessage: "", allMessagesText: "" };
+}
+
+function scannedPrefixIntact(filePath: string, state: SessionScanState): boolean {
+	if (state.offset === 0) return true;
+	try {
+		const start = Math.max(0, state.offset - SESSION_SCAN_RESUME_TAIL_BYTES);
+		return readBytesSync(filePath, start, state.offset).equals(state.tail);
+	} catch {
+		return false;
+	}
+}
+
+function advanceScanTail(tail: Buffer, line: Buffer): Buffer {
+	if (line.length >= SESSION_SCAN_RESUME_TAIL_BYTES - 1) {
+		return Buffer.concat([line.subarray(line.length - (SESSION_SCAN_RESUME_TAIL_BYTES - 1)), NEWLINE_BUFFER]);
+	}
+	const combined = Buffer.concat([tail, line, NEWLINE_BUFFER]);
+	return combined.length <= SESSION_SCAN_RESUME_TAIL_BYTES
+		? combined
+		: Buffer.from(combined.subarray(combined.length - SESSION_SCAN_RESUME_TAIL_BYTES));
+}
+
+async function scanSessionInfo(filePath: string, retryOnReplacement = true): Promise<SessionInfo | null> {
 	let stats: Awaited<ReturnType<typeof stat>>;
 	try {
 		stats = await stat(filePath);
 	} catch {
+		dropSessionScanState(filePath);
 		return null;
 	}
-	const cached = sessionInfoCache.get(filePath);
-	if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
-		return cached.info;
+	const previous = sessionScanStates.get(filePath);
+	const sameFile = previous !== undefined && previous.dev === stats.dev && previous.ino === stats.ino;
+	if (sameFile && previous.fileSize === stats.size && previous.mtimeMs === stats.mtimeMs) {
+		storeSessionScanState(filePath, previous);
+		return previous.info;
 	}
-	const info = await scanSessionInfo(filePath, stats);
-	sessionInfoCache.set(filePath, { size: stats.size, mtimeMs: stats.mtimeMs, info });
-	return info;
+	const resume =
+		previous !== undefined && sameFile && stats.size > previous.fileSize && scannedPrefixIntact(filePath, previous);
+	const state: SessionScanState = resume
+		? previous
+		: {
+				fileSize: 0,
+				mtimeMs: 0,
+				dev: stats.dev,
+				ino: stats.ino,
+				offset: 0,
+				tail: Buffer.alloc(0),
+				accumulator: createSessionScanAccumulator(),
+				info: null,
+			};
+	try {
+		const tornTail = await scanSessionLines(filePath, state, stats.size);
+		state.info = snapshotSessionInfo(state.accumulator, tornTail, filePath, stats);
+	} catch {
+		dropSessionScanState(filePath);
+		return null;
+	}
+	let after: Awaited<ReturnType<typeof stat>> | undefined;
+	try {
+		after = await stat(filePath);
+	} catch {
+		after = undefined;
+	}
+	if (!after || after.dev !== stats.dev || after.ino !== stats.ino) {
+		dropSessionScanState(filePath);
+		return retryOnReplacement ? scanSessionInfo(filePath, false) : null;
+	}
+	state.fileSize = stats.size;
+	state.mtimeMs = stats.mtimeMs;
+	storeSessionScanState(filePath, state);
+	return state.info;
 }
 
-async function scanSessionInfo(filePath: string, stats: Awaited<ReturnType<typeof stat>>): Promise<SessionInfo | null> {
-	try {
-		let header: SessionHeader | undefined;
-		let messageCount = 0;
-		let firstMessage = "";
-		let allMessagesText = "";
-		let name: string | undefined;
-		let state: SessionState | undefined;
-		let agentStatus: AgentStatus | undefined;
-		let lastActivityTime: number | undefined;
+async function scanSessionLines(filePath: string, state: SessionScanState, size: number): Promise<Buffer | undefined> {
+	if (state.accumulator.invalid || state.offset >= size) return undefined;
+	for await (const lineBuffer of readLinesAsBuffers(filePath, { start: state.offset, end: size - 1 })) {
+		const lineEnd = state.offset + lineBuffer.length;
+		if (lineEnd >= size) return lineBuffer;
+		foldSessionScanLine(state.accumulator, lineBuffer);
+		state.tail = advanceScanTail(state.tail, lineBuffer);
+		state.offset = lineEnd + 1;
+		if (state.accumulator.invalid) break;
+	}
+	return undefined;
+}
 
-		for await (const lineBuffer of readLinesAsBuffers(filePath)) {
-			const line = lineBuffer.toString("utf8");
-			if (!line.trim()) continue;
-
-			// Large tool-result entries can be many MB. They do not carry the
-			// session-list metadata we need, and parsing them during every refresh
-			// can exhaust the daemon heap.
-			if (line.length > SESSION_LIST_PARSE_MAX_LINE_CHARS) {
-				if (looksLikeMessageEntry(line)) {
-					messageCount++;
-					const summary = extractOversizedMessageSummary(line);
-					if (typeof summary.timestamp === "number" && (summary.role === "user" || summary.role === "assistant")) {
-						lastActivityTime = Math.max(lastActivityTime ?? 0, summary.timestamp);
-					}
-					if (summary.role === "user" && !firstMessage) {
-						firstMessage = summary.textPreview || "(large message)";
-					}
-				}
-				continue;
+function foldSessionScanLine(accumulator: SessionScanAccumulator, lineBuffer: Buffer): void {
+	const line = lineBuffer.toString("utf8");
+	if (!line.trim()) return;
+	if (line.length > SESSION_LIST_PARSE_MAX_LINE_CHARS) {
+		if (looksLikeMessageEntry(line)) {
+			accumulator.messageCount++;
+			const summary = extractOversizedMessageSummary(line);
+			if (typeof summary.timestamp === "number" && (summary.role === "user" || summary.role === "assistant")) {
+				accumulator.lastActivityTime = Math.max(accumulator.lastActivityTime ?? 0, summary.timestamp);
 			}
-
-			const trimmed = line.trim();
-			let entry: FileEntry;
-			try {
-				entry = JSON.parse(trimmed) as FileEntry;
-			} catch {
-				// Skip malformed lines
-				continue;
-			}
-
-			// Extract session name (use latest, including explicit clears)
-			if (entry.type === "session_info") {
-				const infoEntry = entry as SessionInfoEntry;
-				name = infoEntry.name?.trim() || undefined;
-			}
-			if (entry.type === "session_state") {
-				const stateEntry = entry as SessionStateEntry;
-				const status = normalizeSessionStateStatus(stateEntry.state?.status);
-				if (status) {
-					state = { status };
-				}
-			}
-			// Keep the latest recap/verdict so off-daemon sessions don't all show as
-			// unjudged in the agents view. Append-only, so last seen wins.
-			if (entry.type === "agent_status") {
-				agentStatus = (entry as AgentStatusEntry).status;
-			}
-
-			if (!header) {
-				if (entry.type !== "session") {
-					return null;
-				}
-				header = entry as SessionHeader;
-			}
-
-			lastActivityTime = updateLastActivityTime(lastActivityTime, entry);
-
-			if (entry.type !== "message") continue;
-			messageCount++;
-
-			const message = (entry as SessionMessageEntry).message;
-			if (!isMessageWithContent(message)) continue;
-			if (message.role !== "user" && message.role !== "assistant") continue;
-
-			const textContent = extractTextContent(message);
-			if (!textContent) continue;
-
-			allMessagesText = appendCappedSearchText(allMessagesText, textContent);
-			if (!firstMessage && message.role === "user") {
-				firstMessage = textContent;
+			if (summary.role === "user" && !accumulator.firstMessage) {
+				accumulator.firstMessage = summary.textPreview || "(large message)";
 			}
 		}
-
-		if (!header) return null;
-		const cwd = typeof header.cwd === "string" ? header.cwd : "";
-		const parentSessionPath = header.parentSession;
-		const rlmDepth = resolveSessionRlmDepth(header, filePath);
-		const modified = getSessionModifiedDateFromLastActivity(lastActivityTime, header, stats.mtime);
-
-		return {
-			path: filePath,
-			id: header.id,
-			cwd,
-			name,
-			state,
-			parentSessionPath,
-			rlmDepth,
-			created: new Date(header.timestamp),
-			modified,
-			messageCount,
-			firstMessage: firstMessage || "(no messages)",
-			allMessagesText,
-			agentStatus,
-		};
-	} catch {
-		return null;
+		return;
 	}
+	let entry: FileEntry;
+	try {
+		entry = JSON.parse(line.trim()) as FileEntry;
+	} catch {
+		return;
+	}
+	if (entry.type === "session_info") accumulator.name = entry.name?.trim() || undefined;
+	if (entry.type === "session_state") {
+		const status = normalizeSessionStateStatus(entry.state?.status);
+		if (status) accumulator.state = { status };
+	}
+	if (entry.type === "agent_status") accumulator.agentStatus = entry.status;
+	if (!accumulator.header) {
+		if (entry.type !== "session") {
+			accumulator.invalid = true;
+			return;
+		}
+		accumulator.header = entry;
+	}
+	accumulator.lastActivityTime = updateLastActivityTime(accumulator.lastActivityTime, entry);
+	if (entry.type !== "message") return;
+	accumulator.messageCount++;
+	const message = entry.message;
+	if (!isMessageWithContent(message) || (message.role !== "user" && message.role !== "assistant")) return;
+	const textContent = extractTextContent(message);
+	if (!textContent) return;
+	accumulator.allMessagesText = appendCappedSearchText(accumulator.allMessagesText, textContent);
+	if (!accumulator.firstMessage && message.role === "user") accumulator.firstMessage = textContent;
+}
+
+function snapshotSessionInfo(
+	persistent: SessionScanAccumulator,
+	tornTail: Buffer | undefined,
+	filePath: string,
+	stats: Awaited<ReturnType<typeof stat>>,
+): SessionInfo | null {
+	let accumulator = persistent;
+	if (tornTail !== undefined && tornTail.length > 0 && !persistent.invalid) {
+		accumulator = { ...persistent };
+		foldSessionScanLine(accumulator, tornTail);
+	}
+	if (accumulator.invalid || !accumulator.header) return null;
+	const header = accumulator.header;
+	return {
+		path: filePath,
+		id: header.id,
+		cwd: typeof header.cwd === "string" ? header.cwd : "",
+		name: accumulator.name,
+		state: accumulator.state,
+		parentSessionPath: header.parentSession,
+		rlmDepth: resolveSessionRlmDepth(header, filePath),
+		created: new Date(header.timestamp),
+		modified: getSessionModifiedDateFromLastActivity(accumulator.lastActivityTime, header, stats.mtime),
+		messageCount: accumulator.messageCount,
+		firstMessage: accumulator.firstMessage || "(no messages)",
+		allMessagesText: accumulator.allMessagesText,
+		agentStatus: accumulator.agentStatus,
+	};
 }
 
 export type SessionListProgress = (loaded: number, total: number) => void;
@@ -1155,6 +1344,9 @@ async function listSessionsFromDir(
 ): Promise<SessionInfo[]> {
 	const sessions: SessionInfo[] = [];
 	if (!existsSync(dir)) {
+		for (const key of sessionScanStates.keys()) {
+			if (dirname(key) === dir) dropSessionScanState(key);
+		}
 		return sessions;
 	}
 
@@ -1163,11 +1355,10 @@ async function listSessionsFromDir(
 		const files = dirEntries.filter((f) => f.endsWith(".jsonl")).map((f) => join(dir, f));
 		const total = progressTotal ?? files.length;
 
-		// drop cache entries for deleted files so it stays bounded
 		const present = new Set(files);
-		for (const key of sessionInfoCache.keys()) {
+		for (const key of sessionScanStates.keys()) {
 			if (dirname(key) === dir && !present.has(key)) {
-				sessionInfoCache.delete(key);
+				dropSessionScanState(key);
 			}
 		}
 
@@ -1242,6 +1433,7 @@ export class SessionManager {
 	setSessionFile(sessionFile: string, preloadedEntries?: FileEntry[]): void {
 		this.sessionFile = resolve(sessionFile);
 		if (existsSync(this.sessionFile)) {
+			if (this.persist && preloadedEntries === undefined) repairJsonlDamage(this.sessionFile);
 			this.fileEntries = preloadedEntries ?? loadEntriesFromFile(this.sessionFile);
 
 			// If file was empty or corrupted (no valid header), truncate and start fresh
@@ -1356,21 +1548,16 @@ export class SessionManager {
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
 		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-		const targetPath = realpathIfPresent(this.sessionFile);
+		const targetPath = realpathIfPresentSync(this.sessionFile);
 		const directory = dirname(targetPath);
 		mkdirSync(directory, { recursive: true });
-		const tempPath = join(directory, `.${basename(targetPath)}.${process.pid}.${randomUUID()}.tmp`);
-		try {
-			const metadata = statMetadataIfPresent(targetPath);
-			writeFileSync(tempPath, content, metadata === undefined ? undefined : { mode: metadata.mode });
-			if (metadata !== undefined) {
-				chownSync(tempPath, metadata.uid, metadata.gid);
-				chmodSync(tempPath, metadata.mode);
-			}
-			renameSync(tempPath, targetPath);
-		} finally {
-			rmSync(tempPath, { force: true });
-		}
+		const metadata = statMetadataIfPresent(targetPath);
+		writeFileAtomicSync(targetPath, content, {
+			...(metadata === undefined ? {} : { mode: metadata.mode }),
+			beforeRename: (tempPath) => {
+				if (metadata !== undefined) chownSync(tempPath, metadata.uid, metadata.gid);
+			},
+		});
 		this._notifyPersistListeners();
 	}
 
@@ -2203,6 +2390,7 @@ export class SessionManager {
 		if (!existsSync(path)) {
 			return SessionManager.open(path, sessionDir, cwdOverride);
 		}
+		repairJsonlDamage(path);
 		const entries = await loadEntriesFromFileAsync(path);
 		// empty/corrupt: defer to open() (finalizeLoadedEntries guarantees entries[0] is a valid header otherwise)
 		if (entries.length === 0) {

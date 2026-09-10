@@ -72,10 +72,10 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	// Prime Inference
 	{ provider: "prime-inference", model: "openai/gpt-5.5", label: "prime-inference-gpt-5.5" },
 	// GitHub Copilot
-	{ provider: "github-copilot", model: "claude-sonnet-4.5", label: "copilot-claude-sonnet-4.5" },
-	{ provider: "github-copilot", model: "gpt-5.1-codex", label: "copilot-gpt-5.1-codex" },
-	{ provider: "github-copilot", model: "gemini-3-flash-preview", label: "copilot-gemini-3-flash-preview" },
-	{ provider: "github-copilot", model: "grok-code-fast-1", label: "copilot-grok-code-fast-1" },
+	{ provider: "github-copilot", model: "claude-sonnet-4.6", label: "copilot-claude-sonnet-4.6" },
+	{ provider: "github-copilot", model: "gpt-5.3-codex", label: "copilot-gpt-5.3-codex" },
+	{ provider: "github-copilot", model: "gemini-3.7-flash", label: "copilot-gemini-3.7-flash" },
+	{ provider: "github-copilot", model: "grok-4.6", label: "copilot-grok-4.6" },
 	// Amazon Bedrock
 	{
 		provider: "amazon-bedrock",
@@ -85,19 +85,14 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	// xAI
 	{ provider: "xai", model: "grok-code-fast-1", label: "xai-grok-code-fast-1" },
 	// Cerebras
-	{ provider: "cerebras", model: "zai-glm-4.7", label: "cerebras-zai-glm-4.7" },
+	{ provider: "cerebras", model: "qwen-3.8-27b", label: "cerebras-qwen-3.8-27b" },
 	// Cloudflare Workers AI
 	{ provider: "cloudflare-workers-ai", model: "@cf/moonshotai/kimi-k2.6", label: "cloudflare-kimi-k2.6" },
 	// Cloudflare AI Gateway
 	{
 		provider: "cloudflare-ai-gateway",
-		model: "workers-ai/@cf/moonshotai/kimi-k2.6",
-		label: "cloudflare-gateway-kimi-k2.6",
-	},
-	{
-		provider: "cloudflare-ai-gateway",
-		model: "claude-sonnet-4-5",
-		label: "cloudflare-gateway-claude-sonnet-4-5",
+		model: "claude-sonnet-4.6",
+		label: "cloudflare-gateway-claude-sonnet-4.6",
 		upstreamApiKeyEnv: "ANTHROPIC_API_KEY",
 	},
 	{
@@ -121,12 +116,12 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	{ provider: "opencode", model: "big-pickle", label: "zen-big-pickle" },
 	{ provider: "opencode", model: "claude-sonnet-4-5", label: "zen-claude-sonnet-4-5" },
 	{ provider: "opencode", model: "gemini-3-flash", label: "zen-gemini-3-flash" },
-	{ provider: "opencode", model: "glm-4.7-free", label: "zen-glm-4.7-free" },
+	{ provider: "opencode", model: "glm-5.3-flash", label: "zen-glm-5.3-flash" },
 	{ provider: "opencode", model: "gpt-5.2-codex", label: "zen-gpt-5.2-codex" },
-	{ provider: "opencode", model: "minimax-m2.1-free", label: "zen-minimax-m2.1-free" },
+	{ provider: "opencode", model: "minimax-m2.7", label: "zen-minimax-m2.7" },
 	// OpenCode Go
-	{ provider: "opencode-go", model: "kimi-k2.5", label: "go-kimi-k2.5" },
-	{ provider: "opencode-go", model: "minimax-m2.5", label: "go-minimax-m2.5" },
+	{ provider: "opencode-go", model: "kimi-k3", label: "go-kimi-k3" },
+	{ provider: "opencode-go", model: "minimax-m2.7", label: "go-minimax-m2.7" },
 	// Xiaomi MiMo
 	{ provider: "xiaomi", model: "mimo-v2.5-pro", label: "xiaomi-mimo-v2.5-pro" },
 	{ provider: "xiaomi-token-plan-cn", model: "mimo-v2.5-pro", label: "xiaomi-token-plan-cn-mimo-v2.5-pro" },
@@ -194,6 +189,14 @@ function dumpFailurePayload(params: { label: string; error: string; payload?: un
 	writeFileSync(filename, JSON.stringify(body, null, 2));
 	console.log(`Wrote failure payload to ${filename}`);
 }
+
+describe("Cross-provider handoff catalog fixtures", () => {
+	it.each(PROVIDER_MODEL_PAIRS)("resolves $label", (pair) => {
+		expect(
+			(getModel as (provider: string, modelId: string) => Model<Api> | undefined)(pair.provider, pair.model),
+		).toBeDefined();
+	});
+});
 
 /**
  * Generate a context from a provider/model pair.

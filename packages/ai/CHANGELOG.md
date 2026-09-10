@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- Updated the built-in model catalog from current provider feeds and added direct Gemini 3.7 Flash, Vertex Gemini 3.7 Flash, and DeepSeek V4 Flash Vision fallbacks.
+
+## [0.9.4] - 2026-09-09
+
+- Changed package builds to use the committed model catalog instead of refreshing live provider data.
+
+## [0.9.3] - 2026-09-07
+
+- Added GPT-6 Astra fallbacks for ChatGPT Codex and GitHub Copilot with mandatory reasoning levels.
+- Changed GitHub Copilot requests to advertise Copilot Chat 0.48.1 and VS Code 1.136.1 consistently.
+- Changed Anthropic OAuth requests to advertise Claude Code 2.1.261.
+- Fixed OpenRouter pricing generation selecting lower base tariffs when higher time-window tariffs can apply.
+
 ## [0.9.2] - 2026-09-06
 
 - Fixed Fable 5.x OAuth requests being rejected because Prime Bun advertised an outdated Claude Code version.

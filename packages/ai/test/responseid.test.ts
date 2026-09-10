@@ -103,10 +103,10 @@ describe("responseId E2E Tests", () => {
 		});
 
 		it.skipIf(!githubCopilotToken)(
-			"Anthropic path should expose responseId",
+			"Claude Sonnet 4.6 Anthropic path should expose responseId",
 			{ retry: 3, timeout: 30000 },
 			async () => {
-				const llm = getModel("github-copilot", "claude-sonnet-4.5");
+				const llm = getModel("github-copilot", "claude-sonnet-4.6");
 				await expectResponseId(llm, { apiKey: githubCopilotToken });
 			},
 		);

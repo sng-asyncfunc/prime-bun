@@ -5,6 +5,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { getAnthropicCacheCosts } from "../src/cache-pricing.js";
+import { COPILOT_CLIENT_HEADERS } from "../src/copilot-client-version.js";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
 	CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
@@ -19,6 +20,7 @@ import {
 	type OpenAICompletionsCompat,
 } from "../src/types.js";
 import { MODELS as EXISTING_MODELS } from "../src/models.generated.js";
+import { getPeakOpenRouterPrice } from "./openrouter-pricing.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -62,16 +64,46 @@ interface AiGatewayModel {
 	};
 }
 
-const COPILOT_STATIC_HEADERS = {
-	"User-Agent": "GitHubCopilotChat/0.35.0",
-	"Editor-Version": "vscode/1.107.0",
-	"Editor-Plugin-Version": "copilot-chat/0.35.0",
-	"Copilot-Integration-Id": "vscode-chat",
-} as const;
+const COPILOT_STATIC_HEADERS = COPILOT_CLIENT_HEADERS;
 
 const KIMI_STATIC_HEADERS = {
 	"User-Agent": "KimiCLI/1.5",
 } as const;
+
+const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
+const CODEX_CONTEXT = 272000;
+const CODEX_MAX_TOKENS = 128000;
+
+function createCodexGpt6AstraModel(): Model<"openai-codex-responses"> {
+	return {
+		id: "gpt-6-astra",
+		name: "GPT-6 Astra",
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: CODEX_BASE_URL,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+		contextWindow: CODEX_CONTEXT,
+		maxTokens: CODEX_MAX_TOKENS,
+	};
+}
+
+function createCopilotGpt6AstraModel(): Model<"openai-responses"> {
+	return {
+		id: "gpt-6-astra",
+		name: "GPT-6 Astra",
+		api: "openai-responses",
+		provider: "github-copilot",
+		baseUrl: "https://api.individual.githubcopilot.com",
+		headers: COPILOT_STATIC_HEADERS,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+		contextWindow: CODEX_CONTEXT,
+		maxTokens: CODEX_MAX_TOKENS,
+	};
+}
 
 const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
@@ -203,10 +235,12 @@ const PRIME_INFERENCE_FEATURED_MODELS = new Set([
 	"z-ai/glm-5.2",
 ]);
 
-// Prime ids whose OpenRouter listing uses a different id. Empty today — Prime
-// currently publishes ids that match OpenRouter's, but HF-style ids show up
-// whenever a new route is added, so the mapping stays.
-const PRIME_INFERENCE_OPENROUTER_ALIASES: Record<string, string> = {};
+// Prime ids whose OpenRouter listing uses a different id (e.g. after an
+// OpenRouter route rename); metadata lookups resolve through this mapping.
+const PRIME_INFERENCE_OPENROUTER_ALIASES: Record<string, string> = {
+	// OpenRouter renamed its route to the dated id; Prime still serves the undated one.
+	"qwen/qwen3.8-max": "qwen/qwen3.8-max-0902",
+};
 
 // Conservative fallbacks for catalog models with no OpenRouter match and no
 // override above: an under-declared window degrades gracefully, an
@@ -292,6 +326,18 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	}
 	if (model.id.includes("gpt-5.6")) {
 		mergeThinkingLevelMap(model, { minimal: null, max: "max" });
+	}
+	// GPT-6 reasoning is mandatory with no minimal effort; xhigh/max are supported.
+	if (model.id.includes("gpt-6")) {
+		mergeThinkingLevelMap(model, { minimal: null, xhigh: "xhigh", max: "max" });
+	}
+	if (
+		(model.api === "openai-responses" ||
+			model.api === "azure-openai-responses" ||
+			model.api === "openai-codex-responses") &&
+		model.id.startsWith("gpt-6")
+	) {
+		mergeThinkingLevelMap(model, { off: null });
 	}
 	// Per-family effort support per the Anthropic effort docs. Opus 4.6 / Sonnet 4.6
 	// have no xhigh; Fable 5 / Mythos 5 / Mythos Preview think every turn (off: null).
@@ -747,10 +793,10 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 
 			// Convert pricing from $/token to $/million tokens. OpenRouter uses
 			// negative values as a placeholder for unknown pricing (e.g. auto-beta).
-			const inputCost = Math.max(0, parseFloat(model.pricing?.prompt || "0")) * 1_000_000;
-			const outputCost = Math.max(0, parseFloat(model.pricing?.completion || "0")) * 1_000_000;
-			const cacheReadCost = Math.max(0, parseFloat(model.pricing?.input_cache_read || "0")) * 1_000_000;
-			const cacheWriteCost = Math.max(0, parseFloat(model.pricing?.input_cache_write || "0")) * 1_000_000;
+			const inputCost = getPeakOpenRouterPrice(model.pricing, "prompt");
+			const outputCost = getPeakOpenRouterPrice(model.pricing, "completion");
+			const cacheReadCost = getPeakOpenRouterPrice(model.pricing, "input_cache_read");
+			const cacheWriteCost = getPeakOpenRouterPrice(model.pricing, "input_cache_write");
 
 			const normalizedModel: Model<any> = {
 				id: modelKey,
@@ -1338,8 +1384,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				// Copilot proxies Claude via the Anthropic Messages API
 				const isCopilotClaude = modelId.startsWith("claude-");
-				// gpt-5 models require responses API, others use completions
-				const needsResponsesApi = modelId.startsWith("gpt-5") || modelId.startsWith("oswe");
+				// gpt-5/gpt-6 models require responses API, others use completions
+				const needsResponsesApi =
+					modelId.startsWith("gpt-5") || modelId.startsWith("gpt-6") || modelId.startsWith("oswe");
 
 				const api: Api = isCopilotClaude
 					? "anthropic-messages"
@@ -1543,6 +1590,37 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 }
 
 async function generateModels() {
+	if (process.argv.includes("--update-existing-catalog")) {
+		const providers = EXISTING_MODELS as unknown as Record<string, Record<string, Model<Api>>>;
+		const existingModels: Model<Api>[] = Object.values(providers).flatMap(models =>
+			Object.values(models).map(model => ({
+				...model,
+				headers: model.headers ? { ...model.headers } : undefined,
+				compat: model.compat ? { ...model.compat } : undefined,
+				thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+				input: [...model.input],
+				cost: { ...model.cost },
+			})),
+		);
+
+		for (const model of existingModels) {
+			if (model.provider === "github-copilot") {
+				model.headers = COPILOT_STATIC_HEADERS;
+				if (model.id.startsWith("gpt-6")) model.api = "openai-responses";
+			}
+		}
+
+		for (const model of [createCodexGpt6AstraModel(), createCopilotGpt6AstraModel()]) {
+			const existingIndex = existingModels.findIndex(
+				existing => existing.provider === model.provider && existing.id === model.id,
+			);
+			if (existingIndex === -1) existingModels.push(model);
+			else existingModels[existingIndex] = model;
+		}
+		writeGeneratedModels(existingModels);
+		return;
+	}
+
 	// Fetch models from both sources
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras
 	// OpenRouter: xAI and other providers (excluding Anthropic, Google, OpenAI)
@@ -1723,6 +1801,26 @@ async function generateModels() {
 		});
 	}
 
+	if (!allModels.some((m) => m.provider === "google" && m.id === "gemini-3.7-flash")) {
+		allModels.push({
+			id: "gemini-3.7-flash",
+			name: "Gemini 3.7 Flash",
+			api: "google-generative-ai",
+			baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+			provider: "google",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0.75,
+				output: 3.75,
+				cacheRead: 0.075,
+				cacheWrite: 0,
+			},
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		});
+	}
+
 	// Add missing gpt models
 	if (!allModels.some(m => m.provider === "openai" && m.id === "gpt-5-chat-latest")) {
 		allModels.push({
@@ -1875,6 +1973,24 @@ async function generateModels() {
 			maxTokens: 384000,
 			compat: DEEPSEEK_V4_COMPAT,
 		},
+		{
+			id: "deepseek-v4-flash-vision-exp",
+			name: "DeepSeek V4 Flash Vision Exp",
+			api: "openai-completions",
+			baseUrl: "https://api.deepseek.com",
+			provider: "deepseek",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0.14,
+				output: 0.28,
+				cacheRead: 0.0028,
+				cacheWrite: 0,
+			},
+			contextWindow: 1000000,
+			maxTokens: 384000,
+			compat: DEEPSEEK_V4_COMPAT,
+		},
 	];
 	allModels.push(...deepseekV4Models);
 
@@ -1919,9 +2035,6 @@ async function generateModels() {
 	// OpenAI Codex (ChatGPT OAuth) models
 	// NOTE: These are not fetched from models.dev; we keep a small, explicit list to avoid aliases.
 	// Context window is based on observed server limits (400s above ~272k), not marketing numbers.
-	const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
-	const CODEX_CONTEXT = 272000;
-	const CODEX_MAX_TOKENS = 128000;
 	const codexModels: Model<"openai-codex-responses">[] = [
 		{
 			id: "gpt-5.1",
@@ -2055,6 +2168,7 @@ async function generateModels() {
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
+		createCodexGpt6AstraModel(),
 		{
 			id: "gpt-5.4-mini",
 			name: "GPT-5.4 Mini",
@@ -2182,6 +2296,18 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		},
+		{
+			id: "gemini-3.7-flash",
+			name: "Gemini 3.7 Flash (Vertex)",
+			api: "google-vertex",
+			provider: "google-vertex",
+			baseUrl: VERTEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 },
 			contextWindow: 1048576,
 			maxTokens: 65536,
 		},
@@ -2321,9 +2447,11 @@ async function generateModels() {
 		}));
 	allModels.push(...azureOpenAiModels);
 
-	for (const model of allModels) {
-		applyThinkingLevelMetadata(model);
-	}
+	writeGeneratedModels(allModels);
+}
+
+function writeGeneratedModels(allModels: Model<Api>[]): void {
+	for (const model of allModels) applyThinkingLevelMetadata(model);
 
 	// Group by provider and deduplicate by model ID
 	const providers: Record<string, Record<string, Model<any>>> = {};
@@ -2404,7 +2532,7 @@ export const MODELS = {
 	const totalModels = allModels.length;
 	const reasoningModels = allModels.filter(m => m.reasoning).length;
 
-	console.log(`\nModel Statistics:`);
+	console.log("\nModel Statistics:");
 	console.log(`  Total tool-capable models: ${totalModels}`);
 	console.log(`  Reasoning-capable models: ${reasoningModels}`);
 

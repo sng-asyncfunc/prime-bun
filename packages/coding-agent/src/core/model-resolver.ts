@@ -14,7 +14,7 @@ import { isPrivatePrimeInferenceModel } from "./prime-inference-models.js";
 
 const log = getLogger("coding-agent.model-resolver");
 
-export const PRIME_INFERENCE_DEFAULT_MODEL_ID = "z-ai/glm-5.2";
+export const PRIME_INFERENCE_DEFAULT_MODEL_ID = "z-ai/glm-5.3";
 
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<KnownProvider, string> = {
@@ -32,8 +32,8 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"vercel-ai-gateway": "zai/glm-5.1",
 	xai: "grok-4.20-0309-reasoning",
 	groq: "openai/gpt-oss-120b",
-	cerebras: "zai-glm-4.7",
-	zai: "glm-5.1",
+	cerebras: "qwen-3.8-27b",
+	zai: "glm-5.2",
 	mistral: "devstral-medium-latest",
 	minimax: "MiniMax-M2.7",
 	"minimax-cn": "MiniMax-M2.7",
@@ -45,7 +45,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"opencode-go": "kimi-k2.6",
 	"kimi-coding": "kimi-for-coding",
 	"cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
-	"cloudflare-ai-gateway": "claude-sonnet-4-5",
+	"cloudflare-ai-gateway": "claude-sonnet-4.6",
 	xiaomi: "mimo-v2.5-pro",
 	"xiaomi-token-plan-cn": "mimo-v2.5-pro",
 	"xiaomi-token-plan-ams": "mimo-v2.5-pro",

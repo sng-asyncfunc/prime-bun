@@ -178,7 +178,7 @@ describe("Tool Call Without Result Tests", () => {
 	});
 
 	describe.skipIf(!hasCloudflareAiGatewayCredentials())("Cloudflare AI Gateway Provider", () => {
-		const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
+		const model = getModel("cloudflare-ai-gateway", "gpt-5-mini");
 
 		it("should filter out tool calls without corresponding tool results", { retry: 3, timeout: 30000 }, async () => {
 			await testToolCallWithoutResult(model);
@@ -300,10 +300,10 @@ describe("Tool Call Without Result Tests", () => {
 		);
 
 		it.skipIf(!githubCopilotToken)(
-			"claude-sonnet-4 - should filter out tool calls without corresponding tool results",
+			"claude-sonnet-4.6 - should filter out tool calls without corresponding tool results",
 			{ retry: 3, timeout: 30000 },
 			async () => {
-				const model = getModel("github-copilot", "claude-sonnet-4.5");
+				const model = getModel("github-copilot", "claude-sonnet-4.6");
 				await testToolCallWithoutResult(model, { apiKey: githubCopilotToken });
 			},
 		);

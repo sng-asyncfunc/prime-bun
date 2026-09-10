@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Updated delisted Cerebras and Cloudflare AI Gateway defaults and made Prime Inference prefer GLM 5.3.
+
 ## [0.9.4] - 2026-09-09
 
 - Fixed repeated session listings rescanning complete transcripts, returning duplicate objects, and trusting replaced or truncated files.

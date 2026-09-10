@@ -55,6 +55,22 @@ vi.mock("openai", () => {
 	return { default: FakeOpenAI };
 });
 
+function createCloudflareWorkersGatewayModel(): Model<"openai-completions"> {
+	return {
+		id: "workers-ai/@cf/test/model",
+		name: "Cloudflare Workers AI test model",
+		api: "openai-completions",
+		provider: "cloudflare-ai-gateway",
+		baseUrl: "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/compat",
+		compat: { sendSessionAffinityHeaders: true },
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128000,
+		maxTokens: 8192,
+	};
+}
+
 describe("openai-completions empty tools handling", () => {
 	beforeEach(() => {
 		mockState.lastParams = undefined;
@@ -97,7 +113,7 @@ describe("openai-completions empty tools handling", () => {
 	it("uses conservative OpenAI-compatible fields for Cloudflare AI Gateway /compat models", async () => {
 		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
 		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
+		const model = createCloudflareWorkersGatewayModel();
 
 		await streamSimple(
 			model,
@@ -182,7 +198,7 @@ describe("openai-completions empty tools handling", () => {
 	it("sends session affinity headers for Workers AI through Cloudflare AI Gateway", async () => {
 		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
 		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const workersModel = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6")!;
+		const workersModel = createCloudflareWorkersGatewayModel();
 
 		await streamSimple(
 			workersModel,

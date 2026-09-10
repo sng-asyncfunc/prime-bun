@@ -143,9 +143,9 @@ describe("Context overflow error handling", () => {
 
 		// Anthropic model via Copilot
 		it.skipIf(!githubCopilotToken)(
-			"claude-sonnet-4 - should detect overflow via isContextOverflow",
+			"claude-sonnet-4.6 - should detect overflow via isContextOverflow",
 			async () => {
-				const model = getModel("github-copilot", "claude-sonnet-4.5");
+				const model = getModel("github-copilot", "claude-sonnet-4.6");
 				const result = await testContextOverflow(model, githubCopilotToken!);
 				logResult(result);
 

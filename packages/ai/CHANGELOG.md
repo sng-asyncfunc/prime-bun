@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Updated the built-in model catalog from current provider feeds and added direct Gemini 3.7 Flash, Vertex Gemini 3.7 Flash, and DeepSeek V4 Flash Vision fallbacks.
+
 ## [0.9.4] - 2026-09-09
 
 - Changed package builds to use the committed model catalog instead of refreshing live provider data.

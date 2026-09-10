@@ -1801,6 +1801,26 @@ async function generateModels() {
 		});
 	}
 
+	if (!allModels.some((m) => m.provider === "google" && m.id === "gemini-3.7-flash")) {
+		allModels.push({
+			id: "gemini-3.7-flash",
+			name: "Gemini 3.7 Flash",
+			api: "google-generative-ai",
+			baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+			provider: "google",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0.75,
+				output: 3.75,
+				cacheRead: 0.075,
+				cacheWrite: 0,
+			},
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		});
+	}
+
 	// Add missing gpt models
 	if (!allModels.some(m => m.provider === "openai" && m.id === "gpt-5-chat-latest")) {
 		allModels.push({
@@ -1947,6 +1967,24 @@ async function generateModels() {
 				input: 0.435,
 				output: 0.87,
 				cacheRead: 0.003625,
+				cacheWrite: 0,
+			},
+			contextWindow: 1000000,
+			maxTokens: 384000,
+			compat: DEEPSEEK_V4_COMPAT,
+		},
+		{
+			id: "deepseek-v4-flash-vision-exp",
+			name: "DeepSeek V4 Flash Vision Exp",
+			api: "openai-completions",
+			baseUrl: "https://api.deepseek.com",
+			provider: "deepseek",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0.14,
+				output: 0.28,
+				cacheRead: 0.0028,
 				cacheWrite: 0,
 			},
 			contextWindow: 1000000,
@@ -2258,6 +2296,18 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		},
+		{
+			id: "gemini-3.7-flash",
+			name: "Gemini 3.7 Flash (Vertex)",
+			api: "google-vertex",
+			provider: "google-vertex",
+			baseUrl: VERTEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 },
 			contextWindow: 1048576,
 			maxTokens: 65536,
 		},

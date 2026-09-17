@@ -6613,7 +6613,8 @@ export class AgentSession {
 	async waitForIdle(): Promise<void> {
 		while (true) {
 			if (this._actionStore.queuedActions().length > 0) {
-				if (this._sessionInputPumpSuspended || this._queuedWorkPauses.size > 0) {
+				// Rescheduling a blocked pump spins in microtasks and starves the IO that clears it.
+				if (this._isBusyForSessionInput("pump")) {
 					await new Promise<void>((resolve) => this._sessionInputCheckpointWaiters.add(resolve));
 					continue;
 				}
@@ -10573,6 +10574,8 @@ export class AgentSession {
 			return result;
 		} finally {
 			this._bashAbortControllers.delete(abortController);
+			this._notifySessionInputCheckpointChange();
+			this._scheduleSessionInputPump();
 		}
 	}
 
@@ -10617,6 +10620,8 @@ export class AgentSession {
 			);
 		} finally {
 			this._userBashRunning = false;
+			this._notifySessionInputCheckpointChange();
+			this._scheduleSessionInputPump();
 		}
 		// Emitted after the slot is released so clients never observe a bash_end
 		// while the session still rejects new commands as already running.

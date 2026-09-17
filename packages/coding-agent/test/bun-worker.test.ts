@@ -195,11 +195,13 @@ class BunWorkerTestClient {
 
 describe("Bun worker", () => {
 	let bunPath: string;
+	let bunVersion: string;
 	let client: BunWorkerTestClient;
 
 	beforeEach(async () => {
 		const runtime = await resolveBunRuntime();
 		bunPath = runtime.path;
+		bunVersion = runtime.version;
 		client = BunWorkerTestClient.start(bunPath);
 		client.send({
 			bunPath: runtime.path,
@@ -216,7 +218,7 @@ describe("Bun worker", () => {
 		});
 		const ready = await client.waitForType("ready");
 		expect(ready.replyTo).toBe("initialize");
-		expect(ready.bunVersion).toMatch(/^1\.3\./);
+		expect(ready.bunVersion).toBe(bunVersion);
 	});
 
 	afterEach(async () => {
@@ -1319,7 +1321,7 @@ plain.count;
 			expect(manifest.savedNames).toEqual(
 				expect.arrayContaining(["Custom", "callable", "explicitValue", "pathModule", "plain"]),
 			);
-			expect(manifest.bunVersion).toMatch(/^1\.3\./);
+			expect(manifest.bunVersion).toBe(bunVersion);
 			expect(manifest.version).toBe(4);
 
 			client.send({

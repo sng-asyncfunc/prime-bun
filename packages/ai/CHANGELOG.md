@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-09-17
+
+- Fixed orphaned tool results surviving interrupted assistant turns.
+- Fixed LiteLLM maximum-context errors bypassing overflow recovery.
 - Updated the built-in model catalog from current provider feeds and added direct Gemini 3.7 Flash, Vertex Gemini 3.7 Flash, and DeepSeek V4 Flash Vision fallbacks.
+- Added DeepSeek V4.1 Flash as the versionless `deepseek-flash` model with image input, repriced `deepseek-v4-pro` for DeepSeek-V4-Pro-0813, kept the retired `deepseek-v4-flash` ids as V4.1-priced aliases, and picked up the DeepSeek V4.1 routes now published by OpenRouter, Vercel AI Gateway, Prime Inference, OpenCode Go, Fireworks, and Hugging Face.
+- Extended DeepSeek thinking-format detection to the versionless id without narrowing its previous `deepseek-v4` coverage, and split the Kimi K3 price assertions because Prime Inference and OpenRouter now publish different rates.
 
 ## [0.9.4] - 2026-09-09
 

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-09-17
+
+- Fixed literal dollar sequences in prompt-template arguments being expanded a second time.
+- Fixed idle waits starving worker IO and queued prompts remaining stuck after shell completion or failure.
+- Reduced repeated spawn-ledger parsing while preserving external-write detection and caller isolation.
+- Fixed Bun worker regressions checking a retired runtime version instead of the launched runtime identity.
 - Updated delisted Cerebras and Cloudflare AI Gateway defaults and made Prime Inference prefer GLM 5.3.
 
 ## [0.9.4] - 2026-09-09

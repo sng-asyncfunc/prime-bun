@@ -31,7 +31,7 @@ describe("Prime Inference models", () => {
 				"meta-llama/llama-4-maverick",
 				"minimax/minimax-m3",
 				"moonshotai/kimi-k2.7-code",
-				"nvidia/nemotron-3-super-120b-a12b",
+				"nvidia/nemotron-3-nano-30b-a3b",
 				"openai/gpt-5.4",
 				"openai/gpt-5.5",
 				"qwen/qwen3-coder-next",
@@ -82,9 +82,17 @@ describe("Prime Inference models", () => {
 			expect(model.input).toEqual(["text", "image"]);
 			expect(model.contextWindow).toBe(1048576);
 			expect(model.maxTokens).toBe(1048576);
-			expect(model.cost.input).toBe(3);
-			expect(model.cost.output).toBe(15);
 		}
+
+		// The two catalogs publish their own Kimi K3 prices: Prime Inference bills its
+		// own route, OpenRouter lists the upstream provider's rate.
+		const primeModel = getModel("prime-inference", "moonshotai/kimi-k3");
+		expect(primeModel.cost.input).toBe(3.45);
+		expect(primeModel.cost.output).toBe(17.25);
+
+		const openRouterModel = getModel("openrouter", "moonshotai/kimi-k3");
+		expect(openRouterModel.cost.input).toBe(3);
+		expect(openRouterModel.cost.output).toBe(15);
 	});
 
 	it("borrows OpenRouter metadata for non-curated catalog models", () => {
@@ -94,15 +102,15 @@ describe("Prime Inference models", () => {
 		expect(gemini.input).toEqual(["text", "image"]);
 		expect(gemini.reasoning).toBe(true);
 
-		// Modality and reasoning are read from OpenRouter's published spec for the
-		// same upstream model, but the Prime route enforces a smaller window and
-		// output cap than that spec lists (1M/16k), so the curated override wins
-		// for contextWindow and maxTokens.
-		const nemotronSuper = getModel("prime-inference", "nvidia/nemotron-3-super-120b-a12b");
-		expect(nemotronSuper.reasoning).toBe(true);
-		expect(nemotronSuper.input).toEqual(["text"]);
-		expect(nemotronSuper.contextWindow).toBe(262144);
-		expect(nemotronSuper.maxTokens).toBe(4096);
+		const nemotronNano = getModel("prime-inference", "nvidia/nemotron-3-nano-30b-a3b");
+		expect(nemotronNano.reasoning).toBe(true);
+		expect(nemotronNano.input).toEqual(["text"]);
+		expect(nemotronNano.contextWindow).toBe(262144);
+		expect(nemotronNano.maxTokens).toBe(235929);
+
+		const kimi = getModel("prime-inference", "moonshotai/kimi-k2.5");
+		expect(kimi.maxTokens).toBe(65535);
+		expect(getModels("prime-inference").map((model) => model.id)).not.toContain("nvidia/nemotron-3-super-120b-a12b");
 
 		const maverick = getModel("prime-inference", "meta-llama/llama-4-maverick");
 		expect(maverick.contextWindow).toBe(1048576);

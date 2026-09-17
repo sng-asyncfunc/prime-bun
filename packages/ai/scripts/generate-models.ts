@@ -114,7 +114,7 @@ const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 	"github-copilot:claude-sonnet-4.5",
 ]);
 
-const DEEPSEEK_V4_THINKING_LEVEL_MAP = {
+const DEEPSEEK_THINKING_LEVEL_MAP = {
 	minimal: null,
 	low: null,
 	medium: null,
@@ -132,10 +132,21 @@ const KIMI_K3_THINKING_LEVEL_MAP = {
 	max: "max",
 } as const;
 
-const DEEPSEEK_V4_COMPAT: OpenAICompletionsCompat = {
+const DEEPSEEK_COMPAT: OpenAICompletionsCompat = {
 	requiresReasoningContentOnAssistantMessages: true,
 	thinkingFormat: "deepseek",
 };
+
+/**
+ * Matches DeepSeek's thinking-format models. `deepseek-v4` covers the V4 family
+ * plus the v4.1 routes (`deepseek-v4.1-flash`, the fireworks
+ * `deepseek-v4p1-flash` alias); `deepseek-flash` is DeepSeek's versionless
+ * alias that serves DeepSeek-V4.1-Flash. Older ids (v3, r1, chat) do not match.
+ */
+function isDeepSeekThinkingModel(modelId: string): boolean {
+	const id = modelId.toLowerCase();
+	return id.includes("deepseek-v4") || /deepseek[-_/]flash\b/.test(id);
+}
 
 const ZAI_THINKING_COMPAT: OpenAICompletionsCompat = {
 	supportsReasoningEffort: false,
@@ -365,8 +376,8 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("mythos-preview")) {
 		mergeThinkingLevelMap(model, { off: null, max: "max" });
 	}
-	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
-		mergeThinkingLevelMap(model, DEEPSEEK_V4_THINKING_LEVEL_MAP);
+	if (model.api === "openai-completions" && isDeepSeekThinkingModel(model.id)) {
+		mergeThinkingLevelMap(model, DEEPSEEK_THINKING_LEVEL_MAP);
 	}
 	const kimiK3Id = model.id.toLowerCase();
 	if (/^k3(-|$)/.test(kimiK3Id) || /(^|\/)kimi-k3(-|$)/.test(kimiK3Id)) {
@@ -573,7 +584,7 @@ function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: bool
 	const id = modelId.toLowerCase();
 	return (
 		id.includes("thinking") ||
-		id.includes("deepseek-v4") ||
+		isDeepSeekThinkingModel(id) ||
 		id.startsWith("minimax/minimax-m") ||
 		id.startsWith("moonshotai/kimi") ||
 		id.startsWith("x-ai/grok-4") ||
@@ -585,10 +596,10 @@ function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: bool
 
 function getPrimeInferenceCompat(modelId: string): OpenAICompletionsCompat {
 	const id = modelId.toLowerCase();
-	if (id.includes("deepseek-v4")) {
+	if (isDeepSeekThinkingModel(id)) {
 		return {
 			...PRIME_INFERENCE_COMPAT,
-			...DEEPSEEK_V4_COMPAT,
+			...DEEPSEEK_COMPAT,
 		};
 	}
 	if (id.startsWith("z-ai/glm-")) {
@@ -1936,24 +1947,28 @@ async function generateModels() {
 		});
 	}
 
-	const deepseekV4Models: Model<"openai-completions">[] = [
+	// DeepSeek's current first-party models. `deepseek-flash` serves
+	// DeepSeek-V4.1-Flash (thinking by default, vision, 1M context); the dated
+	// `deepseek-v4-pro` route still serves DeepSeek-V4-Pro-0813. Costs are
+	// DeepSeek's published off-peak rate per 1M tokens; peak hours are 2x.
+	const deepseekModels: Model<"openai-completions">[] = [
 		{
-			id: "deepseek-v4-flash",
-			name: "DeepSeek V4 Flash",
+			id: "deepseek-flash",
+			name: "DeepSeek V4.1 Flash",
 			api: "openai-completions",
 			baseUrl: "https://api.deepseek.com",
 			provider: "deepseek",
 			reasoning: true,
-			input: ["text"],
+			input: ["text", "image"],
 			cost: {
-				input: 0.14,
-				output: 0.28,
-				cacheRead: 0.0028,
+				input: 0.15,
+				output: 0.6,
+				cacheRead: 0.003,
 				cacheWrite: 0,
 			},
 			contextWindow: 1000000,
 			maxTokens: 384000,
-			compat: DEEPSEEK_V4_COMPAT,
+			compat: DEEPSEEK_COMPAT,
 		},
 		{
 			id: "deepseek-v4-pro",
@@ -1964,49 +1979,70 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text"],
 			cost: {
-				input: 0.435,
-				output: 0.87,
-				cacheRead: 0.003625,
+				input: 0.66,
+				output: 1.98,
+				cacheRead: 0.022,
 				cacheWrite: 0,
 			},
 			contextWindow: 1000000,
 			maxTokens: 384000,
-			compat: DEEPSEEK_V4_COMPAT,
+			compat: DEEPSEEK_COMPAT,
+		},
+		// Retired V4 Flash ids. DeepSeek still accepts them, but requests are
+		// served by DeepSeek-V4.1-Flash and billed at the Flash price, so they
+		// stay in the catalog as aliases with the V4.1 specs.
+		{
+			id: "deepseek-v4-flash",
+			name: "DeepSeek V4 Flash (legacy id)",
+			api: "openai-completions",
+			baseUrl: "https://api.deepseek.com",
+			provider: "deepseek",
+			reasoning: true,
+			input: ["text"],
+			cost: {
+				input: 0.15,
+				output: 0.6,
+				cacheRead: 0.003,
+				cacheWrite: 0,
+			},
+			contextWindow: 1000000,
+			maxTokens: 384000,
+			compat: DEEPSEEK_COMPAT,
 		},
 		{
 			id: "deepseek-v4-flash-vision-exp",
-			name: "DeepSeek V4 Flash Vision Exp",
+			name: "DeepSeek V4 Flash Vision Exp (legacy id)",
 			api: "openai-completions",
 			baseUrl: "https://api.deepseek.com",
 			provider: "deepseek",
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
-				input: 0.14,
-				output: 0.28,
-				cacheRead: 0.0028,
+				input: 0.15,
+				output: 0.6,
+				cacheRead: 0.003,
 				cacheWrite: 0,
 			},
 			contextWindow: 1000000,
 			maxTokens: 384000,
-			compat: DEEPSEEK_V4_COMPAT,
+			compat: DEEPSEEK_COMPAT,
 		},
 	];
-	allModels.push(...deepseekV4Models);
+	allModels.push(...deepseekModels);
 
 	for (const candidate of allModels) {
-		if (candidate.api === "openai-completions" && candidate.id.includes("deepseek-v4")) {
+		if (candidate.api === "openai-completions" && isDeepSeekThinkingModel(candidate.id)) {
 			candidate.compat = {
 				...candidate.compat,
 				...(candidate.provider === "openrouter"
 					? {
 							requiresReasoningContentOnAssistantMessages:
-								DEEPSEEK_V4_COMPAT.requiresReasoningContentOnAssistantMessages,
-							thinkingFormat: DEEPSEEK_V4_COMPAT.thinkingFormat,
+								DEEPSEEK_COMPAT.requiresReasoningContentOnAssistantMessages,
+							thinkingFormat: DEEPSEEK_COMPAT.thinkingFormat,
 						}
-					: DEEPSEEK_V4_COMPAT),
+					: DEEPSEEK_COMPAT),
 			};
-			mergeThinkingLevelMap(candidate, DEEPSEEK_V4_THINKING_LEVEL_MAP);
+			mergeThinkingLevelMap(candidate, DEEPSEEK_THINKING_LEVEL_MAP);
 		}
 	}
 

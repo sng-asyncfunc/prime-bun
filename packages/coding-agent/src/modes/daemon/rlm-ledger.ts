@@ -306,6 +306,10 @@ export class RlmSpawnLedger {
 	private readonly canonicalSessionsDir: string;
 	private queue: Promise<unknown> = Promise.resolve();
 	private seedAttempted = false;
+	private edgeCache?: {
+		stat: { size: number; mtimeMs: number; ino: number };
+		edges: Map<string, RlmLedgerEdge>;
+	};
 
 	constructor(
 		agentDir: string,
@@ -342,7 +346,7 @@ export class RlmSpawnLedger {
 	appendRenameByChildPath(child: string, name: string): Promise<void> {
 		return this.enqueue(() => {
 			const target = canonicalSessionPath(child);
-			for (const edge of this.replaySync().values()) {
+			for (const edge of this.replaySyncCached().values()) {
 				if (!edge.deleted && canonicalSessionPath(edge.child) === target) {
 					this.appendRecord({ v: 1, op: "rename", at: nowIso(), childId: edge.childId, child: target, name });
 				}
@@ -375,7 +379,11 @@ export class RlmSpawnLedger {
 	 * as cleanup retries.
 	 */
 	edges(includeDeleted = false): Promise<RlmLedgerEdge[]> {
-		return this.enqueue(() => [...this.replaySync().values()].filter((edge) => includeDeleted || !edge.deleted));
+		return this.enqueue(() =>
+			[...this.replaySyncCached().values()]
+				.filter((edge) => includeDeleted || !edge.deleted)
+				.map((edge) => ({ ...edge })),
+		);
 	}
 
 	/**
@@ -394,7 +402,7 @@ export class RlmSpawnLedger {
 		return this.enqueue(async () => {
 			const target = canonicalSessionPath(sessionPath);
 			const family = await this.familyUnlocked();
-			const edges = [...this.replaySync().values()].filter((edge) => !edge.deleted);
+			const edges = [...this.replaySyncCached().values()].filter((edge) => !edge.deleted);
 			const parentByChild = new Map(
 				edges.map((edge) => [canonicalSessionPath(edge.child), canonicalSessionPath(edge.parent)]),
 			);
@@ -466,7 +474,7 @@ export class RlmSpawnLedger {
 		// Advisory, per-process: catches double-admission mistakes inside this
 		// daemon. It is NOT a global uniqueness guarantee — other processes
 		// append to the same file between our read and write.
-		for (const edge of this.replaySync().values()) {
+		for (const edge of this.replaySyncCached().values()) {
 			if (!edge.deleted && canonicalSessionPath(edge.child) === childPath && edge.childId !== input.childId) {
 				throw new Error(`RLM ledger: duplicate child session path ${childPath} (already ${edge.childId})`);
 			}
@@ -484,7 +492,7 @@ export class RlmSpawnLedger {
 	}
 
 	private async familyUnlocked(): Promise<SessionInfo[]> {
-		const edges = [...this.replaySync().values()].filter((edge) => !edge.deleted);
+		const edges = [...this.replaySyncCached().values()].filter((edge) => !edge.deleted);
 		const byChild = new Map<string, RlmLedgerEdge>();
 		for (const edge of edges) {
 			byChild.set(canonicalSessionPath(edge.child), edge);
@@ -697,6 +705,7 @@ export class RlmSpawnLedger {
 	}
 
 	private appendRecord(record: RlmLedgerRecord): void {
+		this.edgeCache = undefined;
 		const dir = dirname(this.path);
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		const isNew = !existsSync(this.path);
@@ -762,6 +771,29 @@ export class RlmSpawnLedger {
 		} catch {
 			// Leave the tail for the reader's torn-line tolerance.
 		}
+	}
+
+	private replaySyncCached(): Map<string, RlmLedgerEdge> {
+		let snapshot: { size: number; mtimeMs: number; ino: number } | undefined;
+		try {
+			const current = statSync(this.path);
+			snapshot = { size: current.size, mtimeMs: current.mtimeMs, ino: current.ino };
+		} catch {
+			this.edgeCache = undefined;
+		}
+		const cache = this.edgeCache;
+		if (
+			snapshot !== undefined &&
+			cache !== undefined &&
+			cache.stat.size === snapshot.size &&
+			cache.stat.mtimeMs === snapshot.mtimeMs &&
+			cache.stat.ino === snapshot.ino
+		) {
+			return cache.edges;
+		}
+		const edges = this.replaySync();
+		this.edgeCache = snapshot === undefined ? undefined : { stat: snapshot, edges };
+		return edges;
 	}
 
 	private replaySync(): Map<string, RlmLedgerEdge> {

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-09-24
+
+- Reduced memory copying while decoding large fragmented session frames from quadratic to linear growth.
+- Fixed failed daemon worker connections preventing subsequent connection attempts on the same client.
+- Preserved tool-call identity and error status in compaction and branch summaries.
+- Fixed transient shell credential failures being cached for the lifetime of the process.
+
 ## [0.9.5] - 2026-09-17
 
 - Fixed literal dollar sequences in prompt-template arguments being expanded a second time.

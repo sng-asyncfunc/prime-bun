@@ -72,6 +72,13 @@ export class DaemonWorkerClient {
 			};
 			socket.once("connect", onConnect);
 			socket.once("error", onError);
+		}).catch((error: unknown) => {
+			if (this.socket === socket) {
+				this.socket = undefined;
+				this.channel = undefined;
+			}
+			socket.destroy();
+			throw error;
 		});
 
 		socket.on("error", (error) => this.notifyClosed(socket, error));

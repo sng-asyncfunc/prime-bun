@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-09-24
+
 ## [0.9.5] - 2026-09-17
 
 - Fixed orphaned tool results surviving interrupted assistant turns.

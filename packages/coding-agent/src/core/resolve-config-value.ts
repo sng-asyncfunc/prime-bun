@@ -7,11 +7,11 @@ import { execSync, spawnSync } from "child_process";
 import { getShellConfig } from "../utils/shell.js";
 
 // Cache for shell command results (persists for process lifetime)
-const commandResultCache = new Map<string, string | undefined>();
+const commandResultCache = new Map<string, string>();
 
 /**
  * Resolve a config value (API key, header value, etc.) to an actual value.
- * - If starts with "!", executes the rest as a shell command and uses stdout (cached)
+ * - If starts with "!", executes the rest as a shell command and uses stdout (successful results are cached)
  * - Otherwise checks environment variable first, then treats as literal (not cached)
  */
 export function resolveConfigValue(config: string): string | undefined {
@@ -89,7 +89,9 @@ function executeCommand(commandConfig: string): string | undefined {
 	}
 
 	const result = executeCommandUncached(commandConfig);
-	commandResultCache.set(commandConfig, result);
+	if (result !== undefined) {
+		commandResultCache.set(commandConfig, result);
+	}
 	return result;
 }
 

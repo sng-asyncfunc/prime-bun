@@ -137,6 +137,7 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 		};
 
 		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+		let sawTerminalEvent = false;
 
 		const abortHandler = () => {
 			if (reader) {
@@ -199,6 +200,7 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 							const proxyEvent = JSON.parse(data) as ProxyAssistantMessageEvent;
 							const event = processProxyEvent(proxyEvent, partial);
 							if (event) {
+								sawTerminalEvent ||= event.type === "done" || event.type === "error";
 								stream.push(event);
 							}
 						}
@@ -210,6 +212,9 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 				throw new Error("Request aborted by user");
 			}
 
+			if (!sawTerminalEvent) {
+				throw new Error("Proxy stream truncated before completion");
+			}
 			stream.end();
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);

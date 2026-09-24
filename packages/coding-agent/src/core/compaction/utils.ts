@@ -99,9 +99,19 @@ function truncateForSummary(text: string, maxChars: number): string {
  *
  * Tool results are truncated to keep the summarization request within
  * reasonable token budgets. Full content is not needed for summarization.
+ *
+ * Tool calls are serialized with a sequential `#N` prefix and results repeat
+ * the matching index, so repeated calls of the same tool pair unambiguously.
  */
 export function serializeConversation(messages: Message[]): string {
 	const parts: string[] = [];
+	// Tool calls are serialized with a 1-based sequential index and results
+	// repeat the index of their call (matched by toolCallId), so repeated
+	// calls of the same tool pair unambiguously in the summarizer input.
+	// The short index stands in for the raw provider toolCallId, which can
+	// exceed 450 characters on some providers.
+	const toolCallIndices = new Map<string, number>();
+	let toolCallIndex = 0;
 
 	for (const msg of messages) {
 		if (msg.role === "user") {
@@ -128,7 +138,9 @@ export function serializeConversation(messages: Message[]): string {
 					const argsStr = Object.entries(args)
 						.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
 						.join(", ");
-					toolCalls.push(`${block.name}(${argsStr})`);
+					toolCallIndex += 1;
+					toolCallIndices.set(block.id, toolCallIndex);
+					toolCalls.push(`#${toolCallIndex} ${block.name}(${argsStr})`);
 				}
 			}
 
@@ -147,7 +159,19 @@ export function serializeConversation(messages: Message[]): string {
 				.map((c) => c.text)
 				.join("");
 			if (content) {
-				parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
+				// Label the tool name, error status, and the index of the
+				// paired call so the summarizer can match each result to
+				// its `#N`-prefixed entry in the [Assistant tool calls]
+				// lines even when the same tool is called repeatedly in
+				// one turn. Results whose call is not part of the input
+				// (extension callers may pass partial message lists)
+				// fall back to the name-only label.
+				const callIndex = toolCallIndices.get(msg.toolCallId);
+				const indexSuffix = callIndex === undefined ? "" : ` #${callIndex}`;
+				const label = msg.isError
+					? `[Tool result (${msg.toolName}, error)${indexSuffix}]`
+					: `[Tool result (${msg.toolName})${indexSuffix}]`;
+				parts.push(`${label}: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
 			}
 		}
 	}

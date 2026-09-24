@@ -1,5 +1,5 @@
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	encodePrivateFrame,
 	PrivateFrameDecoder,
@@ -24,6 +24,45 @@ const isTestHeader: PrivateFrameHeaderValidator<TestHeader> = (value: unknown): 
 };
 
 describe("private worker framing", () => {
+	it("releases consumed frame storage when a tiny next-frame prefix remains", () => {
+		const frame = encodePrivateFrame({ type: "event" }, Buffer.alloc(1024 * 1024, 7));
+		const decoder = new PrivateFrameDecoder(isTestHeader);
+		decoder.push(Buffer.from(frame.subarray(0, 1)));
+		for (let i = 0; i < 5; i++) {
+			const chunk = Buffer.concat([frame.subarray(1), frame.subarray(0, 1)]);
+			expect(decoder.push(chunk)).toHaveLength(1);
+			expect(decoder.bufferedBytes).toBe(1);
+		}
+		// Account for actual backing allocations, including consumed entries and subarray parents.
+		const pending = Reflect.get(decoder, "pending") as Buffer[];
+		const backing = new Set(pending.map((chunk) => chunk.buffer));
+		const retainedBytes = [...backing].reduce((total, buffer) => total + buffer.byteLength, 0);
+		expect(retainedBytes).toBeLessThan(64 * 1024);
+		expect(decoder.push(frame.subarray(1))[0]?.payload.equals(Buffer.alloc(1024 * 1024, 7))).toBe(true);
+		decoder.finish();
+	});
+	it("copies only a linear number of bytes for fragmented large frames", () => {
+		const payload = Buffer.alloc(1024 * 1024, 7);
+		const frame = encodePrivateFrame({ type: "event" }, payload);
+		const decoder = new PrivateFrameDecoder(isTestHeader);
+		const concat = Buffer.concat;
+		let copied = 0;
+		const spy = vi.spyOn(Buffer, "concat").mockImplementation((parts, length) => {
+			const result = concat(parts, length);
+			copied += result.length;
+			return result;
+		});
+		const decoded = [];
+		try {
+			for (let i = 0; i < frame.length; i += 1024) decoded.push(...decoder.push(frame.subarray(i, i + 1024)));
+		} finally {
+			spy.mockRestore();
+		}
+		expect(decoded).toEqual([{ header: { type: "event" }, payload }]);
+		expect(decoder.bufferedBytes).toBe(0);
+		decoder.finish();
+		expect(copied).toBeLessThan(frame.length * 3);
+	});
 	it("decodes headers and opaque payloads across arbitrary chunk boundaries", () => {
 		const first = encodePrivateFrame({ type: "event", requestId: "one" }, Buffer.from([0, 1, 2, 255]));
 		const second = encodePrivateFrame({ type: "response", requestId: "two" }, Buffer.from("payload"));

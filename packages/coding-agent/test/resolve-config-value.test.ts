@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	clearConfigValueCache,
 	resolveConfigValue,
 	resolveConfigValueOrThrow,
 	resolveConfigValueUncached,
@@ -13,6 +14,17 @@ describe("resolveConfigValue env fallback", () => {
 	});
 	afterEach(() => {
 		delete process.env[VAR];
+		clearConfigValueCache();
+	});
+
+	it.each(["empty", "failed"])("retries %s shell credentials but caches successful values", (mode) => {
+		const script = `${mode === "failed" ? `if (!process.env.${VAR}) process.exit(1);` : ""}process.stdout.write(process.env.${VAR} || '')`;
+		const command = `!${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+		expect(resolveConfigValue(command)).toBeUndefined();
+		process.env[VAR] = "recovered";
+		expect(resolveConfigValue(command)).toBe("recovered");
+		process.env[VAR] = "changed";
+		expect(resolveConfigValue(command)).toBe("recovered");
 	});
 
 	it("uses the env var value when set", () => {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-09-29
+
+- Fixed large bracketed pastes repeatedly rescanning accumulated input and slowing terminal input.
+
 ## [0.9.6] - 2026-09-24
 
 ## [0.9.5] - 2026-09-17

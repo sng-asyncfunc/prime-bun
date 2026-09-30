@@ -43,12 +43,12 @@ The upgrade lowers steady-state memory and improves most kernel paths, but it do
 
 ## Upstream synchronization ledger
 
-Last refreshed: 2026-09-24.
+Last refreshed: 2026-09-29.
 
-- Upstream baseline: Prime Agent [`v0.9.6` / `e260085dd`](https://github.com/PrimeIntellect-ai/prime-agent/commit/e260085dd).
-- Last dispositioned upstream commit: [`e260085dd`](https://github.com/PrimeIntellect-ai/prime-agent/commit/e260085dd); explicit deferrals below remain follow-up work, not implemented parity.
-- Upstream release observed at: [`v0.9.6`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.6).
-- Prime Bun synchronization checkpoint: `v0.9.6`, the release commit containing this ledger.
+- Upstream baseline: Prime Agent [`v0.9.8` / `7d442aafa`](https://github.com/PrimeIntellect-ai/prime-agent/commit/7d442aafa).
+- Last dispositioned upstream commit: [`7d442aafa`](https://github.com/PrimeIntellect-ai/prime-agent/commit/7d442aafa); explicit deferrals below remain follow-up work, not implemented parity.
+- Upstream release observed at: [`v0.9.8`](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.9.8).
+- Prime Bun synchronization checkpoint: `v0.9.8`, the release commit containing this ledger.
 - Policy: port behavior selectively, adapt it to the Bun architecture, and never inherit Prime Agent telemetry, analytics, release metadata, or distribution-specific code without an explicit decision.
 
 ### Dispositioned Prime Agent commits after v0.7.1
@@ -315,10 +315,37 @@ No daemon command, event, response, capability, protocol version or schema revis
 - Post-toggle UI RSS was 80,384 KiB and settled to 25,952 KiB; this is a short responsiveness smoke check, not a controlled long-duration leak result. Resume used the owning daemon; a separate daemon refused the active session as expected. The live daemon predates the final decoder retention hardening, which has direct regression, benchmark and independent review coverage.
 - Read-only GPT-6 Astra code review cleared the retention fix, independently passed 200 mixed-boundary decoder checks, verified all 93 ledger hashes and lockstep versions, and found no production blockers. Final verdict: **Release GO for selective Prime Bun v0.9.6**, after reviewing the completed dogfood record; this is not a full upstream parity claim.
 
+### Prime Agent v0.9.7 and v0.9.8 disposition
+
+Reviewed the 17 commits in `e260085dd..7d442aafa`. The selected behavior changes below are in the release commit containing this ledger; this is selective synchronization, not complete upstream parity.
+
+| Prime Agent source | Disposition | Notes |
+| --- | --- | --- |
+| `80c51e460`, `cd1f215cf`, `59ccdd002` | Deferred adaptation | Chat-detail persistence, composed Option+S, and forced model-picker refresh overlap user-owned interactive/editor/keybinding work in the primary checkout. Preserve that work; these UI behaviors are not claimed as implemented. |
+| `c4afa5735`, `8382bc46e` | Deferred adaptation | Session activity and summary memo changes cross the diverged daemon projection stack. Prime Bun counts running descendants in parent activity; preserve that behavior pending dedicated lifecycle coverage. |
+| `9c9f3d7ea` | Ported | Scans only new paste input plus a five-character delimiter tail, avoiding quadratic rescans while preserving split delimiters and reset behavior. |
+| `2d24ad4e6`, `4267eea1e` | Not applicable | Python kernel output scanning and Python MCP helper reuse do not apply to the Bun runtime. |
+| `ef90ab012`, `ae2ff905c`, `f3bbc2c1e`, `f62dae4d0` | Excluded | Daemon schema/type consolidation, dead-code cleanup, and dependency removal are broad refactors outside this behavioral sync. Preserve Prime Bun capability gates and dependencies. |
+| `4e20e9f81` | Ported | Azure Responses requests explicitly disable storage and omit the session cache key when cache retention is disabled. |
+| `5ef139303` | Adapted | Vertex Gemma 4 uses MINIMAL/HIGH thinking levels instead of unsupported token budgets. Tests use Prime Bun's undefined-reasoning disabled contract rather than upstream's literal off option. |
+| `8de3580bf` | Adapted | Advertises Codex discovery client 0.159.0. This restores version-gated discovery for configured models; it does not add Sol/Luna to the bundled catalog or verify live subscription entitlement. |
+| `08ff1b2e2`, `7d442aafa` | Adapted metadata | Prime Bun lockstep metadata only; no upstream publishing, tags, release scripts, or distribution changes. |
+
+No daemon wire, Python/IPython, telemetry, sharing, generated catalog, dependency, branding, or configurable-keybinding changes. Revisit the explicit deferrals independently; a version/checkpoint advance does not mean those features were ported.
+
+### Verification for the 2026-09-29 selective v0.9.8 release
+
+- Reproduced and fixed all four selected behaviors with red/green regressions. The 1 MiB paste test scanned 538,443,782 characters before the fix and stays below twice the payload size after it; this is scanner work, not an end-to-end timing claim.
+- Passed 78 TUI tests (stdin, split paste markers, ANSI wrapping), 73 coding-agent tests (model registry and Codex discovery), and 20 provider tests (Azure requests and Vertex thinking). Nine optional live-provider cases were skipped in the credential-isolated run. An earlier optional OpenAI case failed with insufficient credits; no live Azure/Vertex/Codex entitlement coverage is claimed.
+- Final `npm run check` exited zero across 968 files with no fixes, including type checking, installer rendering, and browser smoke. `git diff --check` passed.
+- Authenticated Grok 4.3 passed startup, persistent Bun cells (98/99), exact structured fenced/backtick/quote writing (42 independently verified bytes), bounded 2,000,000-character output with 20 expansion toggles, synchronous busy-loop cancellation and recovery (100), exact quoted/backtick draft stash/restore, and fresh-client resume with restored state (100/101). Session: `01a0efaf-a416-74fc-8fb4-11f81ac4806c`.
+- After resume, another 20 output toggles remained responsive and UI RSS settled from 59,472 to 58,240 KiB. Live testing used an isolated source worktree and daemon socket, not unrelated primary-checkout edits. This is a short responsiveness smoke test, not a long-duration memory-leak or cross-provider benchmark.
+- Read-only GPT-6 Astra review returned **GO for the selective Prime Bun v0.9.8 release**, independently verifying all 17 dispositions, lockstep metadata, and clean diff checks; the reviewer evaluated reported test/dogfood evidence rather than independently rerunning those tests.
+
 ### Future-agent pickup procedure
 
 1. Fetch without adding or mutating a persistent remote: `git fetch https://github.com/PrimeIntellect-ai/prime-agent.git main`.
-2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline e260085dd..FETCH_HEAD`, and revisit the explicitly deferred work above independently.
+2. Inspect new commits after the observed checkpoint: `git log --reverse --oneline 7d442aafa..FETCH_HEAD`, and revisit the explicitly deferred work above independently.
 3. Refresh models only through `packages/ai/scripts/generate-models.ts`, preserve Prime Bun fallbacks, verify deterministic output, and update catalog-bound test fixtures and every provider default when upstream routes disappear.
 4. Classify every upstream commit as ported, adapted, excluded, informational, or deferred; add both upstream and Prime Bun commit links here.
 5. Do not blindly cherry-pick daemon, dependency, release, Homebrew, or telemetry changes; preserve Prime Bun protocol capability gates, Bun runtime behavior, and dependency-age rules.

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-09-29
+
+- Fixed Azure Responses requests retaining response storage and session cache keys when caching is disabled.
+- Fixed Vertex Gemma 4 requests sending unsupported thinking token budgets instead of thinking levels.
+
 ## [0.9.6] - 2026-09-24
 
 ## [0.9.5] - 2026-09-17

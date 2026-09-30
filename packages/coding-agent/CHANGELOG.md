@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-09-29
+
+- Updated Codex discovery compatibility to client version 0.159.0 for version-gated configured models.
+
 ## [0.9.6] - 2026-09-24
 
 - Reduced memory copying while decoding large fragmented session frames from quadratic to linear growth.

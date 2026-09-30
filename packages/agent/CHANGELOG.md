@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-09-29
+
 ## [0.9.6] - 2026-09-24
 
 - Fixed truncated proxy streams leaving callers waiting indefinitely for completion.

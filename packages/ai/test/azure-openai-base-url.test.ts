@@ -13,12 +13,14 @@ interface CapturedAzureClientOptions {
 
 const azureMock = vi.hoisted(() => ({
 	constructorCalls: [] as CapturedAzureClientOptions[],
+	createCalls: [] as unknown[],
 }));
 
 vi.mock("openai", () => {
 	class AzureOpenAI {
 		responses = {
-			create: () => {
+			create: (params: unknown) => {
+				azureMock.createCalls.push(params);
 				throw new Error("mock create");
 			},
 		};
@@ -42,6 +44,7 @@ const originalAzureOpenAIApiKey = process.env.AZURE_OPENAI_API_KEY;
 
 beforeEach(() => {
 	azureMock.constructorCalls.length = 0;
+	azureMock.createCalls.length = 0;
 	delete process.env.AZURE_OPENAI_BASE_URL;
 	delete process.env.AZURE_OPENAI_RESOURCE_NAME;
 	delete process.env.AZURE_OPENAI_API_VERSION;
@@ -83,6 +86,20 @@ async function captureClientBaseUrl(baseUrl: string): Promise<string> {
 }
 
 describe("azure-openai-responses base URL normalization", () => {
+	it.each([undefined, "none", "short", "long"] as const)(
+		"disables storage with cacheRetention=%s",
+		async (cacheRetention) => {
+			process.env.AZURE_OPENAI_RESOURCE_NAME = "test-resource";
+			await streamAzureOpenAIResponses(getModel("azure-openai-responses", "gpt-4o-mini"), context, {
+				apiKey: "test-api-key",
+				sessionId: "session-1",
+				cacheRetention,
+			}).result();
+			expect(azureMock.createCalls).toMatchObject([
+				{ store: false, prompt_cache_key: cacheRetention === "none" ? undefined : "session-1" },
+			]);
+		},
+	);
 	it("normalizes Cognitive Services root endpoints to /openai/v1", async () => {
 		const baseURL = await captureClientBaseUrl("https://marc-quicktests-resource.cognitiveservices.azure.com");
 		expect(baseURL).toBe("https://marc-quicktests-resource.cognitiveservices.azure.com/openai/v1");

@@ -3,6 +3,9 @@ import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { requireFactoryEnabled, validateFactorySpec } from "./factory.ts";
+import { harnessQueryTerms, rankHarnessIndices } from "./harness-search.ts";
+
+export { harnessQueryTerms };
 
 export type HarnessKind = "prompt" | "memory" | "skill" | "subagent" | "factory";
 export type HarnessScope = "local" | "global";
@@ -88,70 +91,6 @@ function slug(raw: string, fallback: string): string {
 		.filter((part) => part.length > 0)
 		.join("_");
 	return (normalized || fallback).slice(0, 80);
-}
-
-const CJK_TERM_CHAR_RE =
-	/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\u{20000}-\u{2a6df}\u{2a700}-\u{2b73f}\u{2b740}-\u{2b81f}\u{2b820}-\u{2ceaf}\u{2ceb0}-\u{2ebef}\u{2ebf0}-\u{2ee5f}\u{2f800}-\u{2fa1f}\u{30000}-\u{3134f}\u{31350}-\u{323af}\u{323b0}-\u{3347f}]/u;
-
-const WORD_CHAR_RE = /[\p{L}\p{N}\p{M}]/u;
-
-function isAscii(text: string): boolean {
-	for (let i = 0; i < text.length; i += 1) {
-		if (text.charCodeAt(i) > 127) return false;
-	}
-	return true;
-}
-
-function harnessQueryRuns(text: string): string[] {
-	const runs: string[] = [];
-	let run: string[] = [];
-	let runIsCjk = false;
-	for (const ch of text) {
-		if (WORD_CHAR_RE.test(ch)) {
-			const chIsCjk = CJK_TERM_CHAR_RE.test(ch);
-			if (run.length > 0 && chIsCjk !== runIsCjk) {
-				runs.push(run.join(""));
-				run = [];
-			}
-			runIsCjk = chIsCjk;
-			run.push(ch);
-		} else if (run.length > 0) {
-			runs.push(run.join(""));
-			run = [];
-		}
-	}
-	if (run.length > 0) runs.push(run.join(""));
-	return runs;
-}
-
-export function harnessQueryTerms(query: string): string[] {
-	const terms: string[] = [];
-	const seen = new Set<string>();
-	for (const run of harnessQueryRuns(query.toLowerCase())) {
-		let candidates: string[];
-		if (CJK_TERM_CHAR_RE.test(run)) {
-			const chars = [...run];
-			if (chars.length > 1) {
-				candidates = [];
-				for (let i = 0; i < chars.length - 1; i += 1) {
-					candidates.push(`${chars[i]}${chars[i + 1]}`);
-				}
-			} else {
-				candidates = [run];
-			}
-		} else if (isAscii(run)) {
-			candidates = run.length >= 3 ? [run] : [];
-		} else {
-			candidates = [...run].length >= 2 ? [run] : [];
-		}
-		for (const term of candidates) {
-			if (!seen.has(term)) {
-				seen.add(term);
-				terms.push(term);
-			}
-		}
-	}
-	return terms;
 }
 
 export function agentDir(): string {
@@ -1216,51 +1155,13 @@ export class HarnessState {
 		if (!Number.isInteger(limit) || limit < 1) {
 			throw new TypeError("limit must be a positive integer");
 		}
-		const terms = harnessQueryTerms(query);
-		if (terms.length === 0) return [];
-
 		const entries = this.list(opts.kind ?? null);
-		const df = new Map<string, number>();
-		for (const term of terms) df.set(term, 0);
-		for (const entry of entries) {
-			const title = entry.title.toLowerCase();
-			const content = entry.content.toLowerCase();
-			const pathAndId = `${entry.path} ${entry.id}`.toLowerCase();
-			for (const term of terms) {
-				if (title.includes(term) || content.includes(term) || pathAndId.includes(term)) {
-					df.set(term, (df.get(term) ?? 0) + 1);
-				}
-			}
-		}
-
-		const termIdf = new Map<string, number>();
-		for (const [term, count] of df) {
-			if (count > 0) {
-				termIdf.set(term, Math.log(1 + entries.length / count));
-			}
-		}
-
-		const scored = entries
-			.map((entry) => {
-				const title = entry.title.toLowerCase();
-				const content = entry.content.toLowerCase();
-				const pathAndId = `${entry.path} ${entry.id}`.toLowerCase();
-				let total = 0;
-				for (const [term, idf] of termIdf) {
-					const fields =
-						(title.includes(term) ? 1 : 0) +
-						(content.includes(term) ? 1 : 0) +
-						(pathAndId.includes(term) ? 1 : 0);
-					if (fields > 0) {
-						total += idf * (1 + (fields - 1) * 0.5);
-					}
-				}
-				return { entry, score: total, recency: entry.updated_at || "" };
-			})
-			.filter((item) => item.score > 0)
-			.sort((a, b) => b.score - a.score || b.recency.localeCompare(a.recency));
-
-		return scored.slice(0, limit).map((item) => item.entry);
+		const titles = entries.map((entry) => entry.title);
+		const contents = entries.map((entry) => entry.content);
+		const pathAndIds = entries.map((entry) => `${entry.path} ${entry.id}`);
+		const updatedAts = entries.map((entry) => entry.updated_at || "");
+		const ranked = rankHarnessIndices(query, titles, contents, pathAndIds, updatedAts, limit);
+		return ranked.map((index) => entries[index]!);
 	}
 
 	snapshot(options?: { global?: boolean; global_?: boolean }): Record<string, unknown> {

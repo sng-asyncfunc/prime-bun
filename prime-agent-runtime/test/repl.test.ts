@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
+import { decodeSnapshotPayload, encodeSnapshotPayload } from "../src/state-snapshot.ts";
 
 const RUNTIME_DIR = path.resolve(import.meta.dir, "..");
 const REPL_ENTRY = path.join(RUNTIME_DIR, "src", "repl.ts");
@@ -401,5 +402,32 @@ describe("Protocol v3 REPL E2E", () => {
 		const rDone = await c2.waitForEvent((e) => e.event === "done" && e.id === "r-eof");
 		expect(rDone.status).toBe("ok");
 		expect(rDone.restored).toEqual(["afterSnap", "counter"]);
+	});
+
+	test("decodeSnapshotPayload rejects out-of-order overlapping ranges and returns independent copies", () => {
+		const valid = encodeSnapshotPayload([
+			{ name: "a", data: new Uint8Array([1, 2, 3]) },
+			{ name: "b", data: new Uint8Array([4, 5, 6]) },
+		]);
+		const decoded = decodeSnapshotPayload(valid);
+		expect(decoded.map((e) => e.name)).toEqual(["a", "b"]);
+		decoded[0]!.data[0] = 99;
+		expect(decodeSnapshotPayload(valid)[0]!.data[0]).toBe(1);
+
+		// Craft an out-of-order overlapping header (b starts at 0..3, a starts at 2..5)
+		const badHeader = Buffer.from(
+			JSON.stringify({
+				version: 3,
+				entries: [
+					{ name: "b", offset: 0, length: 3 },
+					{ name: "a", offset: 2, length: 3 },
+				],
+			}),
+			"utf8",
+		);
+		const prefix = Buffer.allocUnsafe(4);
+		prefix.writeUInt32BE(badHeader.byteLength, 0);
+		const badPayload = Buffer.concat([prefix, badHeader, Buffer.from([1, 2, 3, 4, 5])]);
+		expect(() => decodeSnapshotPayload(badPayload)).toThrow("overlaps another entry");
 	});
 });

@@ -152,6 +152,7 @@ export function decodeSnapshotPayload(
 	const dataLength = buffer.byteLength - dataStart;
 	const names = new Set<string>();
 	const ranges: Array<{ start: number; end: number }> = [];
+	let maxEnd = 0;
 	let totalEntryBytes = 0;
 
 	return header.entries.map((entry) => {
@@ -166,12 +167,19 @@ export function decodeSnapshotPayload(
 		}
 		const end = entry.offset + entry.length;
 		if (!Number.isSafeInteger(end) || end > dataLength) throw corruptSnapshot(`entry ${entry.name} is out of range`);
-		const overlaps = ranges.some((range) => entry.offset < range.end && end > range.start);
-		if (overlaps) throw corruptSnapshot(`entry ${entry.name} overlaps another entry`);
+		if (entry.offset < maxEnd) {
+			for (let r = 0; r < ranges.length; r += 1) {
+				const range = ranges[r]!;
+				if (entry.offset < range.end && end > range.start) {
+					throw corruptSnapshot(`entry ${entry.name} overlaps another entry`);
+				}
+			}
+		}
+		if (end > maxEnd) maxEnd = end;
 		ranges.push({ start: entry.offset, end });
 		return {
 			name: entry.name,
-			data: Uint8Array.from(buffer.subarray(dataStart + entry.offset, dataStart + end)),
+			data: new Uint8Array(buffer.subarray(dataStart + entry.offset, dataStart + end)),
 			...(entry.kind ? { kind: entry.kind } : {}),
 		};
 	});

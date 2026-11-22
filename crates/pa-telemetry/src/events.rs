@@ -45,7 +45,7 @@ pub enum ToolCategory {
     Grep,
     Find,
     Ls,
-    Ipython,
+    JavaScript,
     Mcp,
     Custom,
     Unknown,
@@ -65,7 +65,7 @@ impl ToolCategory {
             "grep" => Self::Grep,
             "find" => Self::Find,
             "ls" => Self::Ls,
-            "python" | "ipython" => Self::Ipython,
+            "javascript" => Self::JavaScript,
             "mcp" => Self::Mcp,
             "" => Self::Unknown,
             _ => Self::Custom,
@@ -83,7 +83,7 @@ impl ToolCategory {
             Self::Grep => "grep",
             Self::Find => "find",
             Self::Ls => "ls",
-            Self::Ipython => "ipython",
+            Self::JavaScript => "javascript",
             Self::Mcp => "mcp",
             Self::Custom => "custom",
             Self::Unknown => "unknown",
@@ -239,8 +239,8 @@ mod tests {
         assert_eq!(ToolCategory::from_tool_name("bash"), ToolCategory::Bash);
         assert_eq!(ToolCategory::from_tool_name("Edit"), ToolCategory::Edit);
         assert_eq!(
-            ToolCategory::from_tool_name("python_repl"),
-            ToolCategory::Ipython
+            ToolCategory::from_tool_name("javascript"),
+            ToolCategory::JavaScript
         );
         assert_eq!(
             ToolCategory::from_tool_name("mcp__github__create_issue"),
@@ -266,7 +266,7 @@ mod tests {
             ToolCategory::Grep,
             ToolCategory::Find,
             ToolCategory::Ls,
-            ToolCategory::Ipython,
+            ToolCategory::JavaScript,
             ToolCategory::Mcp,
             ToolCategory::Custom,
             ToolCategory::Unknown,

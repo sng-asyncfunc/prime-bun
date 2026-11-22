@@ -455,7 +455,7 @@ async fn a_failed_print_run_still_drains_an_in_flight_refine() {
     let result = tokio::select! {
         biased;
         result = &mut run => result,
-        () = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {
+        () = tokio::time::sleep(std::time::Duration::from_hours(1)) => {
             assert!(
                 failed.load(std::sync::atomic::Ordering::SeqCst),
                 "the run idled before the prompt failed"

@@ -928,16 +928,16 @@ fn a_replayed_result_into_a_pending_card_folds_its_row_delta() {
 
 #[test]
 fn a_background_shell_card_stays_uncached() {
-    // An ipython cell whose final result carries a still-running background shell keeps its
+    // A `javascript` cell whose final result carries a still-running background shell keeps its
     // card LIVE (the summary line renders the working icon).
     let card = |id: &str, shell: bool| {
         ChatEntry::Tool(Box::new(crate::chat::ToolCallCard {
             id: id.to_string(),
-            name: "ipython".to_string(),
+            name: "javascript".to_string(),
             args: if shell {
                 serde_json::json!({"code": "bash('sleep 60')"})
             } else {
-                serde_json::json!({"code": "print(1)"})
+                serde_json::json!({"code": "console.log(1)"})
             },
             started: true,
             started_at: Some(std::time::Instant::now()),

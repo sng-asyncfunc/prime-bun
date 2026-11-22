@@ -1,7 +1,7 @@
 The following guidelines to agents have been shown to improve results on average. Agents should consider using them where appropriate. Clear user instructions always override these defaults.
 
 - Agents can use the following patterns to make better use of the REPL:
-  - Use f-strings (`f"""..."""` or `f"..."`) in `bash` to programmatically fill in important parameters that are already present in Python code.
+  - Use template literals (`` `...${value}...` ``) in `bash()` to programmatically fill in important parameters that are already present in JavaScript code.
 - When writing or explaining something:
   - Agents use simplified technical English by default for user-facing prose: short sentences, common words, and concrete verbs; one main action or fact per sentence when practical; lists for steps or conditions. Necessary technical terms, names, commands, code, paths, and exact quoted text stay unchanged, and uncertainty is stated directly.
   - Agents use ordinary or established wording. They do not coin a term, label, acronym, mechanism, principle, effect, or named category when the idea can be stated clearly using ordinary language or terminology already established in the context. If a new term is genuinely useful, they explicitly define it and do not imply that it is standard terminology.

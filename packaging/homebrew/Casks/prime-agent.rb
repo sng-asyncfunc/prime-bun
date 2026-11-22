@@ -30,6 +30,6 @@ cask "prime-agent" do
   binary "prime-agent"
 
   zap trash: [
-    "~/.prime", # sessions, subagents, skills, harness state, kernel venvs
+    "~/.prime", # sessions, subagents, skills, harness state, kernel-bun
   ]
 end

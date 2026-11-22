@@ -1,10 +1,10 @@
-//! Bounded bash await, headless e2e: a `python_repl` tool call that does a
+//! Bounded bash await, headless e2e: a `javascript` tool call that does a
 //! blocking `await bash(...)` keeps the turn moving instead of wedging it,
 //! with NO override — the kernel bootstrap's default wiring (the
 //! bash.completed host handler flips the runtime's bounded default on) is
 //! the thing under test.
 //!
-//! The mock provider scripts the turn: request 1 calls `python_repl` with a
+//! The mock provider scripts the turn: request 1 calls `javascript` with a
 //! one-shot `await bash('sleep 5; echo ...')`. The await degrades at the
 //! 1s window: the tool result carries the still-running handle, and the
 //! turn settles while the command keeps running. Its `[bash-done ...]`
@@ -53,26 +53,38 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; `PA_E2E_KERNEL_PYTHON` overrides.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`).
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping bounded-await e2e",
+        "kernel bun {} not found; skipping bounded-await e2e",
         candidate.display()
     );
     None
@@ -127,7 +139,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
     if content_length > 0 {
         reader.read_exact(&mut body)?;
     }
-    // The scripted sequence: request 1 answers the python_repl tool call that
+    // The scripted sequence: request 1 answers the javascript tool call that
     // runs the bounded one-shot await, request 2 ends the turn, every later
     // request the woken reply.
     let request = next.fetch_add(1, Ordering::SeqCst);
@@ -143,8 +155,8 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                         "id": "call-bounded-1",
                         "type": "function",
                         "function": {
-                            "name": "python_repl",
-                            "arguments": "{\"code\": \"from rlm import bash\\nres = await bash('sleep 5; echo BOUNDED_AWAIT_E2E_DONE')\\nres\"}"
+                            "name": "javascript",
+                            "arguments": "{\"code\": \"const res = await bash('sleep 5; echo BOUNDED_AWAIT_E2E_DONE');\\nres\"}"
                         }
                     }]
                 }),
@@ -263,7 +275,7 @@ fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T 
 }
 
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_bun: Option<&Path>) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -279,8 +291,8 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "20000",
         );
-    if let Some(kernel_python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", kernel_python);
+    if let Some(kernel_bun) = kernel_bun {
+        command.env("PRIME_AGENT_KERNEL_BUN", kernel_bun);
     }
     let child = command
         .stdin(Stdio::null())
@@ -304,7 +316,7 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
 #[test]
 fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let root = tempfile::TempDir::new().expect("temp dir");
@@ -337,7 +349,7 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
     )
     .expect("write models.json");
 
-    let supervisor = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
+    let supervisor = spawn_daemon(&socket, &agent_dir, Some(&kernel_bun));
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -379,7 +391,7 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
     // the command finished: no completed-result repr anywhere yet.
     let after_turn = client.messages(&active_id);
     let snapshot = after_turn
-        .find("<BashSnapshot running pid=")
+        .find("running: true")
         .expect("the tool result never showed the running snapshot");
     let turn_end = after_turn
         .find("turn complete")
@@ -389,7 +401,7 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
         "the running-snapshot tool result must precede the turn's end: {after_turn}"
     );
     assert!(
-        !after_turn.contains("BashResult("),
+        !after_turn.contains("running: false"),
         "the await blocked to completion instead of degrading: {after_turn}"
     );
     assert!(

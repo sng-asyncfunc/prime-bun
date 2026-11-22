@@ -32,14 +32,16 @@ fn fake_runtime_path() -> std::path::PathBuf {
         .join("tests/fixtures/protocol_caps_kernel.py")
 }
 
-fn manager(python: std::path::PathBuf) -> ReplKernelManager {
+fn manager(bun: std::path::PathBuf) -> ReplKernelManager {
     ReplKernelManager::new(KernelManagerOptions {
-        python: Some(python),
+        bun: Some(bun),
+        worker_entry: None,
+        kernel_dir: None,
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),
         session_id: Some("protocol-caps-test".to_string()),
         host_handlers: HostRequestHandlers::new(),
-        python_skills: Vec::new(),
+        javascript_skills: Vec::new(),
         snapshot: None,
         bootstrap_code: None,
         stderr_log_path: None,

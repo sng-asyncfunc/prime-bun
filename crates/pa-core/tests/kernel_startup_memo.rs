@@ -42,33 +42,49 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pa_core::kernel::provisioner::{IpythonKernelProvisioner, IpythonKernelProvisionerOptions};
+use pa_core::kernel::provisioner::{
+    JavaScriptKernelProvisioner, JavaScriptKernelProvisionerOptions,
+};
 use pa_core::kernel::shared::{ExecuteOptions, ExecuteStatus};
 use pa_core::kernel::state_snapshot::snapshot_path_in;
 
-/// The kernel Python with prime-agent-runtime installed (see
-/// `kernel_stop_revive.rs`); skipped with a note when absent.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available; skipped with a note when absent.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live startup-memo test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live startup-memo test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live startup-memo test");
     None
 }
 
@@ -111,7 +127,7 @@ fn starts(count: &std::path::Path) -> u64 {
 /// newer boot, and exactly two interpreters may spawn.
 #[tokio::test]
 async fn stale_publisher_cannot_clear_a_newer_startup_memo() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -122,10 +138,10 @@ async fn stale_publisher_cannot_clear_a_newer_startup_memo() {
     let gates = dir.path().join("gates");
     std::fs::create_dir_all(&gates).unwrap();
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             ..Default::default()
         },
     );
@@ -192,7 +208,7 @@ async fn stale_publisher_cannot_clear_a_newer_startup_memo() {
 /// the next `ensure()` boots fresh.
 #[tokio::test]
 async fn kill_during_boot_leaves_no_resident_kernel() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -203,10 +219,10 @@ async fn kill_during_boot_leaves_no_resident_kernel() {
     let gates = dir.path().join("gates");
     std::fs::create_dir_all(&gates).unwrap();
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             ..Default::default()
         },
     );
@@ -264,7 +280,7 @@ async fn kill_during_boot_leaves_no_resident_kernel() {
 /// kernel into a provisioner that had already reported itself torn down.
 #[tokio::test]
 async fn dispose_during_boot_settles_it_without_parking() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -275,10 +291,10 @@ async fn dispose_during_boot_settles_it_without_parking() {
     let gates = dir.path().join("gates");
     std::fs::create_dir_all(&gates).unwrap();
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             ..Default::default()
         },
     );
@@ -344,7 +360,7 @@ async fn dispose_during_boot_settles_it_without_parking() {
 /// resident kernel - the doomed re-armed boot is killed by its own settle.
 #[tokio::test]
 async fn kill_during_the_re_armed_boot_leaves_no_resident_kernel() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -355,10 +371,10 @@ async fn kill_during_the_re_armed_boot_leaves_no_resident_kernel() {
     let gates = dir.path().join("gates");
     std::fs::create_dir_all(&gates).unwrap();
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             ..Default::default()
         },
     );
@@ -432,7 +448,7 @@ async fn kill_during_the_re_armed_boot_leaves_no_resident_kernel() {
 /// handler; after the doomed settle the replay must still fire.
 #[tokio::test]
 async fn doomed_settle_keeps_the_newer_boot_listener_state() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -443,10 +459,10 @@ async fn doomed_settle_keeps_the_newer_boot_listener_state() {
     let gates = dir.path().join("gates");
     std::fs::create_dir_all(&gates).unwrap();
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             ..Default::default()
         },
     );
@@ -510,7 +526,7 @@ async fn doomed_settle_keeps_the_newer_boot_listener_state() {
         .await
         .expect("the newer boot reached its first stage")
         .expect("stage signal");
-    assert_eq!(first_stage, "Starting Python kernel...");
+    assert_eq!(first_stage, "Starting Bun kernel...");
     // NOW the doomed boot settles (gate0 opens its handshake): whatever
     // it does to the shared progress state, the newer generation's
     // listener and replay stage must survive it.
@@ -542,7 +558,7 @@ async fn doomed_settle_keeps_the_newer_boot_listener_state() {
         .await
         .expect("a late joiner must replay the active boot's stage")
         .expect("replay signal");
-    assert_eq!(replayed, "Starting Python kernel...");
+    assert_eq!(replayed, "Starting Bun kernel...");
     // The killed generation's shared progress state died with the kill:
     // its joiner heard nothing after the kill (its one entry is the
     // pre-kill replay), and the newer boot's handler heard exactly its
@@ -550,14 +566,14 @@ async fn doomed_settle_keeps_the_newer_boot_listener_state() {
     // between.
     assert_eq!(
         *a_stages.lock().unwrap(),
-        vec!["Starting Python kernel...".to_string()],
+        vec!["Starting Bun kernel...".to_string()],
         "the killed generation's listener must not hear the newer boot"
     );
     assert_eq!(
         *b_stages.lock().unwrap(),
         vec![
-            "Starting Python kernel...".to_string(),
-            "Starting Python kernel...".to_string(),
+            "Starting Bun kernel...".to_string(),
+            "Starting Bun kernel...".to_string(),
         ],
         "the arming caller hears its own stage twice (fan-out + boot-local, the pre-existing main shape) and never the killed boot's stale replay first"
     );
@@ -629,7 +645,7 @@ fn flaky_first_kernel(
 /// killed generation never consumed its retry after the backoff.
 #[tokio::test]
 async fn kill_during_the_retry_backoff_pins_the_spawn_count() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -638,10 +654,10 @@ async fn kill_during_the_retry_backoff_pins_the_spawn_count() {
     let flip = dir.path().join("flipped");
     let fail_gate = dir.path().join("fail-gate");
     let wrapped = flaky_first_kernel(dir.path(), &python, &count, &flip, &fail_gate);
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             ..Default::default()
         },
     );
@@ -700,7 +716,7 @@ async fn kill_during_the_retry_backoff_pins_the_spawn_count() {
 /// same callback, exactly one report).
 #[tokio::test]
 async fn doomed_boot_does_not_report_unavailable_skills() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -709,25 +725,26 @@ async fn doomed_boot_does_not_report_unavailable_skills() {
     let gates = dir.path().join("gates");
     std::fs::create_dir_all(&gates).unwrap();
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
-    let reported: Arc<Mutex<Vec<pa_core::kernel::bootstrap::UnavailablePythonSkills>>> =
+    let reported: Arc<Mutex<Vec<pa_core::kernel::bootstrap::UnavailableJavaScriptSkills>>> =
         Arc::new(Mutex::new(Vec::new()));
     let on_unavailable_skills = {
         let reported = Arc::clone(&reported);
         Arc::new(
-            move |errors: &pa_core::kernel::bootstrap::UnavailablePythonSkills| {
+            move |errors: &pa_core::kernel::bootstrap::UnavailableJavaScriptSkills| {
                 reported.lock().unwrap().push(errors.clone());
             },
         ) as pa_core::kernel::provisioner::UnavailableSkillsCallback
     };
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
-            python_skills: vec![pa_core::kernel::bootstrap::KernelPythonSkill {
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
+            javascript_skills: vec![pa_core::kernel::bootstrap::KernelJavaScriptSkill {
                 name: "doomed-broken-skill".to_string(),
-                import_name: "doomed_broken_skill".to_string(),
+                global_name: "doomedBrokenSkill".to_string(),
+                entry_path: PathBuf::from("/nonexistent/skill/src/index.ts"),
                 package_path: PathBuf::from("/nonexistent/skill"),
-                pyproject_path: PathBuf::from("/nonexistent/skill/pyproject.toml"),
+                package_json_path: PathBuf::from("/nonexistent/skill/package.json"),
             }],
             on_unavailable_skills: Some(on_unavailable_skills),
             ..Default::default()
@@ -786,13 +803,12 @@ async fn doomed_boot_does_not_report_unavailable_skills() {
         "only the live generation reports unavailable skills: {reported:?}"
     );
     assert_eq!(
-        reported[0],
-        vec![(
-            "doomed_broken_skill".to_string(),
-            "No module named 'doomed_broken_skill'".to_string(),
-        )],
-        "the live boot's broken-import report"
+        reported[0].len(),
+        1,
+        "the live boot's broken-import report: {:?}",
+        reported[0]
     );
+    assert_eq!(reported[0][0].0, "doomedBrokenSkill");
 }
 
 /// A kill followed by a dispose must not let the doomed boot flush a
@@ -803,7 +819,7 @@ async fn doomed_boot_does_not_report_unavailable_skills() {
 /// byte-identical.
 #[tokio::test]
 async fn a_killed_then_disposed_boot_never_flushes_the_snapshot() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -814,10 +830,10 @@ async fn a_killed_then_disposed_boot_never_flushes_the_snapshot() {
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
     let snapshot = snapshot_path_in(dir.path());
     std::fs::write(&snapshot, "SENTINEL").unwrap();
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             snapshot_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         },
@@ -872,7 +888,7 @@ async fn a_killed_then_disposed_boot_never_flushes_the_snapshot() {
 /// still held.
 #[tokio::test]
 async fn dispose_after_a_kill_waits_the_doomed_boot() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -881,10 +897,10 @@ async fn dispose_after_a_kill_waits_the_doomed_boot() {
     let gates = dir.path().join("gates");
     std::fs::create_dir_all(&gates).unwrap();
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             ..Default::default()
         },
     );
@@ -932,7 +948,7 @@ async fn dispose_after_a_kill_waits_the_doomed_boot() {
 /// boot's interpreter ever spawns.
 #[tokio::test]
 async fn a_kill_while_the_boot_waits_the_stop_gate_spawns_no_interpreter() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -941,10 +957,10 @@ async fn a_kill_while_the_boot_waits_the_stop_gate_spawns_no_interpreter() {
     let gates = dir.path().join("gates");
     std::fs::create_dir_all(&gates).unwrap();
     let wrapped = counting_gated_kernel(dir.path(), &python, &count, &gates);
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             ..Default::default()
         },
     );

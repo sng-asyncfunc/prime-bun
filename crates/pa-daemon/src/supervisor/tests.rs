@@ -142,7 +142,7 @@ async fn a_failed_relaunch_accumulates_to_the_give_up_cap() {
         .store(now_ms - STABLE_LIFETIME_MS - 1, Ordering::SeqCst);
     supervisor.registry.insert(Arc::clone(&resident)).await;
     tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         Arc::clone(&supervisor).watch_worker(Arc::clone(&resident), None, 0, None),
     )
     .await
@@ -199,7 +199,7 @@ async fn a_stop_during_the_storm_leaves_the_terminal_state_to_the_stop() {
     resident.transition(crate::registry::WorkerTransition::RequestStop);
     supervisor.registry.insert(Arc::clone(&resident)).await;
     tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         Arc::clone(&supervisor).watch_worker(Arc::clone(&resident), None, 0, None),
     )
     .await

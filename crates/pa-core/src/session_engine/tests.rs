@@ -82,7 +82,7 @@ async fn a_skill_command_prompt_expands_into_the_skill_block() {
         ),
         disable_model_invocation: false,
         kind: crate::skills::SkillKind::Markdown,
-        python: None,
+        javascript: None,
     }]);
     session
         .prompt("/skill:web-search find rust tuis", PromptOptions::default())
@@ -141,7 +141,7 @@ async fn digest_session(provider: Arc<ScriptedProvider>) -> (AgentSession, tempf
     let harness = crate::session_engine::harness_digest::HarnessDigestContext {
         global_dir: tmp.path().join("harness"),
         local_dir: None,
-        include_ipython: false,
+        include_javascript: false,
         include_shell_examples: false,
         include_refine: false,
     };
@@ -272,7 +272,7 @@ async fn resume_dedupes_by_state_fingerprint_and_appends_stale_digest_update() {
     let harness = crate::session_engine::harness_digest::HarnessDigestContext {
         global_dir: harness_dir.clone(),
         local_dir: None,
-        include_ipython: false,
+        include_javascript: false,
         include_shell_examples: false,
         include_refine: false,
     };
@@ -1097,7 +1097,7 @@ async fn aborted_tool_call_result_carries_elapsed_duration() {
                 entered.store(true, std::sync::atomic::Ordering::SeqCst);
                 // The recursive-scan shape: unbounded runtime, only the
                 // abort ends it.
-                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                tokio::time::sleep(std::time::Duration::from_mins(10)).await;
                 Ok(pa_agent::types::AgentToolResult::text("done"))
             })
         }
@@ -1178,14 +1178,14 @@ async fn aborted_tool_call_result_carries_elapsed_duration() {
     assert!(duration >= 100, "durationMs: {duration}");
 }
 
-/// Persisted `ipython`/`python` calls dispatch through `ToolDefinitionBridge`
-/// to the registered Python tool.
+/// Clean break: `javascript` dispatches through `ToolDefinitionBridge` while
+/// legacy `ipython` / `python_repl` names do not alias to it.
 #[tokio::test]
-async fn python_tool_aliases_dispatch_to_python_repl() {
+async fn javascript_tool_dispatches_by_exact_name() {
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let definition = crate::tools::tool_definition::ToolDefinition {
-        name: pa_types::ai::PYTHON_TOOL_NAME.to_string(),
-        label: "Python".to_string(),
+        name: pa_types::ai::JAVASCRIPT_TOOL_NAME.to_string(),
+        label: "Bun".to_string(),
         description: "Echoes its input".to_string(),
         prompt_snippet: String::new(),
         parameters: serde_json::json!({ "type": "object" }),
@@ -1212,8 +1212,8 @@ async fn python_tool_aliases_dispatch_to_python_repl() {
     provider.push_tool_call_turn(
         Some("calling"),
         vec![
-            ("call-1", "ipython", serde_json::json!({ "text": "a" })),
-            ("call-2", "python", serde_json::json!({ "text": "b" })),
+            ("call-1", "javascript", serde_json::json!({ "text": "a" })),
+            ("call-2", "ipython", serde_json::json!({ "text": "b" })),
         ],
     );
     provider.push_text_turn("done");
@@ -1238,9 +1238,9 @@ async fn python_tool_aliases_dispatch_to_python_repl() {
         .unwrap();
     engine.prompt("go", PromptOptions::default()).await.unwrap();
     engine.agent().wait_for_idle().await;
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     let entries = engine.entries().await;
-    let texts: Vec<&str> = entries
+    let results: Vec<(&str, bool)> = entries
         .iter()
         .filter_map(|entry| match entry {
             FileEntry::Message {
@@ -1250,14 +1250,19 @@ async fn python_tool_aliases_dispatch_to_python_repl() {
             _ => None,
         })
         .map(|result| {
-            assert!(!result.is_error, "result: {result:?}");
-            match &result.content[..] {
+            let text = match &result.content[..] {
                 [pa_types::ai::UserContentBlock::Text(text)] => text.text.as_str(),
                 _ => panic!("expected a single text block: {result:?}"),
-            }
+            };
+            (text, result.is_error)
         })
         .collect();
-    assert_eq!(texts, ["echo:a", "echo:b"]);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], ("echo:a", false));
+    assert!(
+        results[1].1,
+        "legacy ipython name must not alias to javascript"
+    );
 }
 
 /// A `toolResult` entry captured from a live TS session (read-only, from

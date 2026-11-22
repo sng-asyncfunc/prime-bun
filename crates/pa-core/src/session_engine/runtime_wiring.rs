@@ -1,7 +1,6 @@
-//! Wires the session runtime (goal + rlm-heartbeat host bridge) and the Python kernel
-//! into the session engine build (the product-path equivalent of the TS `AgentSession`
-//! host-request controllers): the kernel provisioner receives the host-handler registry,
-//! and the agent loop gains the `ipython` tool backed by that kernel.
+//! Wires the session runtime (goal + rlm-heartbeat host bridge) and the Bun JavaScript kernel
+//! into the session engine build: the kernel provisioner receives the host-handler registry,
+//! and the agent loop gains the `javascript` tool backed by that kernel.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -9,15 +8,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use super::runtime::QueuedGoalContextPurge;
-use crate::kernel::bootstrap::KernelPythonSkill;
+use crate::kernel::bootstrap::KernelJavaScriptSkill;
 use crate::kernel::provisioner::{
-    IpythonKernelProvisioner as KernelProvisioner, IpythonKernelProvisionerOptions,
+    JavaScriptKernelProvisioner as KernelProvisioner, JavaScriptKernelProvisionerOptions,
 };
 use crate::kernel::shared::HostRequestHandlers;
 use crate::session::manager::SessionManager;
-use crate::skills::{get_python_skill_runtime_info, Skill};
-use crate::tools::ipython::{
-    IpythonKernelProvisioner, IpythonToolOptions, KernelAttachment, KernelErrorInfo,
+use crate::skills::{get_javascript_skill_runtime_info, Skill};
+use crate::tools::javascript::{
+    JavaScriptKernelProvisioner, JavaScriptToolOptions, KernelAttachment, KernelErrorInfo,
     KernelExecuteOptions, KernelExecutor,
 };
 
@@ -213,16 +212,17 @@ pub fn model_visible_skills(skills: Vec<Skill>, handlers: &HostRequestHandlers) 
         .collect()
 }
 
-/// Kernel-side Python skill modules, pre-imported at bootstrap.
+/// Kernel-side JavaScript skill modules, pre-loaded at bootstrap.
 #[must_use]
-pub fn kernel_python_skills(skills: &[Skill]) -> Vec<KernelPythonSkill> {
-    get_python_skill_runtime_info(skills)
+pub fn kernel_javascript_skills(skills: &[Skill]) -> Vec<KernelJavaScriptSkill> {
+    get_javascript_skill_runtime_info(skills)
         .into_iter()
-        .map(|info| KernelPythonSkill {
+        .map(|info| KernelJavaScriptSkill {
             name: info.name,
-            import_name: info.import_name,
+            global_name: info.global_name,
+            entry_path: info.entry_path,
             package_path: info.package_path,
-            pyproject_path: info.pyproject_path,
+            package_json_path: info.package_json_path,
         })
         .collect()
 }
@@ -242,7 +242,7 @@ pub fn kernel_python_skills(skills: &[Skill]) -> Vec<KernelPythonSkill> {
 pub fn kernel_provisioner(
     session_id: String,
     handlers: HostRequestHandlers,
-    python_skills: Vec<KernelPythonSkill>,
+    javascript_skills: Vec<KernelJavaScriptSkill>,
     cwd: std::path::PathBuf,
     agent_dir: &std::path::Path,
     shell_path: Option<std::path::PathBuf>,
@@ -283,14 +283,16 @@ pub fn kernel_provisioner(
     env.extend(websearch_env);
     Arc::new(KernelProvisioner::new(
         cwd,
-        IpythonKernelProvisionerOptions {
-            python: None,
+        JavaScriptKernelProvisionerOptions {
+            bun: None,
+            worker_entry: None,
+            kernel_dir: None,
             env,
             command_prefix,
             shell_path,
             session_id: Some(session_id),
             host_handlers: handlers,
-            python_skills,
+            javascript_skills,
             // Only persistent sessions (which have an artifact dir) get
             // a revivable snapshot (TS `snapshotDir`).
             snapshot_dir: session_artifact_dir,
@@ -345,10 +347,10 @@ pub(crate) fn websearch_env(
     env
 }
 
-impl IpythonKernelProvisioner for KernelProvisioner {
+impl JavaScriptKernelProvisioner for KernelProvisioner {
     fn ensure(
         &self,
-        on_progress: Option<crate::tools::ipython::BootstrapProgressHandler>,
+        on_progress: Option<crate::tools::javascript::BootstrapProgressHandler>,
         signal: Option<crate::tools::tool_definition::AbortSignal>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn KernelExecutor>>> + Send>> {
         let this = self.clone();
@@ -373,7 +375,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
     }
 }
 
-/// Adapts the kernel manager to the ipython tool's executor contract.
+/// Adapts the kernel manager to the javascript tool's executor contract.
 struct KernelManagerExecutor {
     manager: crate::kernel::manager::ReplKernelManager,
     /// The session's default cell time limit (`None`: never armed; `0`: disabled).
@@ -385,7 +387,7 @@ impl KernelExecutor for KernelManagerExecutor {
         &self,
         code: &str,
         options: KernelExecuteOptions<'_>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<crate::tools::ipython::ExecuteResult>> + Send>>
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<crate::tools::javascript::ExecuteResult>> + Send>>
     {
         let manager = self.manager.clone();
         let code = code.to_string();
@@ -428,20 +430,22 @@ pub(crate) fn arm_cell_timeout_ms(daemonless: bool, settings_ms: u64) -> Option<
 
 fn convert_status(
     status: crate::kernel::shared::ExecuteStatus,
-) -> crate::tools::ipython::ExecuteStatus {
+) -> crate::tools::javascript::ExecuteStatus {
     match status {
-        crate::kernel::shared::ExecuteStatus::Ok => crate::tools::ipython::ExecuteStatus::Ok,
-        crate::kernel::shared::ExecuteStatus::Error => crate::tools::ipython::ExecuteStatus::Error,
+        crate::kernel::shared::ExecuteStatus::Ok => crate::tools::javascript::ExecuteStatus::Ok,
+        crate::kernel::shared::ExecuteStatus::Error => {
+            crate::tools::javascript::ExecuteStatus::Error
+        }
         crate::kernel::shared::ExecuteStatus::Aborted => {
-            crate::tools::ipython::ExecuteStatus::Aborted
+            crate::tools::javascript::ExecuteStatus::Aborted
         }
     }
 }
 
 fn convert_execute_result(
     result: crate::kernel::shared::ExecuteResult,
-) -> crate::tools::ipython::ExecuteResult {
-    crate::tools::ipython::ExecuteResult {
+) -> crate::tools::javascript::ExecuteResult {
+    crate::tools::javascript::ExecuteResult {
         status: convert_status(result.status),
         stdout: result.stdout,
         stderr: result.stderr,
@@ -471,13 +475,13 @@ fn convert_execute_result(
     }
 }
 
-/// Build the ipython tool options for a wired kernel provisioner.
+/// Build the javascript tool options for a wired kernel provisioner.
 #[must_use]
-pub fn ipython_tool_options(
+pub fn javascript_tool_options(
     provisioner: Arc<KernelProvisioner>,
-    on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
-) -> IpythonToolOptions {
-    IpythonToolOptions {
+    on_late_sent_agent_message: Option<crate::tools::javascript::LateSentAgentMessageHandler>,
+) -> JavaScriptToolOptions {
+    JavaScriptToolOptions {
         provisioner,
         on_late_sent_agent_message,
     }
@@ -535,7 +539,7 @@ mod tests {
             source_info: create_synthetic_source_info("/skills", "user", SourceScope::User, None),
             disable_model_invocation: false,
             kind: SkillKind::Markdown,
-            python: None,
+            javascript: None,
         }
     }
 

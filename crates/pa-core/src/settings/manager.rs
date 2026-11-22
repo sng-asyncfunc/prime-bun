@@ -667,14 +667,14 @@ impl SettingsManager {
         self.merged.recent_models.clone().unwrap_or_default()
     }
 
-    /// The default time limit for user `python_repl` cells, in
+    /// The default time limit for user `javascript` cells, in
     /// milliseconds (`0` disables; the default is 60s). Daemonless
     /// sessions never arm it.
     #[must_use]
-    pub fn get_python_cell_timeout_ms(&self) -> u64 {
+    pub fn get_javascript_cell_timeout_ms(&self) -> u64 {
         self.merged
-            .python_cell_timeout_ms
-            .unwrap_or(crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS)
+            .javascript_cell_timeout_ms
+            .unwrap_or(crate::settings::types::DEFAULT_JAVASCRIPT_CELL_TIMEOUT_MS)
     }
 
     /// The steering queue's delivery mode: `all` co-delivers every queued message at
@@ -1055,7 +1055,7 @@ fn load_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::types::{MarkdownSettings, DEFAULT_PYTHON_CELL_TIMEOUT_MS};
+    use crate::settings::types::{MarkdownSettings, DEFAULT_JAVASCRIPT_CELL_TIMEOUT_MS};
 
     #[test]
     #[cfg(unix)]
@@ -1306,23 +1306,23 @@ mod tests {
     }
 
     #[test]
-    fn python_cell_timeout_reads_setting_or_default() {
+    fn javascript_cell_timeout_reads_setting_or_default() {
         let manager = SettingsManager::in_memory(&Settings::default());
         assert_eq!(
-            manager.get_python_cell_timeout_ms(),
-            DEFAULT_PYTHON_CELL_TIMEOUT_MS
+            manager.get_javascript_cell_timeout_ms(),
+            DEFAULT_JAVASCRIPT_CELL_TIMEOUT_MS
         );
         let manager = SettingsManager::in_memory(&Settings {
-            python_cell_timeout_ms: Some(90_000),
+            javascript_cell_timeout_ms: Some(90_000),
             ..Settings::default()
         });
-        assert_eq!(manager.get_python_cell_timeout_ms(), 90_000);
+        assert_eq!(manager.get_javascript_cell_timeout_ms(), 90_000);
         // Zero is the explicit disable, not the default.
         let manager = SettingsManager::in_memory(&Settings {
-            python_cell_timeout_ms: Some(0),
+            javascript_cell_timeout_ms: Some(0),
             ..Settings::default()
         });
-        assert_eq!(manager.get_python_cell_timeout_ms(), 0);
+        assert_eq!(manager.get_javascript_cell_timeout_ms(), 0);
     }
 
     #[test]

@@ -43,7 +43,7 @@ pub(crate) fn wait_for_payload_files(dir: &Path, count: usize) {
 
 /// Wait until the writer's queue is empty (every reservation released).
 pub(crate) fn wait_for_drained_queue() {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(1);
     loop {
         let queued = super::CAPTURE_WRITER
             .get()

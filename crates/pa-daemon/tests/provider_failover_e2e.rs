@@ -29,7 +29,7 @@ impl Drop for Supervisor {
 
 /// A mock OpenAI-completions provider: the first `failures` requests get a
 /// 500 with an OpenAI-style error body; the rest get one fixed SSE answer.
-/// `Probe` answers the first served request with a `python_repl` tool call
+/// `Probe` answers the first served request with a `javascript` tool call
 /// (the cell arguments string), the follow-ups with text.
 #[derive(Clone)]
 enum ReplyMode {
@@ -141,7 +141,7 @@ fn serve(
         ReplyMode::Probe(cell_arguments) => {
             if index == failures + 1 {
                 (
-                    json!({"role":"assistant","content":"","tool_calls":[{"index":0,"id":"cell-call","type":"function","function":{"name":"python_repl","arguments":cell_arguments}}]}),
+                    json!({"role":"assistant","content":"","tool_calls":[{"index":0,"id":"cell-call","type":"function","function":{"name":"javascript","arguments":cell_arguments}}]}),
                     "tool_calls",
                 )
             } else {
@@ -188,34 +188,45 @@ fn serve(
     )
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`).
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live model-facts e2e",
+        "kernel bun {} not found; skipping live model-facts e2e",
         candidate.display()
     );
     None
 }
 
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Supervisor {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_bun: Option<&Path>) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")
@@ -233,10 +244,10 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path
         .env_remove("PRIME_API_KEY")
         .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
         // The probe-cell test boots a live kernel on its worker.
-        .envs(kernel_python.map(|python| {
+        .envs(kernel_bun.map(|bun| {
             (
-                "PRIME_AGENT_KERNEL_PYTHON".to_string(),
-                python.display().to_string(),
+                "PRIME_AGENT_KERNEL_BUN".to_string(),
+                bun.display().to_string(),
             )
         }))
         .spawn()
@@ -424,7 +435,7 @@ fn setup(
     )
     .expect("write settings.json");
     let socket = dir.path().join(format!("{name}.sock"));
-    let supervisor = spawn_supervisor(&socket, &agent_dir, /*kernel_python*/ None);
+    let supervisor = spawn_supervisor(&socket, &agent_dir, /*kernel_bun*/ None);
     let mut client = Client::connect(&socket);
     client.send_command(
         "c1",
@@ -700,7 +711,7 @@ fn threshold_yield_keeps_the_backup_until_the_tool_run_finishes() {
 /// receipt for the verifier.
 fn probe_cell(receipt: &Path) -> String {
     let code = format!(
-        "import json\nfrom rlm import host_request\npayload = {{}}\npayload[\"model_info\"] = await host_request(\"model.info\", {{}})\npayload[\"compact_status\"] = await host_request(\"compact.status\", {{}})\nopen({receipt:?}, \"w\").write(json.dumps(payload))\nprint(\"FACTS_PROBED\")",
+        "const payload = {{\n  model_info: await hostRequest(\"model.info\", {{}}),\n  compact_status: await hostRequest(\"compact.status\", {{}}),\n}};\nfs.writeFileSync({receipt:?}, JSON.stringify(payload));\nconsole.log(\"FACTS_PROBED\");",
         receipt = receipt.display().to_string(),
     );
     serde_json::to_string(&json!({ "code": code })).expect("serialize the cell arguments")
@@ -736,7 +747,7 @@ fn read_receipt(client: &mut Client, session_id: &str, receipt: &Path, read_id: 
 #[allow(clippy::too_many_lines)]
 #[test]
 fn failover_switch_and_restore_rebind_the_kernel_model_facts() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     // Two request-failures on the primary drive the failover (initial +
@@ -806,7 +817,7 @@ fn failover_switch_and_restore_rebind_the_kernel_model_facts() {
     )
     .expect("write settings.json");
     let socket = dir.path().join("facts-failover.sock");
-    let _supervisor = spawn_supervisor(&socket, &agent_dir, Some(&kernel_python));
+    let _supervisor = spawn_supervisor(&socket, &agent_dir, Some(&kernel_bun));
     let mut client = Client::connect(&socket);
     client.send_command(
         "c1",

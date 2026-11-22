@@ -183,14 +183,13 @@ pub struct HarnessStatePromptOptions {
     pub max_entries_per_kind: Option<usize>,
     pub max_refinements: Option<usize>,
     pub max_content_length: Option<usize>,
-    pub include_ipython_examples: Option<bool>,
+    pub include_javascript_examples: Option<bool>,
     pub include_shell_examples: bool,
     pub include_refine_examples: Option<bool>,
     pub query_terms: Option<HarnessQueryTerms>,
 }
 
-/// Render the harness state as the model-facing digest block. Strings must
-/// stay byte-identical with the TS formatter.
+/// Render the harness state as the model-facing digest block.
 #[must_use]
 pub fn format_harness_state_for_prompt(
     state: &HarnessState,
@@ -205,8 +204,10 @@ pub fn format_harness_state_for_prompt(
     let max_content_length = options
         .max_content_length
         .unwrap_or(DEFAULT_OVERVIEW_CONTENT_LIMIT);
-    let include_ipython = options.include_ipython_examples.unwrap_or(true);
-    let include_refine = options.include_refine_examples.unwrap_or(include_ipython);
+    let include_javascript = options.include_javascript_examples.unwrap_or(true);
+    let include_refine = options
+        .include_refine_examples
+        .unwrap_or(include_javascript);
 
     let mut lines: Vec<String> = vec![
         "# Continual Harness State".to_string(),
@@ -222,12 +223,12 @@ pub fn format_harness_state_for_prompt(
             "When to refine the continual harness: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep continual harness edits small and evidence-backed.".to_string()
         },
         String::new(),
-        if include_ipython {
-            "Call contract: read each installed Python skill's SKILL.md and call its documented module function in the Python REPL; do not assume a `.run` entrypoint. Use `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a continual harness subagent spec by composing a concise task prompt and calling `handle = await rlm.spawn('sub-task', name='worker')`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role='parent')`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role='child', receiver_name=handle.name)` for follow-ups. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.".to_string()
+        if include_javascript {
+            "Call contract: read each installed JavaScript skill's SKILL.md and call its documented global or method in the Bun JavaScript REPL; do not assume a `.run` entrypoint. Continual harness skill entries are JavaScript REPL skills with an explicit JavaScript `reference` and `arguments` contract. Spawn a continual harness subagent spec by composing a concise task prompt and calling `const handle = await rlm.spawn('sub-task', { name: 'worker' })`; admission returns immediately with `rlmChildId`, `name`, `sessionDir`, and `model`, never the child's answer. Results arrive only through explicit `agentMessage` replies or files; children reply with `await agentMessage.send(message, { receiverRole: 'parent' })`. Use `await rlm.listSubagents()` to recover direct child handles and `await agentMessage.send(..., { receiverRole: 'child', receiverName: handle.name })` for follow-ups. Do not invent wrappers such as `callSkill(...)`, `runSubagent(...)`, or named subagent registries.".to_string()
         } else if options.include_shell_examples {
-            "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without the Python REPL; do not use Python `await`, `asyncio`, or `rlm` examples unless the prompt also documents a Python kernel.".to_string()
+            "Call contract: continual harness entries are routing/context hints only in sessions without the JavaScript REPL; do not use JavaScript `await` or `rlm` examples unless the prompt also documents a Bun kernel.".to_string()
         } else {
-            "Call contract: continual harness entries are routing/context hints only in sessions without the Python REPL or shell access; do not use Python `await`, `asyncio`, `rlm`, or shell skill commands unless the prompt also documents those interfaces.".to_string()
+            "Call contract: continual harness entries are routing/context hints only in sessions without the JavaScript REPL or shell access; do not use JavaScript `await`, `rlm`, or shell commands unless the prompt also documents those interfaces.".to_string()
         },
         String::new(),
     ];
@@ -262,11 +263,11 @@ pub fn format_harness_state_for_prompt(
         });
         total_entries += entries.len();
         let kind_name = kind;
-        if kind_name == "subagent" && !entries.is_empty() && include_ipython {
-            lines.push(format!("{kind_name}: {} (invoke a spec by turning it into a concise task prompt and spawning with `await rlm.spawn('<task>', name='<worker>')`; admission returns a child handle, never the answer)", entries.len()));
-        } else if kind_name == "factory" && !entries.is_empty() && include_ipython {
+        if kind_name == "subagent" && !entries.is_empty() && include_javascript {
+            lines.push(format!("{kind_name}: {} (invoke a spec by turning it into a concise task prompt and spawning with `await rlm.spawn('<task>', {{ name: '<worker>' }})`; admission returns a child handle, never the answer)", entries.len()));
+        } else if kind_name == "factory" && !entries.is_empty() && include_javascript {
             lines.push(format!(
-                "{kind_name}: {} (state-machine workflow specs; run one with `await rlm.factory.run('<id>')`; watch with `await rlm.factory.status(run_id)`, stop with `await rlm.factory.stop(run_id)`, resume a paused run with `await rlm.factory.resume(run_id)`)",
+                "{kind_name}: {} (state-machine workflow specs; run one with `await rlm.factory.run('<id>')`; watch with `await rlm.factory.status(runId)`, stop with `await rlm.factory.stop(runId)`, resume a paused run with `await rlm.factory.resume(runId)`)",
                 entries.len()
             ));
         } else {
@@ -378,7 +379,7 @@ pub const HARNESS_DIGEST_FINGERPRINT_VERSION: u32 = 1;
 /// are excluded — the digest stays frozen per delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HarnessDigestRenderFlags {
-    pub include_ipython_examples: bool,
+    pub include_javascript_examples: bool,
     pub include_shell_examples: bool,
     pub include_refine_examples: bool,
 }
@@ -466,17 +467,17 @@ pub fn harness_digest_fingerprint(
             serde_json::Value::Object(material)
         })
         .collect::<Vec<_>>();
-    // The shell call-contract renders only when IPython examples are
+    // The shell call-contract renders only when JavaScript examples are
     // absent: fingerprint only the flags the render reads.
-    let effective_shell_examples = if render_flags.include_ipython_examples {
+    let effective_shell_examples = if render_flags.include_javascript_examples {
         false
     } else {
         render_flags.include_shell_examples
     };
     let mut flags_material = serde_json::Map::new();
     flags_material.insert(
-        "includeIpythonExamples".to_string(),
-        serde_json::json!(render_flags.include_ipython_examples),
+        "includeJavaScriptExamples".to_string(),
+        serde_json::json!(render_flags.include_javascript_examples),
     );
     flags_material.insert(
         "includeShellExamples".to_string(),
@@ -659,12 +660,12 @@ mod tests {
             &HarnessStatePromptOptions {
                 max_entries_per_kind: Some(40),
                 query_terms: None,
-                include_ipython_examples: Some(true),
+                include_javascript_examples: Some(true),
                 ..Default::default()
             },
         );
         assert!(rendered.contains(
-            "factory: 1 (state-machine workflow specs; run one with `await rlm.factory.run('<id>')`; watch with `await rlm.factory.status(run_id)`, stop with `await rlm.factory.stop(run_id)`, resume a paused run with `await rlm.factory.resume(run_id)`)"
+            "factory: 1 (state-machine workflow specs; run one with `await rlm.factory.run('<id>')`; watch with `await rlm.factory.status(runId)`, stop with `await rlm.factory.stop(runId)`, resume a paused run with `await rlm.factory.resume(runId)`)"
         ));
         assert!(rendered.contains("- [global:sweep] PR review sweep (review, v1): Sweep review."));
         // Without IPython examples the hint line stays a plain count.
@@ -673,7 +674,7 @@ mod tests {
             &HarnessStatePromptOptions {
                 max_entries_per_kind: Some(40),
                 query_terms: None,
-                include_ipython_examples: Some(false),
+                include_javascript_examples: Some(false),
                 ..Default::default()
             },
         );
@@ -685,7 +686,7 @@ mod tests {
             &HarnessStatePromptOptions {
                 max_entries_per_kind: Some(40),
                 query_terms: None,
-                include_ipython_examples: Some(true),
+                include_javascript_examples: Some(true),
                 ..Default::default()
             },
         );
@@ -696,7 +697,7 @@ mod tests {
         // only for skills, so an arguments-only change stays inert, exactly
         // like the TS fingerprint material).
         let flags = HarnessDigestRenderFlags {
-            include_ipython_examples: true,
+            include_javascript_examples: true,
             include_shell_examples: false,
             include_refine_examples: false,
         };
@@ -729,7 +730,7 @@ mod tests {
             .unwrap()
             .insert("zeta".to_string(), zeta);
         let flags = HarnessDigestRenderFlags {
-            include_ipython_examples: true,
+            include_javascript_examples: true,
             include_shell_examples: false,
             include_refine_examples: false,
         };
@@ -764,7 +765,7 @@ mod tests {
         // The shell flag cannot change the digest while IPython examples
         // take precedence: it is normalized out of the material.
         let shell_on = HarnessDigestRenderFlags {
-            include_ipython_examples: true,
+            include_javascript_examples: true,
             include_shell_examples: true,
             include_refine_examples: false,
         };
@@ -772,7 +773,7 @@ mod tests {
         // Without IPython examples the shell contract renders, so the flag
         // participates; so does the refine flag while IPython is on.
         let shell_only = HarnessDigestRenderFlags {
-            include_ipython_examples: false,
+            include_javascript_examples: false,
             include_shell_examples: true,
             include_refine_examples: false,
         };
@@ -786,7 +787,7 @@ mod tests {
         skill.kind = RefinementKind::Skill;
         skill
             .reference
-            .insert("type".to_string(), serde_json::json!("python"));
+            .insert("type".to_string(), serde_json::json!("javascript"));
         state
             .entries
             .get_mut(&RefinementKind::Skill)
@@ -813,7 +814,7 @@ mod tests {
                 created_at: String::new(),
             });
         let flags = HarnessDigestRenderFlags {
-            include_ipython_examples: true,
+            include_javascript_examples: true,
             include_shell_examples: false,
             include_refine_examples: true,
         };

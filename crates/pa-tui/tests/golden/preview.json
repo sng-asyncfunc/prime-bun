@@ -8,8 +8,8 @@
         "language": "bash",
         "text": "npm test -- --watch"
       },
-      "ipython": {
-        "language": "python",
+      "javascript": {
+        "language": "javascript",
         "text": "npm run test -- --watch"
       }
     },
@@ -19,31 +19,42 @@
         "language": "bash",
         "text": "git commit -m x"
       },
-      "ipython": {
-        "language": "python",
+      "javascript": {
+        "language": "javascript",
         "text": "git add -A && git commit -m x"
       }
     },
     {
-      "input": "python3 <<'EOF'\nprint('hello')\nEOF",
+      "input": "bun <<'JS'\nconst path = \"package.json\";\nawait Bun.write(path, await Bun.file(path).text());\nJS",
       "bash": {
-        "language": "python",
-        "text": "print('hello')"
+        "language": "javascript",
+        "text": "await Bun.write(path, await Bun.file(path).text());"
       },
-      "ipython": {
-        "language": "python",
-        "text": "python3 <<'EOF'"
+      "javascript": {
+        "language": "javascript",
+        "text": "await Bun.write(path, await Bun.file(path).text());"
       }
     },
     {
-      "input": "%%bash\ncd sub && make",
+      "input": "await $`npm run check`",
       "bash": {
         "language": "bash",
-        "text": "make"
+        "text": "await $`npm run check`"
       },
-      "ipython": {
+      "javascript": {
         "language": "bash",
-        "text": "make"
+        "text": "npm check"
+      }
+    },
+    {
+      "input": "await sh(\"git status --short\")",
+      "bash": {
+        "language": "bash",
+        "text": "await sh(\"git status --short\")"
+      },
+      "javascript": {
+        "language": "bash",
+        "text": "git status --short"
       }
     },
     {
@@ -52,8 +63,8 @@
         "language": "bash",
         "text": "curl -s https://api.example.com/v1 -H 'Authorization: Bearer <r…"
       },
-      "ipython": {
-        "language": "python",
+      "javascript": {
+        "language": "javascript",
         "text": "curl -s https://api.example.com/v1 -H 'Authorization: Bearer <r…"
       }
     },
@@ -63,20 +74,20 @@
         "language": "bash",
         "text": "make"
       },
-      "ipython": {
-        "language": "python",
+      "javascript": {
+        "language": "javascript",
         "text": "cd sub && make"
       }
     },
     {
-      "input": "uv run python3 -m pytest tests/x.rs",
+      "input": "bun --cwd packages/app test",
       "bash": {
         "language": "bash",
-        "text": "pytest tests/x.rs"
+        "text": "bun test (packages/app)"
       },
-      "ipython": {
-        "language": "python",
-        "text": "uv run python3 -m pytest tests/x.rs"
+      "javascript": {
+        "language": "javascript",
+        "text": "bun --cwd packages/app test"
       }
     },
     {
@@ -85,42 +96,31 @@
         "language": "bash",
         "text": "append out.log"
       },
-      "ipython": {
-        "language": "python",
+      "javascript": {
+        "language": "javascript",
         "text": "tee -a out.log"
       }
     },
     {
-      "input": "API_TOKEN = \"abc123\"\nrequests.get(\"https://example.com\", headers={\"Authorization\": \"Bearer sk-live-0123456789\"})",
+      "input": "const password = \"supersecretvalue\";\nconst client = createClient({ apiKey: \"sk-testsecretvalue\" });",
       "bash": {
         "language": "bash",
-        "text": "requests.get(\"https://example.com\", headers={\"Authorization\": \"…"
+        "text": "const client = createClient({ apiKey=<redacted> })"
       },
-      "ipython": {
-        "language": "python",
-        "text": "requests.get(\"https://example.com\", headers={\"Authorization\": \"…"
+      "javascript": {
+        "language": "javascript",
+        "text": "const client = createClient({ apiKey=<redacted> });"
       }
     },
     {
-      "input": "python3 -c \"import base64; print(base64.b64encode(b'0123456789'*12))\"",
+      "input": "process.chdir('/tmp/repo'); fs.readFileSync('README.md');",
       "bash": {
         "language": "bash",
-        "text": "print(base64.b64encode(b'0123456789'*12))\""
+        "text": "fs.readFileSync('README.md')"
       },
-      "ipython": {
-        "language": "python",
-        "text": "python3 -c \"import base64; print(base64.b64encode(b'0123456789'…"
-      }
-    },
-    {
-      "input": "cat data.bin",
-      "bash": {
-        "language": "bash",
-        "text": "cat data.bin"
-      },
-      "ipython": {
-        "language": "python",
-        "text": "cat data.bin"
+      "javascript": {
+        "language": "javascript",
+        "text": "fs.readFileSync('README.md');"
       }
     },
     {
@@ -129,53 +129,53 @@
         "language": "bash",
         "text": "echo <blob>"
       },
-      "ipython": {
-        "language": "python",
+      "javascript": {
+        "language": "javascript",
         "text": "echo <blob>"
       }
     },
     {
-      "input": "for i in $(ls /very/long/path/with/many/components/here); do echo processing $i; done",
+      "input": "console.log('just logging');",
       "bash": {
         "language": "bash",
-        "text": "done"
+        "text": "console.log('just logging')"
       },
-      "ipython": {
-        "language": "python",
-        "text": "for i in $(ls /very/long/path/with/many/components/here); do ec…"
+      "javascript": {
+        "language": "javascript",
+        "text": "'just logging'"
       }
     },
     {
-      "input": "from pathlib import Path\nout = Path('out.txt')\nout.write_text('hello')\nimport subprocess\nsubprocess.run('git status', shell=True)",
+      "input": "function helper() {\n  return 1;\n}\nawait runCheck();",
       "bash": {
         "language": "bash",
-        "text": "subprocess.run('git status', shell=True)"
+        "text": "await runCheck()"
       },
-      "ipython": {
-        "language": "python",
-        "text": "out.write_text('hello')"
+      "javascript": {
+        "language": "javascript",
+        "text": "await runCheck();"
       }
     },
     {
-      "input": "print('just printing')",
+      "input": "const path = \"a.ts\";\nconst text = await Bun.file(path).text();\nawait Bun.write(path, text);",
       "bash": {
         "language": "bash",
-        "text": "print('just printing')"
+        "text": "await Bun.write(path, text)"
       },
-      "ipython": {
-        "language": "python",
-        "text": "print('just printing')"
+      "javascript": {
+        "language": "javascript",
+        "text": "await Bun.write(path, text);"
       }
     },
     {
-      "input": "%%bash\necho in-bash-cell",
+      "input": "node <<'EOF'\nconsole.log(computeAnswer(42));\nEOF",
       "bash": {
-        "language": "bash",
-        "text": "echo in-bash-cell"
+        "language": "javascript",
+        "text": "computeAnswer(42)"
       },
-      "ipython": {
-        "language": "bash",
-        "text": "echo in-bash-cell"
+      "javascript": {
+        "language": "javascript",
+        "text": "EOF"
       }
     }
   ]

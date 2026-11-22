@@ -87,11 +87,11 @@ pub enum AcpToolKind {
 }
 
 impl AcpToolKind {
-    /// The kind map: the model-facing tool is the Python REPL; bash is the
+    /// The kind map: the model-facing tool is the Bun JavaScript REPL; bash is the
     /// secondary escape hatch.
     pub fn of_tool(tool_name: &str) -> AcpToolKind {
         match tool_name {
-            name if pa_types::ai::is_python_tool_name(name) => AcpToolKind::Execute,
+            name if pa_types::ai::is_javascript_tool_name(name) => AcpToolKind::Execute,
             "bash" => AcpToolKind::Execute,
             "read" => AcpToolKind::Read,
             "edit" | "write" => AcpToolKind::Edit,
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn tool_kind_map_matches_the_ts_map() {
-        assert_eq!(AcpToolKind::of_tool("python_repl"), AcpToolKind::Execute);
+        assert_eq!(AcpToolKind::of_tool("javascript"), AcpToolKind::Execute);
         assert_eq!(AcpToolKind::of_tool("bash"), AcpToolKind::Execute);
         assert_eq!(AcpToolKind::of_tool("read"), AcpToolKind::Read);
         assert_eq!(AcpToolKind::of_tool("edit"), AcpToolKind::Edit);
@@ -519,7 +519,7 @@ mod tests {
         );
         let call = AcpSessionUpdate::ToolCall {
             tool_call_id: "t1".into(),
-            title: "Python cell".into(),
+            title: "Bun cell".into(),
             kind: AcpToolKind::Execute,
             status: AcpToolStatus::InProgress,
             raw_input: json!({ "code": "1+1" }),

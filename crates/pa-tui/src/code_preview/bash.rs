@@ -1,10 +1,8 @@
-//! Bash/Python command preview extraction for tool-call rendering.
+//! Bash/JavaScript command preview extraction for tool-call rendering.
 //! Regexes keep JavaScript semantics (whitespace/word classes, UTF-16
 //! string indexing).
 
-use super::python::preview_python_code;
-#[cfg(test)]
-use super::python::{preview_ipython_code, python_statement_lines};
+use super::javascript::preview_javascript_code;
 
 const DESCRIPTOR_MAX_WIDTH: usize = 64;
 
@@ -33,16 +31,11 @@ pub(crate) struct Cap<'t> {
 #[derive(Clone, Copy)]
 pub(crate) struct Group<'t> {
     text: &'t str,
-    end: usize,
 }
 
 impl<'t> Group<'t> {
     pub(crate) fn as_str(&self) -> &'t str {
         self.text
-    }
-
-    pub(crate) fn end(&self) -> usize {
-        self.end
     }
 }
 
@@ -50,17 +43,11 @@ impl<'t> Cap<'t> {
     pub(crate) fn get(&self, index: usize) -> Option<Group<'t>> {
         if let Some(captures) = &self.fast {
             let m = captures.get(index)?;
-            return Some(Group {
-                text: m.as_str(),
-                end: m.end(),
-            });
+            return Some(Group { text: m.as_str() });
         }
         let captures = self.fancy.as_ref()?;
         let m = captures.get(index)?;
-        Some(Group {
-            text: m.as_str(),
-            end: m.end(),
-        })
+        Some(Group { text: m.as_str() })
     }
 }
 
@@ -134,19 +121,6 @@ impl Rx {
         }
     }
 
-    pub(crate) fn find<'t>(&self, text: &'t str) -> Option<Group<'t>> {
-        match self {
-            Rx::Fast(inner) => inner.find(text).map(|m| Group {
-                text: m.as_str(),
-                end: m.end(),
-            }),
-            Rx::Fancy(inner) => inner.find(text).ok().flatten().map(|m| Group {
-                text: m.as_str(),
-                end: m.end(),
-            }),
-        }
-    }
-
     pub(crate) fn replace(&self, text: &str, rep: &str) -> String {
         match self {
             Rx::Fast(inner) => inner.replace(text, rep).into_owned(),
@@ -200,7 +174,7 @@ pub(crate) fn re(pattern: &str) -> Rx {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodePreviewLanguage {
     Bash,
-    Python,
+    JavaScript,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,15 +191,15 @@ impl CodePreview {
         }
     }
 
-    pub(crate) fn python(text: impl Into<String>) -> Self {
+    pub(crate) fn javascript(text: impl Into<String>) -> Self {
         CodePreview {
-            language: CodePreviewLanguage::Python,
+            language: CodePreviewLanguage::JavaScript,
             text: text.into(),
         }
     }
 }
 
-/// JS String.prototype.trim whitespace set.
+/// JS `String.prototype.trim` whitespace set.
 fn is_js_whitespace(ch: char) -> bool {
     matches!(
         ch,
@@ -251,12 +225,12 @@ pub(crate) fn js_trim_end(s: &str) -> &str {
     s.trim_end_matches(is_js_whitespace)
 }
 
-/// Number of UTF-16 code units (JS String.length).
+/// Number of UTF-16 code units (JS `String.length`).
 fn utf16_len(s: &str) -> usize {
     s.chars().map(char::len_utf16).sum()
 }
 
-/// JS s.slice(0, n): first n UTF-16 code units.
+/// JS `s.slice(0, n)`: first n UTF-16 code units.
 fn utf16_slice_prefix(s: &str, n: usize) -> String {
     let mut units = 0usize;
     for (idx, ch) in s.char_indices() {
@@ -284,11 +258,11 @@ fn truncate_descriptor(text: &str) -> String {
 pub(crate) fn redact_noise(text: &str) -> String {
     let step1 = re_once!(r"[A-Za-z0-9+/]{80,}={0,2}").replace_all(text, "<blob>");
     let step2 = re_once!(format!(
-        r#"\b((?={W}*(?:token|key|secret|password))[A-Za-z_]{W}*){S}*={S}*(["'])[^"']*\2"#
+        r#"(?i)\b((?={W}*(?:token|key|secret|password))[A-Za-z_]{W}*){S}*[:=]{S}*(["'])[^"']*\2"#
     ))
     .replace_all(&step1, "$1=<redacted>");
     let step3 = re_once!(format!(
-        r#"(?i)\b((?={W}*(?:token|key|secret|password))[A-Za-z_]{W}*){S}*={S}*(?!<redacted>)(?!["'])\S+"#
+        r#"(?i)\b((?={W}*(?:token|key|secret|password))[A-Za-z_]{W}*){S}*[:=]{S}*(?!<redacted>)(?!["'])\S+"#
     ))
     .replace_all(&step2, "$1=<redacted>");
     let step4 = re_once!(r#"(?i)\b(authorization:\s*(?:bearer\s+)?)[^\s"']+"#)
@@ -301,16 +275,15 @@ pub(crate) fn descriptor(text: &str) -> String {
     truncate_descriptor(js_trim(&collapse_whitespace(&redact_noise(text))))
 }
 
-/// Strip a leading ! magic and a leading cd-prefix chain segment.
+/// Strip a leading `cd`-prefix chain segment.
 pub(crate) fn strip_bash_prefix(line: &str) -> String {
-    let no_magic = re_once!(format!(r"^{S}*!")).replace(line, "");
-    let trimmed = js_trim(&no_magic);
+    let trimmed = js_trim(line);
     let no_cd = re_once!(format!(r"^{S}*cd{S}+([^&;|]+)(?:&&|;){S}*")).replace(trimmed, "");
     js_trim(&no_cd).to_string()
 }
 
 pub(crate) fn is_comment_line(line: &str) -> bool {
-    re_once!(format!(r"^{S}*#")).is_match(line)
+    re_once!(format!(r"^{S}*(?:#|//)")).is_match(line)
 }
 
 pub(crate) fn is_skippable_bash_line(line: &str) -> bool {
@@ -339,7 +312,7 @@ fn shell_words(line: &str) -> Vec<String> {
         .collect()
 }
 
-/// Drop a leading ./ from a path.
+/// Drop a leading `./` from a path.
 pub(crate) fn path_tail(path: &str) -> String {
     re_once!(r"^\./").replace(path, "")
 }
@@ -376,8 +349,10 @@ fn simplify_runner_command(line: &str) -> Option<String> {
             }
         }
     }
-    if words.first().map(String::as_str) == Some("pnpm") {
-        let cwd_index = words.iter().position(|w| w == "-C" || w == "--dir");
+    if matches!(words.first().map(String::as_str), Some("pnpm" | "bun")) {
+        let cwd_index = words
+            .iter()
+            .position(|w| w == "-C" || w == "--cwd" || w == "--dir");
         let cwd = cwd_index.and_then(|i| words.get(i + 1)).cloned();
         if let Some(ci) = cwd_index {
             let rest: Vec<String> = words
@@ -390,36 +365,13 @@ fn simplify_runner_command(line: &str) -> Option<String> {
         }
         return None;
     }
-    if words.first().map(String::as_str) == Some("uv")
-        && words.get(1).map(String::as_str) == Some("run")
-    {
-        if let Some(pi) = words.iter().position(|w| w == "pytest") {
-            return Some(
-                format!("pytest {}", words[pi + 1..].join(" "))
-                    .trim()
-                    .to_string(),
-            );
-        }
-    }
-    if matches!(
-        words.first().map(String::as_str),
-        Some("python" | "python3")
-    ) && words.get(1).map(String::as_str) == Some("-m")
-        && words.get(2).map(String::as_str) == Some("pytest")
-    {
-        return Some(
-            format!("pytest {}", words[3..].join(" "))
-                .trim()
-                .to_string(),
-        );
-    }
     if joined.contains("node_modules/.bin/") {
         return Some(re_once!(r"\S*node_modules/\.bin/").replace_all(&joined, ""));
     }
     None
 }
 
-/// Shorten file-mutation commands (cat >, tee, `apply_patch`) for display.
+/// Shorten file-mutation commands (`cat >`, `tee`, `apply_patch`) for display.
 fn simplify_mutation_command(line: &str) -> Option<String> {
     let words = shell_words(line);
     if words.is_empty() {
@@ -442,7 +394,7 @@ fn simplify_mutation_command(line: &str) -> Option<String> {
     if first == "apply_patch" {
         return Some("apply patch".to_string());
     }
-    if matches!(first, "rm" | "mv" | "cp" | "git" | "npm") {
+    if matches!(first, "rm" | "mv" | "cp" | "git" | "npm" | "bun") {
         return Some(line.to_string());
     }
     if (first == "sed" && words.iter().any(|w| w.starts_with("-i")))
@@ -459,7 +411,7 @@ pub(crate) fn simplify_bash_command_line(line: &str) -> String {
         .unwrap_or_else(|| line.to_string())
 }
 
-/// Split a && b; c into its command segments.
+/// Split `a && b; c` into its command segments.
 pub(crate) fn split_command_chain(line: &str) -> Vec<String> {
     re_once!(r"\s*(?:&&|;)\s*")
         .split(line)
@@ -488,7 +440,7 @@ fn heredoc_body(lines: &[String], start_index: usize, delimiter: &str) -> Option
 
 pub(crate) fn preview_heredoc(lines: &[String]) -> Option<CodePreview> {
     // A generic heredoc body is low-signal; keep it as a fallback and prefer a
-    // later, more specific heredoc (python/bash/node/write) if one follows.
+    // later, more specific heredoc (bun/node/bash/write) if one follows.
     let mut fallback: Option<CodePreview> = None;
     for (i, raw) in lines.iter().enumerate() {
         let line = strip_bash_prefix(raw);
@@ -504,8 +456,8 @@ pub(crate) fn preview_heredoc(lines: &[String]) -> Option<CodePreview> {
         let Some(body) = heredoc_body(lines, i, &delimiter) else {
             continue;
         };
-        if re_once!(format!(r"\b(?:uv{S}+run{S}+)?python3?\b")).is_match(&line) {
-            let preview = preview_python_code(&body);
+        if re_once!(r"\b(?:bun|node)\b").is_match(&line) {
+            let preview = preview_javascript_code(&body);
             if !preview.text.is_empty() {
                 return Some(preview);
             }
@@ -519,9 +471,6 @@ pub(crate) fn preview_heredoc(lines: &[String]) -> Option<CodePreview> {
                 return Some(preview);
             }
             return Some(CodePreview::bash(descriptor(&body)));
-        }
-        if re_once!(r"\bnode\b").is_match(&line) {
-            return Some(CodePreview::bash(format!("node: {}", descriptor(&body))));
         }
         let cat_write = re_once!(r"\b(?:cat|tee)\b.*(?:>|\s)(\S+)\s*<<-?")
             .captures(&line)
@@ -541,7 +490,9 @@ pub(crate) fn preview_heredoc(lines: &[String]) -> Option<CodePreview> {
         if re_once!(r"\bapply_patch\b").is_match(&line) {
             return Some(CodePreview::bash("apply patch".to_string()));
         }
-        fallback = Some(CodePreview::bash(descriptor(&body)));
+        if fallback.is_none() {
+            fallback = Some(CodePreview::bash(descriptor(&body)));
+        }
     }
     fallback
 }
@@ -556,12 +507,12 @@ pub(crate) fn bash_line_score(line: &str, index: usize) -> usize {
     if words.first().is_some_and(|w| {
         matches!(
             w.as_str(),
-            "rm" | "mv" | "cp" | "git" | "npm" | "pnpm" | "pytest" | "vitest"
+            "rm" | "mv" | "cp" | "git" | "npm" | "pnpm" | "bun" | "vitest"
         )
     }) {
         score += 20;
     }
-    if re_once!(format!(r"\b(?:rm|mv|cp|git{S}+(?:add|commit)|npm{S}+install|sed{S}+-i|perl{S}+-pi|tee|cat{S}*>|apply_patch)\b"))
+    if re_once!(format!(r"\b(?:rm|mv|cp|git{S}+(?:add|commit)|npm{S}+install|bun{S}+add|sed{S}+-i|perl{S}+-pi|tee|cat{S}*>|apply_patch)\b"))
         .is_match(line)
     {
         score += 40;
@@ -570,6 +521,7 @@ pub(crate) fn bash_line_score(line: &str, index: usize) -> usize {
 }
 
 /// Pick the highest-signal line of a bash command as its preview.
+#[must_use]
 pub fn preview_bash_command(command: &str) -> CodePreview {
     let lines: Vec<String> = command.split('\n').map(String::from).collect();
     let heredoc = preview_heredoc(&lines);
@@ -627,47 +579,34 @@ mod tests {
     }
 
     #[test]
-    fn bash_preview_simplifies_npm_run() {
+    fn bash_preview_simplifies_npm_and_bun_runners() {
         let p = preview_bash_command("npm run test -- --watch");
         assert_eq!(p.text, "npm test -- --watch");
+        let b = preview_bash_command("bun --cwd packages/app test");
+        assert_eq!(b.text, "bun test (packages/app)");
     }
 
     #[test]
-    fn bash_preview_heredoc_python() {
-        let cmd = "python3 <<'EOF'\nprint('hi')\nEOF";
+    fn bash_preview_unwraps_bun_and_node_heredocs() {
+        let cmd = "set -e\nbun <<'JS'\nconst path = \"package.json\";\nawait Bun.write(path, await Bun.file(path).text());\nJS";
         let p = preview_bash_command(cmd);
-        assert_eq!(p.text, "print('hi')");
+        assert_eq!(p.language, CodePreviewLanguage::JavaScript);
+        assert_eq!(
+            p.text,
+            "await Bun.write(path, await Bun.file(path).text());"
+        );
+
+        let fallback = "npm run check\nbun <<'JS'\nimport \"node:path\";\nJS";
+        let fp = preview_bash_command(fallback);
+        assert_eq!(fp.language, CodePreviewLanguage::Bash);
+        assert_eq!(fp.text, "npm check");
     }
 
     #[test]
-    fn python_preview_file_operation() {
-        let code = "p = Path('src/a.ts')\nprint('x')\np.write_text('data')";
-        let p = preview_python_code(code);
-        assert_eq!(p.text, "write src/a.ts");
-        assert_eq!(p.language, CodePreviewLanguage::Python);
-    }
-
-    #[test]
-    fn python_preview_bash_skill_call() {
-        let code = "print('x')\nawait bash(\"git status --porcelain\")";
-        let p = preview_python_code(code);
+    fn does_not_treat_dot_sh_script_as_inline_bash_heredoc() {
+        let cmd = "./script.sh <<'EOF'\nhello world\nEOF";
+        let p = preview_bash_command(cmd);
         assert_eq!(p.language, CodePreviewLanguage::Bash);
-        assert_eq!(p.text, "git status --porcelain");
-    }
-
-    #[test]
-    fn ipython_cell_magic_preview() {
-        let p = preview_ipython_code("%%bash\necho hi");
-        assert_eq!(p.language, CodePreviewLanguage::Bash);
-        assert_eq!(p.text, "echo hi");
-    }
-
-    #[test]
-    fn statement_lines_mask_multiline_strings() {
-        let code = "x = \"\"\"\na\nb\n\"\"\"\nrun(1)";
-        let lines = python_statement_lines(code);
-        assert_eq!(lines[0], "x = \"\"\"");
-        assert_eq!(lines[3].trim(), "");
-        assert_eq!(lines[4], "run(1)");
+        assert_eq!(p.text, "hello world");
     }
 }

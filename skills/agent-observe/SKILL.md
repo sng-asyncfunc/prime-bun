@@ -6,9 +6,9 @@ description: Read-only roster and observation of an agent's parent, siblings, an
 # Agent Observe
 
 Observe the current agent's nuclear family through the local daemon: parent,
-siblings, direct children, and self. `list_agents` is the one family roster and
-covers every member `agent_message.send` can reach. `get_agent` also returns an
-inactive child's roster row. `recent_messages` also reads a member no worker
+siblings, direct children, and self. `listAgents` is the one family roster and
+covers every member `agentMessage.send` can reach. `getAgent` also returns an
+inactive child's roster row. `recentMessages` also reads a member no worker
 holds (a passivated or finished child) from its session file, read-only,
 without waking it. They cannot read a root sibling that has no live session in
 this worker.
@@ -18,19 +18,20 @@ otherwise mutate another session.
 
 Call directly from the kernel:
 
-```python
-children = await rlm.list_subagents()
-child = next((item for item in children if item.active_session_id), None)
-if child is not None:
-    worker = await agent_observe.get_agent(child.session_name)
-    recent = await agent_observe.recent_messages(child.session_name, limit=6)
-    # Deletion is a parent-owned RLM operation, not an observe mutation:
-    await rlm.delete_subagent(child)
+```javascript
+const children = await rlm.listSubagents();
+const child = children.find((item) => item.activeSessionId);
+if (child) {
+  const worker = await agentObserve.getAgent(child.sessionName);
+  const recent = await agentObserve.recentMessages(child.sessionName, { limit: 6 });
+  // Deletion is a parent-owned RLM operation, not an observe mutation:
+  await rlm.deleteSubagent(child);
+}
 ```
 
 ## API
 
-- `await agent_observe.list_agents()` returns `current` (the calling agent's
+- `await agentObserve.listAgents()` returns `current` (the calling agent's
   own row) and `agents` (the family: parent, siblings, and direct children,
   active or not; the caller is excluded from `agents`). Each row carries
   `sessionId`, optional `sessionName`, `relationship`
@@ -42,18 +43,18 @@ if child is not None:
   `parentSessionId`) and `rlmChildId` for subagents, and `firstMessage`
   (capped at 240 chars) for an inactive child. A member with no live session
   has no `activeSessionId` and no live detail; address it with
-  `agent_message.send` using its `relationship` plus its `sessionName`, or its
+  `agentMessage.send` using its `relationship` plus its `sessionName`, or its
   `sessionId` when the member has no name. For direct children,
-  `await rlm.list_subagents()` also exposes parent-owned lifecycle handles.
-- `await agent_observe.get_agent(target)` returns `agent`, where `agent`
+  `await rlm.listSubagents()` also exposes parent-owned lifecycle handles.
+- `await agentObserve.getAgent(target)` returns `agent`, where `agent`
   contains one agent summary (the same shape as the roster rows, including a
   passive child's row). `target` is resolved like other live-session
   selectors: active id, session id or name, or an unambiguous id suffix.
-- `await agent_observe.recent_messages(target, limit=8, max_chars=800)`
+- `await agentObserve.recentMessages(target, { limit = 8, maxChars = 800 } = {})`
   returns `agent` (the target's summary), `messages` (up to `limit` recent
   bounded previews), the clamped `limit` and `maxChars`, and `truncated`
   (true when older messages exist beyond the returned window). `limit` must be
-  1-50, and `max_chars` must be 80-2000. Each preview's `index` is the
+  1-50, and `maxChars` must be 80-2000. Each preview's `index` is the
   message's position in the full transcript.
 
 ## Safety

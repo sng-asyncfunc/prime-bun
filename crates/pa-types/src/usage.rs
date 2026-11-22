@@ -152,12 +152,12 @@ mod tests {
             "content": [
                 { "type": "text", "text": "abcd" },
                 { "type": "thinking", "thinking": "efgh" },
-                { "type": "toolCall", "name": "ipython", "arguments": { "code": "x = 1" } },
+                { "type": "toolCall", "name": "javascript", "arguments": { "code": "x = 1" } },
                 { "type": "image" },
             ],
         });
         // The tool-call block counts its name plus the serialized arguments.
-        let expected = (4_u64 + 4 + 7 /*name*/ + 17 /*arguments*/ + 4800).div_ceil(4);
+        let expected = (4_u64 + 4 + 10 /*name*/ + 17 /*arguments*/ + 4800).div_ceil(4);
         assert_eq!(estimate_tokens(&message), expected);
         // Plain-string content only counts for user/custom/toolResult roles.
         assert_eq!(

@@ -105,7 +105,7 @@ fn snapshot_files(session_dir: &Path, cursor: Option<&str>) -> (String, Arc<Vec<
         let mut snapshots = walk_snapshots()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        snapshots.retain(|_, snapshot| snapshot.last_used.elapsed() < Duration::from_secs(300));
+        snapshots.retain(|_, snapshot| snapshot.last_used.elapsed() < Duration::from_mins(5));
         if let Some(snapshot) = snapshots.get_mut(id) {
             if snapshot.session_dir == session_dir && offset <= snapshot.files.len() {
                 snapshot.last_used = Instant::now();
@@ -140,7 +140,7 @@ fn retain_snapshot(id: String, session_dir: &Path, files: Arc<Vec<PathBuf>>) {
     let mut snapshots = walk_snapshots()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    snapshots.retain(|_, snapshot| snapshot.last_used.elapsed() < Duration::from_secs(300));
+    snapshots.retain(|_, snapshot| snapshot.last_used.elapsed() < Duration::from_mins(5));
     if !snapshots.contains_key(&id) && snapshots.len() >= 32 {
         if let Some(oldest) = snapshots
             .iter()
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn a_session_modified_between_pages_is_not_skipped() {
         let dir = temp_dir();
-        let base = SystemTime::now() - Duration::from_secs(3600);
+        let base = SystemTime::now() - Duration::from_hours(1);
         let paths: Vec<_> = (0..3)
             .map(|index| {
                 let path = write_session(&dir, "/repo/x", Some(&format!("row {index}")), 1);

@@ -212,7 +212,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .env("PRIME_AGENT_KERNEL_VENV", dir.join("kernel-venv"))
+        .env("PRIME_AGENT_KERNEL_BUN_DIR", dir.join("kernel-bun"))
         .env("PI_OFFLINE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -537,7 +537,7 @@ async fn get_mcp_connections_answers_instantly_mid_turn() {
         .expect("start the held turn");
     // The held turn's admission settles before the probe: the stream stays
     // closed for the whole assertion window.
-    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let started = Instant::now();
     let data = client
         .request_ok(DaemonCommand::GetMcpConnections {

@@ -139,7 +139,7 @@ impl AgentSessionEngine {
                 // The post-compaction kernel notice goes out before the settled end (TS
                 // `_syncKernelStateAfterCompaction`): its `message_start`/`message_end` pair
                 // precedes `compaction_end`.
-                if let Some(message) = &run.ipython_state {
+                if let Some(message) = &run.javascript_state {
                     if !emit(EngineEvent::CustomMessage(
                         crate::session_commands::custom_message_value(message),
                     )) {

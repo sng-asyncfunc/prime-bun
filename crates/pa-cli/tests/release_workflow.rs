@@ -237,12 +237,12 @@ fn write_fixture_tarball(
                 fs::read(repo_root().join("install-rust.sh")).expect("read the repair installer"),
             ),
             (
-                "prime-agent-runtime/pyproject.toml",
-                b"[project]\n".to_vec(),
+                "prime-agent-runtime/package.json",
+                b"{\"name\":\"prime-agent-runtime\",\"type\":\"module\"}\n".to_vec(),
             ),
             (
-                "prime-agent-runtime/src/rlm/repl.py",
-                b"# fixture runtime\n".to_vec(),
+                "prime-agent-runtime/src/repl.ts",
+                b"// fixture runtime\n".to_vec(),
             ),
         ]);
         for name in [

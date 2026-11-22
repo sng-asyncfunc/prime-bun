@@ -115,17 +115,17 @@ fn unnamed_streamed_tool_call_renders_code_once_named() {
     apply_streamed_tool_card(
         &mut view,
         "call-1",
-        "python_repl",
+        "javascript",
         &json!({ "code": "fibonacci(23)" }),
     );
     let card = card_of(&view).expect("the named frame creates the card");
-    assert_eq!(card.name, "python_repl");
+    assert_eq!(card.name, "javascript");
     assert!(card.args.get("code").is_some(), "args stream into the card");
     let rows = rendered_card_text(&view);
     assert!(
         rows.iter()
-            .any(|row| row.contains("python") && row.contains("fibonacci(23)")),
-        "the python_repl card renders the code preview: {rows:?}"
+            .any(|row| row.contains("js") && row.contains("fibonacci(23)")),
+        "the javascript card renders the code preview: {rows:?}"
     );
     assert!(
         rows.iter()
@@ -274,10 +274,15 @@ fn existing_card_refreshes_name_and_args_from_latest_frame() {
         args: Value::Null,
         ..Default::default()
     })));
-    apply_streamed_tool_card(&mut view, "call-1", "ipython", &json!({ "code": "x = 1" }));
+    apply_streamed_tool_card(
+        &mut view,
+        "call-1",
+        "javascript",
+        &json!({ "code": "const x = 1" }),
+    );
     let card = card_of(&view).expect("the streamed frame finds the card");
-    assert_eq!(card.name, "ipython");
-    assert_eq!(card.args.get("code"), Some(&json!("x = 1")));
+    assert_eq!(card.name, "javascript");
+    assert_eq!(card.args.get("code"), Some(&json!("const x = 1")));
 }
 
 #[test]
@@ -292,24 +297,24 @@ fn tool_execution_start_reports_the_tool_name() {
     apply_tool_execution_start(
         &mut view,
         "call-1",
-        "ipython",
-        json!({ "code": "print('hi')" }),
+        "javascript",
+        json!({ "code": "console.log('hi')" }),
     );
     let card = card_of(&view).expect("the start event finds the card");
-    assert_eq!(card.name, "ipython");
+    assert_eq!(card.name, "javascript");
     assert!(card.started, "the start event marks execution started");
 
     let mut fresh = test_view();
     apply_tool_execution_start(
         &mut fresh,
         "call-2",
-        "ipython",
+        "javascript",
         json!({ "code": "fibonacci(23)" }),
     );
     let rows = rendered_card_text(&fresh);
     assert!(
         rows.iter()
-            .any(|row| row.contains("python") && row.contains("fibonacci(23)")),
+            .any(|row| row.contains("js") && row.contains("fibonacci(23)")),
         "a card created from the start event renders the code preview: {rows:?}"
     );
 }
@@ -420,7 +425,7 @@ fn a_bulk_replay_settles_the_last_pending_card_for_a_reused_id() {
             "role": "assistant",
             "content": [
                 { "type": "text", "text": "calling twice" },
-                { "type": "toolCall", "id": "dup", "name": "ipython", "arguments": {"code": "1"} },
+                { "type": "toolCall", "id": "dup", "name": "javascript", "arguments": {"code": "1"} },
             ],
             "timestamp": 1,
         }),
@@ -428,14 +433,14 @@ fn a_bulk_replay_settles_the_last_pending_card_for_a_reused_id() {
             "role": "assistant",
             "content": [
                 { "type": "text", "text": "again" },
-                { "type": "toolCall", "id": "dup", "name": "ipython", "arguments": {"code": "2"} },
+                { "type": "toolCall", "id": "dup", "name": "javascript", "arguments": {"code": "2"} },
             ],
             "timestamp": 2,
         }),
         json!({
             "role": "toolResult",
             "toolCallId": "dup",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "the second run" }],
             "isError": false,
             "timestamp": 3,
@@ -464,14 +469,14 @@ fn an_interleaved_replay_pairs_results_in_arrival_order() {
             "role": "assistant",
             "content": [
                 { "type": "text", "text": "first" },
-                { "type": "toolCall", "id": "dup", "name": "ipython", "arguments": {"code": "1"} },
+                { "type": "toolCall", "id": "dup", "name": "javascript", "arguments": {"code": "1"} },
             ],
             "timestamp": 1,
         }),
         json!({
             "role": "toolResult",
             "toolCallId": "dup",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "the first run" }],
             "isError": false,
             "timestamp": 2,
@@ -480,14 +485,14 @@ fn an_interleaved_replay_pairs_results_in_arrival_order() {
             "role": "assistant",
             "content": [
                 { "type": "text", "text": "second" },
-                { "type": "toolCall", "id": "dup", "name": "ipython", "arguments": {"code": "2"} },
+                { "type": "toolCall", "id": "dup", "name": "javascript", "arguments": {"code": "2"} },
             ],
             "timestamp": 3,
         }),
         json!({
             "role": "toolResult",
             "toolCallId": "dup",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "the second run" }],
             "isError": false,
             "timestamp": 4,
@@ -560,14 +565,14 @@ fn a_leftover_settle_keeps_its_own_orphan_card() {
             "role": "assistant",
             "content": [
                 { "type": "text", "text": "first" },
-                { "type": "toolCall", "id": "dup", "name": "ipython", "arguments": {"code": "1"} },
+                { "type": "toolCall", "id": "dup", "name": "javascript", "arguments": {"code": "1"} },
             ],
             "timestamp": 1,
         }),
         json!({
             "role": "toolResult",
             "toolCallId": "dup",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "the first run" }],
             "isError": false,
             "timestamp": 2,
@@ -575,7 +580,7 @@ fn a_leftover_settle_keeps_its_own_orphan_card() {
         json!({
             "role": "toolResult",
             "toolCallId": "dup",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "the leftover" }],
             "isError": false,
             "timestamp": 3,
@@ -584,7 +589,7 @@ fn a_leftover_settle_keeps_its_own_orphan_card() {
             "role": "assistant",
             "content": [
                 { "type": "text", "text": "second" },
-                { "type": "toolCall", "id": "dup", "name": "ipython", "arguments": {"code": "2"} },
+                { "type": "toolCall", "id": "dup", "name": "javascript", "arguments": {"code": "2"} },
             ],
             "timestamp": 4,
         }),
@@ -1318,13 +1323,13 @@ fn decodes_auto_retry_events() {
 fn loader_note_comes_from_starting_partials_only() {
     let booting = json!({
         "content": [
-            { "type": "text", "text": "\u{203a} setting up python kernel (one-time, ~30s)\u{2026}" }
+            { "type": "text", "text": "\u{203a} setting up Bun worker\u{2026}" }
         ],
         "details": { "status": "starting" },
     });
     assert_eq!(
         working_message_from_update(&booting).as_deref(),
-        Some("\u{203a} setting up python kernel (one-time, ~30s)\u{2026}")
+        Some("\u{203a} setting up Bun worker\u{2026}")
     );
     let streamed = json!({
         "content": [{ "type": "text", "text": "visual parity ok" }],
@@ -1585,7 +1590,7 @@ fn transcript_replay_completes_tool_cards() {
             "role": "assistant",
             "content": [
                 { "type": "text", "text": "calling" },
-                { "type": "toolCall", "id": "call-1", "name": "ipython", "arguments": {"code": "1"} },
+                { "type": "toolCall", "id": "call-1", "name": "javascript", "arguments": {"code": "1"} },
             ],
             "provider": "faux", "model": "faux-1",
             "usage": { "input": 10, "output": 2 }, "stopReason": "toolUse",
@@ -1594,7 +1599,7 @@ fn transcript_replay_completes_tool_cards() {
         json!({
             "role": "toolResult",
             "toolCallId": "call-1",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "42" }],
             "details": { "durationMs": 3, "status": "ok" },
             "isError": false,
@@ -1603,7 +1608,7 @@ fn transcript_replay_completes_tool_cards() {
         json!({
             "role": "toolResult",
             "toolCallId": "orphan",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "no card" }],
             "isError": false,
             "timestamp": 4,
@@ -1644,7 +1649,7 @@ fn transcript_replay_keeps_pending_cards_without_results() {
         json!({
             "role": "assistant",
             "content": [
-                { "type": "toolCall", "id": "call-1", "name": "ipython", "arguments": {} },
+                { "type": "toolCall", "id": "call-1", "name": "javascript", "arguments": {} },
             ],
             "provider": "faux", "model": "faux-1",
             "usage": { "input": 10, "output": 2 }, "stopReason": "toolUse",
@@ -1665,7 +1670,7 @@ fn push_message_completes_pending_tool_card() {
     reconstructed.push_message(&json!({
         "role": "assistant",
         "content": [
-            { "type": "toolCall", "id": "call-1", "name": "ipython", "arguments": {} },
+            { "type": "toolCall", "id": "call-1", "name": "javascript", "arguments": {} },
         ],
         "provider": "faux", "model": "faux-1",
         "usage": { "input": 10, "output": 2 }, "stopReason": "toolUse",
@@ -1674,7 +1679,7 @@ fn push_message_completes_pending_tool_card() {
     reconstructed.push_message(&json!({
         "role": "toolResult",
         "toolCallId": "call-1",
-        "toolName": "ipython",
+        "toolName": "javascript",
         "content": [{ "type": "text", "text": "out" }],
         "isError": true,
         "timestamp": 3,
@@ -2058,7 +2063,7 @@ fn image_heavy_tool_result(payload: &str) -> serde_json::Value {
     json!({
         "role": "toolResult",
         "toolCallId": "call-img",
-        "toolName": "ipython",
+        "toolName": "javascript",
         "content": [
             { "type": "text", "text": "Loaded 1 image(s) into context: /tmp/shot.png" },
             { "type": "image", "data": payload, "mimeType": "image/png" }
@@ -2073,7 +2078,7 @@ fn elided_image_tool_result(elided_bytes: u64, width: u64, height: u64) -> serde
     json!({
         "role": "toolResult",
         "toolCallId": "call-img",
-        "toolName": "ipython",
+        "toolName": "javascript",
         "content": [
             { "type": "text", "text": "Loaded 1 image(s) into context: /tmp/shot.png" },
             {

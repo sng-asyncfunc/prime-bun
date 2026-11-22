@@ -43,7 +43,7 @@ fn image_tool_result_message() -> Value {
     json!({
         "role": "toolResult",
         "toolCallId": "img-call",
-        "toolName": "ipython",
+        "toolName": "javascript",
         "content": [
             { "type": "text", "text": "Loaded 1 image(s) into context" },
             { "type": "image", "data": "QUJDRA==", "mimeType": "image/png" }

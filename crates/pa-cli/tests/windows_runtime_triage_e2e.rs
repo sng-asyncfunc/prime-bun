@@ -253,7 +253,7 @@ fn tui_options(socket: &Path, session_dir: &Path, script: &Path) -> InteractiveO
 
 /// The headless run's wall (the unix harness's bound): a turn that never
 /// settles parks the run forever; the wall makes that a failing test.
-const HEADLESS_RUN_BOUND: Duration = Duration::from_secs(180);
+const HEADLESS_RUN_BOUND: Duration = Duration::from_mins(3);
 
 async fn run_headless_bounded(
     options: InteractiveOptions,

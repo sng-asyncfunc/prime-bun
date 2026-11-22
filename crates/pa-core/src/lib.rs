@@ -35,13 +35,13 @@ pub use tools::path_utils::resolve_read_path;
 // elision consumes alongside the tool renderers (narrow re-export).
 pub use tools::render_utils::{get_image_dimensions_prefix, IMAGE_DIMENSIONS_PREFIX_BYTES};
 
-// ipython tool: definition + kernel lifecycle seam (RLM bootstrap included).
-pub use tools::ipython::{
-    create_ipython_tool_definition, sent_agent_message_json, ExecuteResult, ExecuteStatus,
-    IpythonKernelProvisioner, IpythonToolOptions, KernelAttachment, KernelErrorInfo,
+// javascript tool: definition + kernel lifecycle seam (RLM bootstrap included).
+pub use tools::javascript::{
+    create_javascript_tool_definition, sent_agent_message_json, ExecuteResult, ExecuteStatus,
+    JavaScriptKernelProvisioner, JavaScriptToolOptions, KernelAttachment, KernelErrorInfo,
     KernelExecutor, LateSentAgentMessageHandler,
 };
-// RLM kernel subsystem: persistent IPython kernel lifecycle.
+// RLM kernel subsystem: persistent Bun JavaScript kernel lifecycle.
 pub mod agent_traces;
 pub mod auth;
 pub mod autonomous;

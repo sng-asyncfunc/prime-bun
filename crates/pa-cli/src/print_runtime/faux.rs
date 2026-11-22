@@ -171,7 +171,7 @@ pub(crate) async fn build_faux_engine_with(
             daemonless: true,
             model_info: Some(model.clone()),
             // A Rust-only verification harness: no background kernel boot in tests.
-            prewarm_ipython_kernel: None,
+            prewarm_javascript_kernel: None,
             kernel_ready_gate,
             // The background-bash wake pair, the same seam the real
             // provider path wires (the scripted e2es drive the wake).

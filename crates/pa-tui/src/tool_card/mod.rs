@@ -1,12 +1,12 @@
 //! Tool-call card rendering: the card model mirrors the TS component
-//! state; each tool renders through its own shell (ipython self-renders;
-//! bash and the generic fallback use `ToolPanel`).
+//! state; each tool renders through its own shell (`javascript` self-renders;
+//! `bash` and the generic fallback use `ToolPanel`).
 
 pub mod bash;
 pub mod generic;
 pub mod highlight;
-pub mod ipython;
-pub mod ipython_details;
+pub mod javascript;
+pub mod javascript_details;
 mod layout;
 
 use std::time::Instant;
@@ -113,7 +113,7 @@ pub fn working_icon(frame: usize) -> &'static str {
 }
 
 /// Render one tool-call card through its tool shell. `detail` is the card's own level (a click
-/// flips it); `level` is the conversation level, which the python card's edit diffs and sent
+/// flips it); `level` is the conversation level, which the JavaScript card's edit diffs and sent
 /// agent messages follow. `show_images` (the `terminal.showImages` setting) renders metadata
 /// rows or `[Image: ...]` placeholders.
 #[must_use]
@@ -127,8 +127,8 @@ pub fn render_tool_card(
     show_images: bool,
 ) -> Vec<Line> {
     let mut rows = match card.name.as_str() {
-        name if pa_types::ai::is_python_tool_name(name) => {
-            ipython::render(card, frame, detail, level, theme, width, show_images)
+        name if pa_types::ai::is_javascript_tool_name(name) => {
+            javascript::render(card, frame, detail, level, theme, width, show_images)
         }
         "bash" => bash::render(card, frame, detail, theme, width, show_images),
         _ => generic::render(card, frame, detail, theme, width, show_images),
@@ -381,8 +381,8 @@ pub(crate) fn count_tool_card(
     show_images: bool,
 ) -> usize {
     match card.name.as_str() {
-        name if pa_types::ai::is_python_tool_name(name) => {
-            ipython::count(card, frame, detail, level, theme, width, show_images)
+        name if pa_types::ai::is_javascript_tool_name(name) => {
+            javascript::count(card, frame, detail, level, theme, width, show_images)
         }
         "bash" => bash::count(card, frame, detail, theme, width, show_images),
         _ => generic::count(card, frame, detail, theme, width, show_images),

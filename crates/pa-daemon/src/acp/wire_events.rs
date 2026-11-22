@@ -139,13 +139,13 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 .unwrap_or_default()
                 .to_string();
             let args = event.get("args").cloned().unwrap_or(Value::Null);
-            let cell = if pa_types::ai::is_python_tool_name(&tool_name) {
+            let cell = if pa_types::ai::is_javascript_tool_name(&tool_name) {
                 args.get("code").and_then(Value::as_str).map(str::to_string)
             } else {
                 None
             };
-            let title = if pa_types::ai::is_python_tool_name(&tool_name) {
-                "Python cell".to_string()
+            let title = if pa_types::ai::is_javascript_tool_name(&tool_name) {
+                "Bun cell".to_string()
             } else {
                 tool_name.clone()
             };
@@ -171,7 +171,7 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let text = tool_result_text(event.get("result"));
-            let rich = ipython_rich_output(event.get("result"));
+            let rich = javascript_rich_output(event.get("result"));
             let update = AcpSessionUpdate::ToolCallUpdate {
                 tool_call_id,
                 status: Some(if is_error {
@@ -182,7 +182,7 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 content: text.map(|text| vec![super::types::ToolCallContent::new(text)]),
                 meta: rich.map(|rich| {
                     prime_agent_meta(&PrimeAgentSessionMeta {
-                        ipython: Some(rich),
+                        javascript: Some(rich),
                         ..Default::default()
                     })
                 }),
@@ -373,7 +373,7 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 }),
             }]
         }
-        "ipython_sent_agent_message" => {
+        "javascript_sent_agent_message" => {
             let message = event.get("message");
             vec![AcpSessionUpdate::SessionInfoUpdate {
                 meta: prime_agent_meta(&PrimeAgentSessionMeta {
@@ -456,7 +456,7 @@ fn base64_byte_length(data: &str) -> u64 {
 }
 
 /// Media and diffs ride the namespaced meta.
-fn ipython_rich_output(result: Option<&Value>) -> Option<Value> {
+fn javascript_rich_output(result: Option<&Value>) -> Option<Value> {
     let details = result?.get("details")?;
     let attachments = details
         .get("attachments")
@@ -597,15 +597,15 @@ mod tests {
             &json!({
                 "type": "tool_execution_start",
                 "toolCallId": "call-1",
-                "toolName": "ipython",
-                "args": { "code": "print(1)" },
+                "toolName": "javascript",
+                "args": { "code": "console.log(1)" },
             }),
             &mut state,
         );
         let value = serde_json::to_value(&updates[0]).unwrap();
         assert_eq!(value["sessionUpdate"], "tool_call");
-        assert_eq!(value["title"], "Python cell");
-        assert_eq!(value["rawInput"], json!({ "code": "print(1)" }));
+        assert_eq!(value["title"], "Bun cell");
+        assert_eq!(value["rawInput"], json!({ "code": "console.log(1)" }));
         let updates = wire_updates(
             &json!({
                 "type": "tool_execution_end",
@@ -800,11 +800,11 @@ mod tests {
     }
 
     #[test]
-    fn ipython_sent_agent_message_maps_the_target_fallback() {
+    fn javascript_sent_agent_message_maps_the_target_fallback() {
         let mut state = WireMappingState::default();
         let updates = wire_updates(
             &json!({
-                "type": "ipython_sent_agent_message",
+                "type": "javascript_sent_agent_message",
                 "toolCallId": "t7",
                 "message": {
                     "id": "agentmsg_1",
@@ -829,7 +829,7 @@ mod tests {
         );
         let updates = wire_updates(
             &json!({
-                "type": "ipython_sent_agent_message",
+                "type": "javascript_sent_agent_message",
                 "toolCallId": "t8",
                 "message": {
                     "id": "agentmsg_2",

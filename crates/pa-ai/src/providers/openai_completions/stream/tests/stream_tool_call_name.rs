@@ -56,7 +56,7 @@ async fn a_turn_of_only_nameless_calls_keeps_going_as_unknown_tool() {
         chunk(&json!({"role": "assistant", "content": "probing:"})),
         chunk(&json!({"tool_calls": [{
             "index": 0,
-            "function": {"arguments": "{\"python_repl\":\"x\"}"},
+            "function": {"arguments": "{\"javascript\":\"x\"}"},
         }]})),
     ])
     .await;
@@ -65,7 +65,7 @@ async fn a_turn_of_only_nameless_calls_keeps_going_as_unknown_tool() {
         message.content,
         vec![
             text("probing:"),
-            tool_call(&id, UNNAMED_TOOL_CALL, &json!({"python_repl": "x"}))
+            tool_call(&id, UNNAMED_TOOL_CALL, &json!({"javascript": "x"}))
         ]
     );
     assert_eq!(message.stop_reason, StopReason::ToolUse);
@@ -77,7 +77,7 @@ async fn a_nameless_call_beside_a_named_one_is_dropped_alone() {
         chunk(&json!({"tool_calls": [{
             "index": 0,
             "id": "call_1",
-            "function": {"name": "python_repl", "arguments": "{\"code\":\"x\"}"},
+            "function": {"name": "javascript", "arguments": "{\"code\":\"x\"}"},
         }]})),
         chunk(&json!({"tool_calls": [{
             "index": 1,
@@ -87,7 +87,7 @@ async fn a_nameless_call_beside_a_named_one_is_dropped_alone() {
     .await;
     assert_eq!(
         message.content,
-        vec![tool_call("call_1", "python_repl", &json!({"code": "x"}))]
+        vec![tool_call("call_1", "javascript", &json!({"code": "x"}))]
     );
     assert_eq!(message.stop_reason, StopReason::ToolUse);
 }

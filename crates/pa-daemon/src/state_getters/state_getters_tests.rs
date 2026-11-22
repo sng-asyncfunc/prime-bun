@@ -646,7 +646,7 @@ async fn system_prompt_and_tool_definition_match_the_ts_shapes() {
     let response = worker
         .dispatch(
             "get_tool_definition",
-            &json!({ "activeSessionId": "getter-session", "name": "ipython" }),
+            &json!({ "activeSessionId": "getter-session", "name": "javascript" }),
         )
         .await;
     assert!(response.success);

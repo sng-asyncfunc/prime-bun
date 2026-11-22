@@ -198,16 +198,31 @@ impl Drop for KernelEnvOverride {
     }
 }
 
-/// The kernel python for the live-kernel tests (skipped without one).
+/// The kernel Bun binary for the live-kernel tests (skipped without one).
 #[cfg(test)]
-pub(crate) fn live_kernel_python() -> Option<std::path::PathBuf> {
-    let candidate = std::path::PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+pub(crate) fn live_kernel_bun() -> Option<std::path::PathBuf> {
+    if let Ok(explicit) = std::env::var("PRIME_AGENT_KERNEL_BUN") {
+        let candidate = std::path::PathBuf::from(explicit);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
     }
-    eprintln!("kernel python {candidate:?} not found; skipping live kernel test");
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        let candidate = std::path::PathBuf::from(home).join(".bun/bin").join(exe);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("kernel bun not found; skipping live kernel test");
     None
 }

@@ -38,26 +38,38 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; `PA_E2E_KERNEL_PYTHON` overrides.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`).
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping orphan journal e2e",
+        "kernel bun {} not found; skipping orphan journal e2e",
         candidate.display()
     );
     None
@@ -65,7 +77,7 @@ fn kernel_python() -> Option<PathBuf> {
 
 // Ownership transfers to Daemon, whose Drop kills and waits for the child.
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_bun: Option<&Path>) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -80,8 +92,8 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "20000",
         );
-    if let Some(kernel_python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", kernel_python);
+    if let Some(kernel_bun) = kernel_bun {
+        command.env("PRIME_AGENT_KERNEL_BUN", kernel_bun);
     }
     let child = command
         .stdin(Stdio::null())
@@ -105,9 +117,7 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
 /// The orphaning cell: a released `bash("sleep 600")` handle whose process
 /// group outlives the turn, plus the ids the test needs to kill and probe.
 fn orphaning_cell() -> String {
-    // The e2e kernel namespace does not preload `os`, so the cell imports
-    // it before printing the ids the test kills and probes by.
-    let code = "h = bash(\"sleep 600\")\nimport os\nprint(f'ORPHAN_PGID={h.pid} KERNEL_PID={os.getpid()}')";
+    let code = "const h = bash(\"sleep 600\");\nconsole.log(`ORPHAN_PGID=${h.pid} KERNEL_PID=${process.pid}`);";
     serde_json::to_string(&json!({ "code": code })).expect("serialize cell")
 }
 
@@ -160,7 +170,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
     if content_length > 0 {
         reader.read_exact(&mut body)?;
     }
-    // The scripted sequence: request 1 answers the python_repl tool call that
+    // The scripted sequence: request 1 answers the javascript tool call that
     // starts the orphaning sleep, request 2 settles the turn.
     let request = next.fetch_add(1, Ordering::SeqCst);
     let mut payload = String::new();
@@ -175,7 +185,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                         "id": "call-orphan-1",
                         "type": "function",
                         "function": {
-                            "name": "python_repl",
+                            "name": "javascript",
                             "arguments": orphaning_cell(),
                         }
                     }]
@@ -231,7 +241,7 @@ impl Client {
 
     fn read_line(&mut self) -> Value {
         let mut line = String::new();
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + Duration::from_mins(2);
         self.reader
             .get_mut()
             .set_read_timeout(Some(Duration::from_millis(100)))
@@ -263,7 +273,7 @@ impl Client {
         self.writer
             .write_all(line.as_bytes())
             .unwrap_or_else(|error| panic!("write command {id}: {error}"));
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + Duration::from_mins(2);
         loop {
             assert!(Instant::now() < deadline, "no response for id {id}");
             let line = self.read_line();
@@ -421,8 +431,8 @@ fn session_with_orphan(
     root: &Path,
     socket_file: &str,
 ) -> OrphanedSession {
-    let Some(kernel_python) = kernel_python() else {
-        panic!("the orphan journal e2e requires a live kernel python");
+    let Some(kernel_bun) = kernel_bun() else {
+        panic!("the orphan journal e2e requires a live kernel bun");
     };
     let agent_dir = root.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -451,7 +461,7 @@ fn session_with_orphan(
         .to_string(),
     )
     .expect("write models.json");
-    let daemon = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
+    let daemon = spawn_daemon(&socket, &agent_dir, Some(&kernel_bun));
     let mut client = Client::connect(&socket);
     let active_session_id = create_session(&mut client, "c1", root, &agent_dir);
     let started = client.request(
@@ -483,7 +493,7 @@ fn session_with_orphan(
 #[test]
 fn a_killed_kernel_reaps_its_journaled_bash_groups() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    if kernel_python().is_none() {
+    if kernel_bun().is_none() {
         return;
     }
     let root = tempfile::TempDir::new().expect("temp dir");
@@ -510,7 +520,7 @@ fn a_killed_kernel_reaps_its_journaled_bash_groups() {
 #[test]
 fn a_dead_worker_reaps_its_journaled_bash_groups_from_the_supervisor() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    if kernel_python().is_none() {
+    if kernel_bun().is_none() {
         return;
     }
     let root = tempfile::TempDir::new().expect("temp dir");

@@ -1,0 +1,126 @@
+{
+  "group": "javascript",
+  "caseCount": 5,
+  "cases": [
+    {
+      "name": "stdout-stderr-result-ordering",
+      "code": "console.log('out')",
+      "mockResults": [
+        {
+          "status": "ok",
+          "stdout": "out\n",
+          "stderr": "err\n",
+          "durationMs": 123,
+          "result": "42"
+        }
+      ],
+      "provisionerCalls": {
+        "ensure": 1,
+        "execute": 1,
+        "kill": 0
+      },
+      "result": {
+        "ok": true,
+        "isError": false,
+        "outputText": "out\n\nerr\n\n42"
+      }
+    },
+    {
+      "name": "error-status-traceback",
+      "code": "throw new RangeError('boom')",
+      "mockResults": [
+        {
+          "status": "error",
+          "stdout": "before\n",
+          "stderr": "",
+          "error": {
+            "ename": "RangeError",
+            "evalue": "boom",
+            "traceback": [
+              "RangeError: boom",
+              "    at cell:1:7"
+            ]
+          },
+          "durationMs": 5
+        }
+      ],
+      "provisionerCalls": {
+        "ensure": 1,
+        "execute": 1,
+        "kill": 0
+      },
+      "result": {
+        "ok": true,
+        "isError": true,
+        "outputText": "before\n\nRangeError: boom\n    at cell:1:7"
+      }
+    },
+    {
+      "name": "empty-output",
+      "code": "const x = 1;",
+      "mockResults": [
+        {
+          "status": "ok",
+          "stdout": "",
+          "stderr": "",
+          "durationMs": 123
+        }
+      ],
+      "provisionerCalls": {
+        "ensure": 1,
+        "execute": 1,
+        "kill": 0
+      },
+      "result": {
+        "ok": true,
+        "isError": false,
+        "outputText": ""
+      }
+    },
+    {
+      "name": "background-output",
+      "code": "await Bun.sleep(10)",
+      "mockResults": [
+        {
+          "status": "ok",
+          "stdout": "x",
+          "stderr": "",
+          "durationMs": 123,
+          "backgroundOutput": "late output\nfrom background"
+        }
+      ],
+      "provisionerCalls": {
+        "ensure": 1,
+        "execute": 1,
+        "kill": 0
+      },
+      "result": {
+        "ok": true,
+        "isError": false,
+        "outputText": "x\n[background output (unattributed)]\nlate output\nfrom background"
+      }
+    },
+    {
+      "name": "aborted-status",
+      "code": "await Bun.sleep(10000)",
+      "mockResults": [
+        {
+          "status": "aborted",
+          "stdout": "partial output",
+          "stderr": "",
+          "durationMs": 123
+        }
+      ],
+      "provisionerCalls": {
+        "ensure": 1,
+        "execute": 1,
+        "kill": 0
+      },
+      "result": {
+        "ok": true,
+        "isError": true,
+        "outputText": "partial output"
+      }
+    }
+  ]
+}

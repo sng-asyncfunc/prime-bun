@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn parses_ready() {
-        let e = parse_event(r#"{"event":"ready","protocol":3,"python":"3.11.16"}"#).unwrap();
+        let e = parse_event(r#"{"event":"ready","protocol":3,"bun":"1.3.14"}"#).unwrap();
         match e {
             Event::Ready { protocol } => assert_eq!(protocol, 3),
             other => panic!("{other:?}"),
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn request_json_round_trip() {
         let req = Request::Snapshot {
-            path: "/tmp/s.dill".into(),
+            path: "/tmp/s.bin".into(),
             manifest_path: "/tmp/s.json".into(),
             max_bytes: 1,
             max_variable_bytes: 2,
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn parses_every_event_kind_verbatim() {
         assert_eq!(
-            parse_event(r#"{"event":"ready","protocol":3,"python":"3.13.11"}"#).unwrap(),
+            parse_event(r#"{"event":"ready","protocol":3,"bun":"1.3.14"}"#).unwrap(),
             Event::Ready { protocol: 3 }
         );
         assert_eq!(

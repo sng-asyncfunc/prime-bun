@@ -45,28 +45,38 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python (the same resolution the other kernel e2es use):
-/// an explicit `PA_E2E_KERNEL_PYTHON`, else the machine's live install.
-/// Skipped (with a note) on machines without one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`). Skipped (with a note) on machines without Bun.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping the launch-env kernel e2e",
+        "kernel bun {} not found; skipping the launch-env kernel e2e",
         candidate.display()
     );
     None
@@ -76,7 +86,7 @@ fn kernel_python() -> Option<PathBuf> {
 /// daemon itself "runs inside an agent" (`RLM_DEPTH=1`) and has NEVER
 /// seen the client's marker. `PA_MARKER` is scrubbed so the only path it
 /// can ever take into a worker is the create's launch env.
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_bun: Option<&Path>) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let log_file = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let log_err = log_file.try_clone().expect("clone log file");
@@ -100,8 +110,8 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path
         .env("PA_DAEMON_BASE_SENTINEL", "daemon-boot")
         .stdout(Stdio::null())
         .stderr(Stdio::from(log_err));
-    if let Some(kernel_python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", kernel_python);
+    if let Some(kernel_bun) = kernel_bun {
+        command.env("PRIME_AGENT_KERNEL_BUN", kernel_bun);
     }
     // A supervisor killed at teardown must not leak its session workers
     // into later test binaries: the worker's supervisor-lost exit runs
@@ -164,7 +174,7 @@ impl Client {
     }
 
     fn read_response(&mut self, id: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         loop {
             let line = self.read_line();
             if line.get("id").and_then(Value::as_str) == Some(id) {
@@ -410,10 +420,10 @@ fn the_client_launch_env_reaches_only_its_own_worker() {
 
 /// The kernel under the worker runs in the client's env too (the audit
 /// #1 repro: `bash()`/kernel subprocesses see the terminal's PATH, not
-/// the daemon's). One scripted cell writes its `os.environ` to a receipt.
+/// the daemon's). One scripted cell writes its `process.env` to a receipt.
 #[test]
 fn the_kernel_runs_in_the_client_launch_env() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -423,7 +433,7 @@ fn the_kernel_runs_in_the_client_launch_env() {
     let receipt = dir.path().join("kernel-receipt.txt");
     // The cell records exactly the two vars the contract cares about.
     let cell = format!(
-        "import os\nopen({receipt:?}, \"w\").write((os.environ.get(\"PA_MARKER\") or \"ABSENT\") + \"\\n\" + (os.environ.get(\"RLM_DEPTH\") or \"ABSENT\"))\nprint(\"cell done\")",
+        "fs.writeFileSync({receipt:?}, (process.env.PA_MARKER || \"ABSENT\") + \"\\n\" + (process.env.RLM_DEPTH || \"ABSENT\"));\nconsole.log(\"cell done\");",
         receipt = receipt.to_string_lossy(),
     );
     let script = dir.path().join("kernel-script.json");
@@ -433,7 +443,7 @@ fn the_kernel_runs_in_the_client_launch_env() {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "javascript", "arguments": {
                         "code": cell,
                     } },
                 ] },
@@ -443,7 +453,7 @@ fn the_kernel_runs_in_the_client_launch_env() {
         .to_string(),
     )
     .expect("write faux script");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_python));
+    let _daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_bun));
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -480,7 +490,7 @@ fn the_kernel_runs_in_the_client_launch_env() {
     // receipt exists only because the live kernel executed the cell.
     eprintln!(
         "launch-env kernel e2e ran: kernel {} executed the cell, receipt={:?}",
-        kernel_python.display(),
+        kernel_bun.display(),
         content
     );
 }

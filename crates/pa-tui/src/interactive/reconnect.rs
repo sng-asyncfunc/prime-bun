@@ -19,7 +19,7 @@ const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(10);
 /// TS #2458 `DAEMON_RECONNECT_TIMEOUT_MS`: the announced non-update closing's recovery
 /// window — an explicit stop stays stopped, so the pane waits bounded instead of retrying
 /// through the §10.2 resume window.
-pub(super) const DAEMON_SHUTDOWN_RECONNECT_WINDOW: Duration = Duration::from_secs(60);
+pub(super) const DAEMON_SHUTDOWN_RECONNECT_WINDOW: Duration = Duration::from_mins(1);
 
 /// TS #2458 `SHUTDOWN_RECONNECT_RETRY_MS`: the shutdown recovery's poll
 /// cadence (fixed, unlike the doubling hiccup backoff).

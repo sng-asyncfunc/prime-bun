@@ -28,7 +28,7 @@ impl Drop for Daemon {
     }
 }
 
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_bun: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)
         .arg("supervisor")
@@ -36,7 +36,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+        .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
         // Hermetic agent dir: the ambient env exports a real one; point fallbacks at
         // the sandbox.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
@@ -58,27 +58,38 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`).
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live RLM quiescence e2e",
+        "kernel bun {} not found; skipping live RLM quiescence e2e",
         candidate.display()
     );
     None
@@ -128,7 +139,7 @@ impl Client {
 
     fn read_line(&mut self) -> Value {
         let mut line = String::new();
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + Duration::from_mins(2);
         self.reader
             .get_mut()
             .set_read_timeout(Some(Duration::from_millis(100)))
@@ -149,7 +160,7 @@ impl Client {
     }
 
     fn read_response(&mut self, id: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(240);
+        let deadline = Instant::now() + Duration::from_mins(4);
         loop {
             assert!(Instant::now() < deadline, "no response for id {id}");
             let line = self.read_line();
@@ -194,7 +205,7 @@ fn run_turn(client: &mut Client, session_id: &str, message: &str, id: &str) {
 }
 
 fn await_receipt(receipt: &Path) -> String {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     loop {
         if let Ok(content) = std::fs::read_to_string(receipt) {
             return content;
@@ -212,7 +223,7 @@ fn await_receipt(receipt: &Path) -> String {
 /// record its child id.
 fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import json, traceback\ntry:\n    handle = await rlm.spawn(\"run the lane task\", name=\"kid\")\n    open({receipt:?}, \"w\").write(json.dumps({{\"rlm_child_id\": handle.rlm_child_id}}))\n    print(handle.rlm_child_id)\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        "try {{\n  const handle = await rlm.spawn(\"run the lane task\", {{ name: \"kid\" }});\n  fs.writeFileSync({receipt:?}, JSON.stringify({{ rlm_child_id: handle.rlmChildId }}));\n  console.log(handle.rlmChildId);\n}} catch (err) {{\n  fs.writeFileSync({error_receipt:?}, String(err?.stack ?? err));\n  throw err;\n}}",
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
@@ -240,7 +251,7 @@ fn write_parent_script(dir: &Path, first_cell: &str) -> PathBuf {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": { "code": first_cell } },
+                    { "type": "toolCall", "name": "javascript", "arguments": { "code": first_cell } },
                 ] },
                 { "text": "spawn turn done" },
                 { "text": "notice seen" },
@@ -300,7 +311,7 @@ struct HeldChildLane {
     child_id: String,
 }
 
-fn spawn_held_child_lane(kernel_python: &Path) -> HeldChildLane {
+fn spawn_held_child_lane(kernel_bun: &Path) -> HeldChildLane {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -312,7 +323,7 @@ fn spawn_held_child_lane(kernel_python: &Path) -> HeldChildLane {
 
     let child_script = write_child_script(dir.path());
     let parent_script = write_parent_script(dir.path(), &spawn_cell(&spawn_receipt, &spawn_error));
-    let daemon = spawn_supervisor(&socket, &agent_dir, kernel_python);
+    let daemon = spawn_supervisor(&socket, &agent_dir, kernel_bun);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -349,10 +360,10 @@ fn spawn_held_child_lane(kernel_python: &Path) -> HeldChildLane {
 /// notice it queues drains; the pre-fix worker answered at the parent's idle.
 #[test]
 fn headless_completion_waits_for_rlm_quiescence() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
-    let mut lane = spawn_held_child_lane(&kernel_python);
+    let mut lane = spawn_held_child_lane(&kernel_bun);
 
     lane.client.send_command(
         "w1",
@@ -389,10 +400,10 @@ fn headless_completion_waits_for_rlm_quiescence() {
 /// running subagents is not idle until its whole subtree settled.
 #[test]
 fn wait_for_idle_waits_for_rlm_quiescence() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
-    let mut lane = spawn_held_child_lane(&kernel_python);
+    let mut lane = spawn_held_child_lane(&kernel_bun);
     lane.client.send_command(
         "w1",
         &json!({
@@ -424,10 +435,10 @@ fn wait_for_idle_waits_for_rlm_quiescence() {
 /// inside the settle window.
 #[test]
 fn headless_completion_holds_through_the_settle_window() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
-    let mut lane = spawn_held_child_lane(&kernel_python);
+    let mut lane = spawn_held_child_lane(&kernel_bun);
 
     // The roster says `done` here while the child's run has not settled yet: this is
     // the settle window the barrier must hold through.

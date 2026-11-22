@@ -1246,7 +1246,7 @@ async fn an_unreachable_child_delivers_the_failure_notice_instead_of_no_reply() 
     let handle = spawn_child(&sessions).await;
     sessions.notify_turn_done();
 
-    let follow_up = tokio::time::timeout(Duration::from_secs(3_600), follow_up_rx.recv())
+    let follow_up = tokio::time::timeout(Duration::from_hours(1), follow_up_rx.recv())
         .await
         .expect("the unreachable child must deliver its failure notice")
         .expect("follow_up channel open");
@@ -1297,7 +1297,7 @@ async fn a_verdict_landing_inside_the_unreachable_give_up_still_runs_the_settle_
     }
     VERDICT_LANDED.notify_one();
 
-    tokio::time::timeout(Duration::from_secs(3_600), settled)
+    tokio::time::timeout(Duration::from_hours(1), settled)
         .await
         .expect("the settle funnel fires for the reader's verdict");
     assert!(!sessions.any_running().await, "the run must mark settled");
@@ -2712,7 +2712,7 @@ async fn a_failed_settle_captures_the_childs_last_assistant_text() {
     let handle = spawn_child(&sessions).await;
     let settled = sessions.settle_notified();
     sessions.notify_turn_done();
-    tokio::time::timeout(Duration::from_secs(3_600), settled)
+    tokio::time::timeout(Duration::from_hours(1), settled)
         .await
         .expect("the unreachable give-up settles the child as failed");
     let results = sessions

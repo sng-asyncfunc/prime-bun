@@ -232,7 +232,7 @@ async fn serve_sse_hold_open(body: String) -> SocketAddr {
 
 /// A tool-call chunk (`finish_reason` still null — the stream is
 /// mid-block).
-const TOOLCALL_DELTA: &str = r#"data: {"id":"c1","object":"chat.completion.chunk","model":"glm-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ipython","arguments":"{\"code\": \"print(17*23)\"}"}}]},"finish_reason":null}]}
+const TOOLCALL_DELTA: &str = r#"data: {"id":"c1","object":"chat.completion.chunk","model":"glm-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"javascript","arguments":"{\"code\": \"console.log(17*23)\"}"}}]},"finish_reason":null}]}
 
 "#;
 
@@ -288,8 +288,7 @@ async fn the_done_marker_ends_a_stream_whose_body_stays_open() {
     };
     assert_eq!(message.stop_reason, StopReason::ToolUse);
     assert_eq!(message.error_message, None);
-    assert!(message
-        .content
-        .iter()
-        .any(|block| matches!(block, AssistantContent::ToolCall(call) if call.name == "ipython")));
+    assert!(message.content.iter().any(
+        |block| matches!(block, AssistantContent::ToolCall(call) if call.name == "javascript")
+    ));
 }

@@ -1,4 +1,4 @@
-# test_windows_install.ps1 — the Windows install e2e (the windows-runtime-triage
+﻿# test_windows_install.ps1 — the Windows install e2e (the windows-runtime-triage
 # battery's install gates).
 #
 # WHAT IT PROVES: both Windows entry points install the REAL release artifact
@@ -172,7 +172,7 @@ try {
     if (-not (Test-Path $cmdLauncher)) { throw "the cmd launcher is missing: $cmdLauncher" }
     $versionA = (& $cmdLauncher --version) | Select-Object -First 1
     if ($versionA -ne $version) { throw "the cmd launcher answered '$versionA' instead of '$version'" }
-    foreach ($entry in @('share\prime-agent\prime-agent.exe', 'share\prime-agent\prime-agent-runtime\pyproject.toml', 'share\prime-agent\LICENSE', 'share\prime-agent\THIRD-PARTY-NOTICES.txt', 'share\prime-agent\skills')) {
+    foreach ($entry in @('share\prime-agent\prime-agent.exe', 'share\prime-agent\prime-agent-runtime\package.json', 'share\prime-agent\LICENSE', 'share\prime-agent\THIRD-PARTY-NOTICES.txt', 'share\prime-agent\skills')) {
         if (-not (Test-Path (Join-Path $prefixA $entry))) { throw "the ps1 route's payload is missing $entry" }
     }
     # The uv parity gate asserts the CONTRACT, never astral.sh availability
@@ -208,7 +208,7 @@ try {
     $prefixBMsys = (& $bash -c ("cygpath -u '" + $prefixB + "'")).Trim()
     $versionB = (& $bash -c ('"' + $prefixBMsys + '/bin/prime-agent" --version') | Select-Object -First 1)
     if ($versionB -ne $version) { throw "the sh launcher answered '$versionB' instead of '$version'" }
-    foreach ($entry in @('share\prime-agent\prime-agent.exe', 'share\prime-agent\prime-agent-runtime\pyproject.toml')) {
+    foreach ($entry in @('share\prime-agent\prime-agent.exe', 'share\prime-agent\prime-agent-runtime\package.json')) {
         if (-not (Test-Path (Join-Path $prefixB $entry))) { throw "the sh route's payload is missing $entry" }
     }
 

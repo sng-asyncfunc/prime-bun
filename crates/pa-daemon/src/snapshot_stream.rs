@@ -352,7 +352,7 @@ mod tests {
         json!({
             "role": "toolResult",
             "toolCallId": "call-1",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [
                 { "type": "text", "text": "Loaded 1 image(s) into context: /tmp/shot.png" },
                 { "type": "image", "data": payload, "mimeType": "image/png" }

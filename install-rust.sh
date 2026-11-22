@@ -3124,13 +3124,13 @@ fi
 if uv_on_path \
    || { [ -n "$uv_bin_dir" ] && [ -x "${uv_bin_dir}/${uv_name}" ]; } \
    || { [ "$uv_under_store" = "no" ] && [ -x "${HOME}/.local/bin/${uv_name}" ]; }; then
-  step_start "Preparing the Python kernel"
+  step_start "Preparing the Bun kernel"
   if bootstrap_out="$("$install_probe_launcher" --prime-agent-bootstrap 2>&1)"; then
     step_ok "Kernel ready"
-    say "kernel pre-warmed: the first session's Python kernel is ready"
+    say "kernel pre-warmed: the first session's Bun JavaScript kernel is ready"
     say "$bootstrap_out"
   else
-    step_fail "Preparing the Python kernel" "the first session retries it"
+    step_fail "Preparing the Bun kernel" "the first session retries it"
     note "! The kernel pre-warm failed; the install stands and the first session"
     note "  retries it online:"
     note "$bootstrap_out"

@@ -23,7 +23,7 @@ pub mod harness_digest;
 pub mod headless;
 pub mod host_requests;
 pub mod image_model_routing;
-pub mod ipython_state;
+pub mod javascript_state;
 pub mod late_sent_messages;
 pub mod messages;
 pub mod model_usage;
@@ -148,8 +148,8 @@ pub struct AgentSession {
     /// consume.
     compact_auto_refine: Arc<std::sync::Mutex<auto_refine_trigger::CompactAutoRefineState>>,
     /// The kernel-state probe behind the post-compaction
-    /// `ipython_state` notice; `None` without a kernel.
-    kernel_state: Option<std::sync::Arc<dyn ipython_state::CompactionKernelProbe>>,
+    /// `javascript_state` notice; `None` without a kernel.
+    kernel_state: Option<std::sync::Arc<dyn javascript_state::CompactionKernelProbe>>,
     /// TS `_pendingNextTurnMessages`: custom rows the NEXT admitted
     /// turn carries ahead of its own prompt row.
     pending_next_turn_rows: std::sync::Arc<std::sync::Mutex<Vec<pa_types::session::CustomMessage>>>,

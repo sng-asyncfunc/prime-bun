@@ -139,7 +139,7 @@ async fn engine_runs_tool_loop_and_persists() {
         on_background_work_settled: None,
         bash_notice_wake: None,
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -250,7 +250,7 @@ async fn spawned_child_prompt_stamps_its_depth() {
         on_background_work_settled: None,
         bash_notice_wake: None,
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -324,7 +324,7 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
             on_background_work_settled: None,
             bash_notice_wake: None,
             kernel_ready_gate: None,
-            prewarm_ipython_kernel: None,
+            prewarm_javascript_kernel: None,
             queued_goal_context_purge: None,
         }
     }
@@ -440,7 +440,7 @@ async fn create_session_registers_the_kernel_backed_tools_without_cron_wiring() 
         .map(|tool| tool.name().to_string())
         .collect();
     assert!(
-        names.iter().any(|name| name == "python_repl"),
+        names.iter().any(|name| name == "javascript"),
         "tools: {names:?}"
     );
 }
@@ -515,7 +515,7 @@ async fn create_session_appends_missing_resume_settings_rows() {
         on_background_work_settled: None,
         bash_notice_wake: None,
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -612,12 +612,12 @@ fn prompt_lists_skill(engine: &SessionEngine, name: &str) -> bool {
         .contains(&format!("<name>{name}</name>"))
 }
 
-fn kernel_skill_imports(engine: &SessionEngine) -> Vec<String> {
+fn kernel_skill_globals(engine: &SessionEngine) -> Vec<String> {
     engine
         .provisioner
-        .python_skills()
+        .javascript_skills()
         .iter()
-        .map(|skill| skill.import_name.clone())
+        .map(|skill| skill.global_name.clone())
         .collect()
 }
 
@@ -629,10 +629,10 @@ fn kernel_skill_imports(engine: &SessionEngine) -> Vec<String> {
 #[tokio::test]
 async fn model_visible_skills_follow_the_embedding_wiring() {
     let all = ["agent-message", "agent-observe", "rlm-heartbeat"];
-    let imports_of = [
-        ("agent-message", "agent_message"),
-        ("agent-observe", "agent_observe"),
-        ("rlm-heartbeat", "rlm_heartbeat"),
+    let globals_of = [
+        ("agent-message", "agentMessage"),
+        ("agent-observe", "agentObserve"),
+        ("rlm-heartbeat", "rlmHeartbeat"),
     ];
     let cron_dir = tempfile::tempdir().unwrap();
     let daemon_cron = Some(cron_wiring(cron_dir.path()));
@@ -668,12 +668,12 @@ async fn model_visible_skills_follow_the_embedding_wiring() {
                 "{label}: {skill}"
             );
         }
-        let imports = kernel_skill_imports(&engine);
-        for (skill, import) in imports_of {
+        let globals = kernel_skill_globals(&engine);
+        for (skill, global_name) in globals_of {
             assert_eq!(
-                imports.iter().any(|name| name == import),
+                globals.iter().any(|name| name == global_name),
                 visible.contains(&skill),
-                "{label}: {import}"
+                "{label}: {global_name}"
             );
         }
     }
@@ -713,7 +713,7 @@ async fn engine_build_restores_late_sent_agent_message_receipts() {
         .append_message(pa_types::session::AgentMessage::ToolResult(
             pa_types::ai::ToolResultMessage {
                 tool_call_id: "call-1".to_string(),
-                tool_name: "python_repl".to_string(),
+                tool_name: "javascript".to_string(),
                 content: Vec::new(),
                 details: Some(serde_json::json!({ "status": "ok" })),
                 is_error: false,
@@ -724,7 +724,7 @@ async fn engine_build_restores_late_sent_agent_message_receipts() {
         .unwrap();
     manager
         .append_custom_entry(
-            "ipython_sent_agent_message",
+            "javascript_sent_agent_message",
             Some(serde_json::json!({
                 "toolCallId": "call-1",
                 "message": {
@@ -814,13 +814,13 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
     let provider = Arc::new(ScriptedProvider::new(model.clone()));
     provider.push_tool_call_turn(
         None,
-        vec![("call-1", PYTHON_TOOL_NAME, serde_json::json!({}))],
+        vec![("call-1", JAVASCRIPT_TOOL_NAME, serde_json::json!({}))],
     );
     provider.push_text_turn("all done");
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path().join("project");
     std::fs::create_dir_all(&cwd).unwrap();
-    // The fake python tool records the receipt through the engine's own
+    // The fake javascript tool records the receipt through the engine's own
     // seam (like the print sink does); the engine slot binds once the
     // build returns, strictly before the first run executes the tool.
     let engine_slot: Arc<std::sync::Mutex<Option<std::sync::Weak<SessionEngine>>>> = Arc::default();
@@ -837,9 +837,9 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         },
     };
     let recording_tool = ToolDefinition {
-        name: PYTHON_TOOL_NAME.to_string(),
-        label: "Python".to_string(),
-        description: "Runs a python cell.".to_string(),
+        name: JAVASCRIPT_TOOL_NAME.to_string(),
+        label: "Bun".to_string(),
+        description: "Runs a JavaScript cell.".to_string(),
         prompt_snippet: String::new(),
         parameters: serde_json::json!({ "type": "object", "properties": {} }),
         execution_mode: Some(ExecutionMode::Sequential),
@@ -899,7 +899,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         on_background_work_settled: None,
         bash_notice_wake: None,
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -958,7 +958,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
             entry,
             pa_types::session::FileEntry::Custom { payload, .. }
                 if payload.custom_type
-                    == crate::session_engine::late_sent_messages::IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE
+                    == crate::session_engine::late_sent_messages::JAVASCRIPT_SENT_AGENT_MESSAGE_CUSTOM_TYPE
         )),
         "the receipt persists as a custom entry"
     );

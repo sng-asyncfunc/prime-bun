@@ -1,5 +1,5 @@
-//! Startup and child wiring: kernel process spawn, python resolution, stderr
-//! capture, and readiness handshake.
+//! Startup and child wiring: kernel process spawn, Bun runtime resolution,
+//! stderr capture, and readiness handshake.
 
 use super::{
     anyhow, live_kernels, lock, oneshot, orphan_journal, parse_event, Arc, AsyncReadExt, BufReader,
@@ -97,24 +97,57 @@ impl Inner {
         })))
     }
 
-    /// The Python interpreter this kernel runs on: the explicit option when
-    /// present, else the auto-bootstrapped kernel venv.
-    async fn resolve_python(
+    /// The Bun runtime this kernel runs on: the explicit override when
+    /// present, else the auto-bootstrapped `kernel-bun` runtime.
+    async fn resolve_bun_runtime(
         self: &Arc<Self>,
         options: &KernelStartOptions,
-    ) -> anyhow::Result<std::path::PathBuf> {
-        if let Some(python) = &self.options.python {
-            return Ok(python.clone());
+    ) -> anyhow::Result<crate::kernel::bootstrap::KernelBunRuntime> {
+        if let Some(bun) = &self.options.bun {
+            let kernel_dir = self
+                .options
+                .kernel_dir
+                .clone()
+                .unwrap_or_else(crate::kernel::bootstrap::kernel_bun_dir);
+            let worker_entry = self.options.worker_entry.clone().unwrap_or_else(|| {
+                let staged = crate::kernel::bootstrap::kernel_worker_entry(&kernel_dir);
+                if staged.is_file() {
+                    staged
+                } else if let Ok(source) =
+                    crate::kernel::bootstrap::bun::require_runtime_source_dir(None)
+                {
+                    source.join("src").join("repl.ts")
+                } else {
+                    staged
+                }
+            });
+            let prepared_skills = self
+                .options
+                .javascript_skills
+                .iter()
+                .cloned()
+                .map(|skill| {
+                    crate::kernel::bootstrap::PreparedJavaScriptSkill::from_skill(skill, None)
+                })
+                .collect();
+            return Ok(crate::kernel::bootstrap::KernelBunRuntime {
+                bun_path: bun.clone(),
+                bun_version: String::new(),
+                kernel_dir,
+                worker_entry,
+                prepared_skills,
+            });
         }
-        if let Some(cached) = lock(&self.resolved_python).clone() {
+        if let Some(cached) = lock(&self.resolved_runtime).clone() {
             return Ok(cached);
         }
         let progress = options.on_bootstrap_progress.clone();
-        let skills = self.options.python_skills.clone();
-        let python = crate::kernel::bootstrap::ensure_kernel_python_for_project(
-            crate::kernel::bootstrap::EnsureKernelPythonOptions {
-                python_skills: skills,
+        let skills = self.options.javascript_skills.clone();
+        let runtime = crate::kernel::bootstrap::ensure_kernel_bun_for_project(
+            crate::kernel::bootstrap::EnsureKernelBunOptions {
+                javascript_skills: skills,
                 on_progress: progress,
+                runtime_source_dir: None,
             },
             self.options
                 .cwd
@@ -122,8 +155,8 @@ impl Inner {
                 .or_else(|| std::env::current_dir().ok()),
         )
         .await?;
-        *lock(&self.resolved_python) = Some(python.clone());
-        Ok(python)
+        *lock(&self.resolved_runtime) = Some(runtime.clone());
+        Ok(runtime)
     }
 
     /// Start an idle kernel and run the startup; a no-op unless idle.
@@ -169,8 +202,8 @@ impl Inner {
         result
     }
 
-    /// Resolve the interpreter, spawn `python -m rlm.repl`, complete the protocol
-    /// handshake, and mark the kernel running.
+    /// Resolve the Bun runtime, spawn `bun run <worker_entry>`, complete the
+    /// protocol handshake, and mark the kernel running.
     async fn spawn_and_handshake(
         self: &Arc<Self>,
         options: &KernelStartOptions,
@@ -179,8 +212,8 @@ impl Inner {
         // kernel that is still booting.
         live_kernels::add(self);
 
-        let python = match self.resolve_python(options).await {
-            Ok(python) => python,
+        let runtime = match self.resolve_bun_runtime(options).await {
+            Ok(runtime) => runtime,
             Err(error) => {
                 if self.start_stale(self.current_generation()) {
                     // Never touch a newer start's state.
@@ -203,12 +236,19 @@ impl Inner {
         }
 
         let cwd = self.options.cwd.clone();
-        let env = kernel_spawn_env(&self.options.env);
-        let mut command = tokio::process::Command::new(&python);
+        let mut env = kernel_spawn_env(&self.options.env);
+        env.insert(
+            "PRIME_AGENT_KERNEL_BUN".into(),
+            runtime.bun_path.as_os_str().to_os_string(),
+        );
+        env.insert(
+            "PRIME_AGENT_KERNEL_BUN_DIR".into(),
+            runtime.kernel_dir.as_os_str().to_os_string(),
+        );
+        let mut command = tokio::process::Command::new(&runtime.bun_path);
         command
-            // `-m` otherwise prepends the project cwd to sys.path, allowing
-            // a repository's `rlm` to run before a prompt.
-            .args(["-P", "-s", "-m", "rlm.repl"])
+            .arg("run")
+            .arg(&runtime.worker_entry)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -223,16 +263,15 @@ impl Inner {
             Ok(child) => child,
             Err(error) => {
                 // Fail a pending start promptly instead of riding out the ready timeout. The
-                // interpreter itself failed to launch, so the memoized runtime-ready result
-                // is stale.
+                // runtime itself failed to launch, so the memoized runtime-ready result is stale.
                 crate::kernel::bootstrap::invalidate_runtime_probe_cache();
                 self.append_diagnostic(&format!("spawn error: {error}"));
                 lock(&self.guarded).lifecycle.transition(Lifecycle::Defunct);
                 live_kernels::remove(self);
                 self.cleanup_resources(Signal::Term);
                 return Err(anyhow!(
-                    "failed to spawn kernel python {}: {error}",
-                    python.display()
+                    "failed to spawn kernel bun {}: {error}",
+                    runtime.bun_path.display()
                 ));
             }
         };
@@ -286,7 +325,7 @@ impl Inner {
             crate::kernel::bootstrap::invalidate_runtime_probe_cache();
             return Err(anyhow!(
                 "Kernel runtime speaks protocol {protocol}, expected {REPL_PROTOCOL_VERSION}. \
-                 Update prime-agent-runtime in the kernel Python (PRIME_AGENT_KERNEL_PYTHON) to match this prime-agent."
+                 Update prime-agent-runtime in the Bun kernel (PRIME_AGENT_KERNEL_BUN / PRIME_AGENT_KERNEL_BUN_DIR) to match this prime-agent."
             ));
         }
         {
@@ -585,11 +624,9 @@ impl Inner {
     }
 }
 
-/// The kernel child's env (TS repl-manager.ts:374-385): the worker env plus
-/// the provisioner's env, with UTF-8 mode forced on Windows (`CPython` must
-/// read UTF-8 regardless of the active legacy code page, overriding any
-/// provisioner-provided `PYTHONUTF8`) and the owner pid the runtime journals
-/// its process groups under.
+/// The kernel child's env: the worker env plus the provisioner's env, with the
+/// owner pid the runtime journals its process groups under and ambient Node/Bun
+/// preload overrides stripped.
 fn kernel_spawn_env(
     options_env: &HashMap<String, String>,
 ) -> HashMap<std::ffi::OsString, std::ffi::OsString> {
@@ -599,16 +636,11 @@ fn kernel_spawn_env(
         env.retain(|name, _| !name.to_string_lossy().eq_ignore_ascii_case(key));
         env.insert(key.into(), value.into());
     }
-    #[cfg(windows)]
-    {
-        env.retain(|name, _| !name.to_string_lossy().eq_ignore_ascii_case("PYTHONUTF8"));
-        env.insert("PYTHONUTF8".into(), "1".into());
-    }
     env.insert(
         "PRIME_AGENT_KERNEL_OWNER_PID".into(),
         std::process::id().to_string().into(),
     );
-    crate::kernel::python_env::sanitize_python_env(&mut env);
+    crate::kernel::bun_env::sanitize_bun_env(&mut env);
     env
 }
 
@@ -628,34 +660,31 @@ mod tests {
     }
 
     #[test]
-    fn kernel_spawn_drops_python_overrides_after_applying_options() {
+    fn kernel_spawn_drops_bun_preload_overrides_after_applying_options() {
         let root = tempfile::tempdir().unwrap();
         let project = root.path().join("project");
-        let trusted = root.path().join("trusted");
         std::fs::create_dir_all(&project).unwrap();
-        std::fs::create_dir_all(&trusted).unwrap();
         let options = HashMap::from([
+            ("NODE_OPTIONS".to_string(), "--require=./x".to_string()),
             (
-                "PYTHONPATH".to_string(),
-                std::env::join_paths([std::path::Path::new("."), &project, &trusted])
-                    .unwrap()
-                    .into_string()
-                    .unwrap(),
-            ),
-            (
-                "PYTHONHOME".to_string(),
+                "NODE_PATH".to_string(),
                 project.to_string_lossy().into_owned(),
             ),
             (
-                "PYTHONUSERBASE".to_string(),
+                "BUN_PRELOAD".to_string(),
                 project.to_string_lossy().into_owned(),
             ),
         ]);
 
         let env = kernel_spawn_env(&options);
-        assert!(!env.contains_key(std::ffi::OsStr::new("PYTHONPATH")));
-        assert!(!env.contains_key(std::ffi::OsStr::new("PYTHONHOME")));
-        assert!(!env.contains_key(std::ffi::OsStr::new("PYTHONUSERBASE")));
+        assert!(!env.contains_key(std::ffi::OsStr::new("NODE_OPTIONS")));
+        assert!(!env.contains_key(std::ffi::OsStr::new("NODE_PATH")));
+        assert!(!env.contains_key(std::ffi::OsStr::new("BUN_PRELOAD")));
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("PRIME_AGENT_KERNEL_OWNER_PID"))
+                .and_then(|value| value.to_str()),
+            Some(std::process::id().to_string().as_str())
+        );
     }
 
     fn temp_root(tag: &str) -> std::path::PathBuf {
@@ -667,15 +696,9 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn kernel_spawn_env_forces_utf8_mode() {
-        let mut options_env = HashMap::new();
-        options_env.insert("pythonutf8".to_string(), "0".to_string());
+    fn kernel_spawn_env_sets_owner_pid() {
+        let options_env = HashMap::new();
         let env = kernel_spawn_env(&options_env);
-        assert_eq!(
-            env.get(std::ffi::OsStr::new("PYTHONUTF8"))
-                .and_then(|value| value.to_str()),
-            Some("1")
-        );
         assert_eq!(
             env.get(std::ffi::OsStr::new("PRIME_AGENT_KERNEL_OWNER_PID"))
                 .and_then(|value| value.to_str()),

@@ -22,7 +22,7 @@ use pa_ai::faux::{
 use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use pa_core::session_engine::provider_adapter::{json_round_trip, real_stream_fn};
-use pa_core::session_engine::state_restore_notice::IPYTHON_STATE_RESTORED_CUSTOM_TYPE;
+use pa_core::session_engine::state_restore_notice::JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE;
 use pa_core::session_engine::telemetry::{build_client, TelemetryWiring};
 use pa_core::session_engine::{PromptOptions, PromptOutcome};
 use pa_core::settings::SettingsManager;
@@ -32,29 +32,43 @@ use pa_types::session::FileEntry;
 /// the std lock serializes them (the only contenders).
 static FAUX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// The kernel Python with prime-agent-runtime installed (see
-/// `kernel_lifecycle.rs`); skipped with a note when absent.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available; skipped with a note when absent.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live snapshot test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live snapshot test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live snapshot test");
     None
 }
 
@@ -84,14 +98,14 @@ fn faux_session(responses: Vec<FauxResponseStep>) -> FauxSession {
     FauxSession { model, stream_fn }
 }
 
-/// One assistant turn that calls the `ipython` tool with `code` (the
+/// One assistant turn that calls the `javascript` tool with `code` (the
 /// loop's tool-call shape: `StopReason::ToolUse` + a `ToolCall` block).
-fn ipython_tool_call_step(call_id: &str, code: &str) -> FauxResponseStep {
+fn javascript_tool_call_step(call_id: &str, code: &str) -> FauxResponseStep {
     let message = faux_assistant_message(
         vec![pa_types::ai::AssistantContentBlock::ToolCall(
             pa_types::ai::ToolCall {
                 id: call_id.to_string(),
-                name: "python_repl".to_string(),
+                name: "javascript".to_string(),
                 arguments: serde_json::json!({ "code": code })
                     .as_object()
                     .cloned()
@@ -232,7 +246,7 @@ impl Fixture {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn session_end_then_resume_prewarms_and_revives_the_namespace() {
-    let Some(_kernel_python) = kernel_python() else {
+    let Some(_kernel_bun) = kernel_bun() else {
         return;
     };
     let _guard = FAUX_LOCK
@@ -241,9 +255,9 @@ async fn session_end_then_resume_prewarms_and_revives_the_namespace() {
     let fixture = fixture();
 
     let faux_one = faux_session(vec![
-        ipython_tool_call_step(
+        javascript_tool_call_step(
             "call-setup",
-            "data = {'n': 42}\nmarker = 'lane-snapshot'\nimport os\nos.makedirs('moved', exist_ok=True)\nos.chdir('moved')\nos.environ['PA_RESTORE_PROBE'] = 'set'\nprint('setup done')",
+            "const data = { n: 42 };\nconst marker = 'lane-snapshot';\nfs.mkdirSync('moved', { recursive: true });\nprocess.chdir('moved');\nprocess.env.PA_RESTORE_PROBE = 'set';\nconsole.log('setup done');",
         ),
         text_step("state defined"),
     ]);
@@ -264,25 +278,24 @@ async fn session_end_then_resume_prewarms_and_revives_the_namespace() {
     );
     engine.dispose_kernel().await;
 
-    // The snapshot landed in the session's artifact dir (TS
-    // `snapshotPathIn(getSessionArtifactDir())`).
+    // The snapshot landed in the session's artifact dir.
     let artifact_dir = fixture
         .dir
         .path()
         .join("session-artifacts")
         .join(&session_id);
-    let snapshot = artifact_dir.join("kernel-state.dill");
+    let snapshot = artifact_dir.join("kernel-state.bin");
     assert!(
         snapshot.exists(),
-        "kernel-state.dill must exist in the session artifact dir after dispose"
+        "kernel-state.bin must exist in the session artifact dir after dispose"
     );
     drop(engine);
 
     // Session two: RESUME with the prewarm config flag off; only `hasSnapshot` may fire the boot.
     let faux_two = faux_session(vec![
-        ipython_tool_call_step(
+        javascript_tool_call_step(
             "call-read",
-            "print(marker)\nimport os\nprint(os.getcwd())\nprint(os.environ.get('PA_RESTORE_PROBE'))",
+            "console.log(marker);\nconsole.log(process.cwd());\nconsole.log(String(process.env.PA_RESTORE_PROBE));",
         ),
         text_step("read back"),
     ]);
@@ -320,45 +333,44 @@ async fn session_end_then_resume_prewarms_and_revives_the_namespace() {
         "the resumed namespace must revive: {results:?}"
     );
 
-    // The reset the notice discloses: the resumed kernel runs at the
-    // session cwd (not the moved dir) and the probe env var is gone.
+    // Bun runtime snapshots preserve `process.cwd()` and `process.env` deltas across resume.
     let read_back = results
         .iter()
         .find(|text| text.contains("lane-snapshot"))
         .expect("the resumed read cell ran");
-    let session_cwd = fixture
+    let moved_cwd = fixture
         .cwd
+        .join("moved")
         .canonicalize()
-        .expect("canonicalize the fixture cwd");
+        .expect("canonicalize the moved cwd");
     assert!(
         read_back
             .lines()
-            .any(|line| Path::new(line.trim()) == session_cwd.as_path()),
-        "the resumed kernel must run at the session cwd: {read_back}"
+            .any(|line| Path::new(line.trim()) == moved_cwd.as_path()),
+        "the resumed Bun kernel must restore the saved cwd: {read_back}"
     );
     assert!(
-        read_back.lines().any(|line| line.trim() == "None"),
-        "the probe env var must be reset: {read_back}"
+        read_back.lines().any(|line| line.trim() == "set"),
+        "the probe env var must be restored: {read_back}"
     );
 
-    // The restore notice rode the turn and landed durably, naming what came back (TS
-    // `_onIpythonStateRestored`, display row with the `restored` details flag).
+    // The restore notice rode the turn and landed durably, naming what came back.
     let entries = resumed.session.entries().await;
     let notice = entries
         .iter()
         .find_map(|entry| match entry {
             FileEntry::CustomMessage { payload, .. }
-                if payload.custom_type == IPYTHON_STATE_RESTORED_CUSTOM_TYPE =>
+                if payload.custom_type == JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE =>
             {
                 Some(payload.clone())
             }
             _ => None,
         })
-        .expect("the ipython_state_restored notice must land on the resumed session");
+        .expect("the javascript_state_restored notice must land on the resumed session");
     let pa_types::ai::UserContent::Text(content) = &notice.content else {
         panic!("the notice content is text");
     };
-    assert!(content.contains("[python-state-restored]"), "{content}");
+    assert!(content.contains("[javascript-state-restored]"), "{content}");
     assert!(
         content.contains("revived from your previous session"),
         "{content}"
@@ -366,10 +378,6 @@ async fn session_end_then_resume_prewarms_and_revives_the_namespace() {
     assert!(
         content.contains("marker"),
         "the notice names what returned: {content}"
-    );
-    assert!(
-        content.contains("The working directory and environment variables were reset to the session defaults; re-apply any os.chdir(...) or os.environ[...] changes you still need."),
-        "the notice must disclose the cwd/env reset: {content}"
     );
     assert_eq!(
         notice.details,
@@ -385,7 +393,7 @@ async fn session_end_then_resume_prewarms_and_revives_the_namespace() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn fresh_session_without_snapshot_stays_lazy_without_the_flag() {
-    let Some(_kernel_python) = kernel_python() else {
+    let Some(_kernel_bun) = kernel_bun() else {
         return;
     };
     let _guard = FAUX_LOCK

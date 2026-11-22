@@ -69,8 +69,8 @@ fn injected_terminal_links_are_not_clickable() {
         })),
         ChatEntry::Tool(Box::new(ToolCallCard {
             id: "t1".to_string(),
-            name: "python".to_string(),
-            args: serde_json::json!({ "code": format!("x = 1  # {injected}") }),
+            name: "javascript".to_string(),
+            args: serde_json::json!({ "code": format!("const x = 1; // {injected}") }),
             started: true,
             ..Default::default()
         })),
@@ -1670,8 +1670,8 @@ fn a_landing_result_with_receipts_settles_the_card() {
     });
     view.push_entry(ChatEntry::Tool(Box::new(ToolCallCard {
         id: "cell".to_string(),
-        name: "ipython".to_string(),
-        args: serde_json::json!({"code": "print(1)"}),
+        name: "javascript".to_string(),
+        args: serde_json::json!({"code": "send(1)"}),
         started: true,
         started_at: Some(std::time::Instant::now()),
         ..Default::default()
@@ -1695,7 +1695,7 @@ fn a_landing_result_with_receipts_settles_the_card() {
     view.mark_entry_stale(index);
     let text = transcript_text(&mut view, 80);
     assert!(
-        text.contains("python \u{b7} print(1)"),
+        text.contains("js \u{b7} send(1)"),
         "the settled cell renders its own rows: {text}"
     );
     assert!(

@@ -84,39 +84,39 @@ async fn streamed_tool_calls_keep_index_identity_and_complete_arguments() {
     let cases = [
         (
             vec![
-                json!({"index": 0, "id": "python123", "function": {"name": "ipython", "arguments": "{\"code\":\""}}),
-                json!({"index": 0, "function": {"arguments": "print(1)"}}),
-                json!({"index": 0, "function": {"arguments": "\\nprint(2)\"}"}}),
+                json!({"index": 0, "id": "js1234567", "function": {"name": "javascript", "arguments": "{\"code\":\""}}),
+                json!({"index": 0, "function": {"arguments": "console.log(1)"}}),
+                json!({"index": 0, "function": {"arguments": "\\nconsole.log(2)\"}"}}),
             ],
-            json!([{"id": "python123", "name": "ipython", "arguments": {"code": "print(1)\nprint(2)"}}]),
+            json!([{"id": "js1234567", "name": "javascript", "arguments": {"code": "console.log(1)\nconsole.log(2)"}}]),
         ),
         (
             vec![
-                json!({"index": 0, "id": "python123", "function": {"name": "ipython"}}),
+                json!({"index": 0, "id": "js1234567", "function": {"name": "javascript"}}),
                 json!({"index": 1, "id": "other1234", "function": {"name": "edit", "arguments": "{\"path\":"}}),
-                json!({"index": 0, "function": {"arguments": "{\"code\":\"print(1)\"}"}}),
+                json!({"index": 0, "function": {"arguments": "{\"code\":\"console.log(1)\"}"}}),
                 json!({"index": 1, "function": {"arguments": "\"file.txt\"}"}}),
             ],
             json!([
-                {"id": "python123", "name": "ipython", "arguments": {"code": "print(1)"}},
+                {"id": "js1234567", "name": "javascript", "arguments": {"code": "console.log(1)"}},
                 {"id": "other1234", "name": "edit", "arguments": {"path": "file.txt"}},
             ]),
         ),
         (
             vec![
                 json!({"index": 0, "function": {"arguments": "{\"code\":"}}),
-                json!({"index": 0, "id": "python123", "function": {"name": "ipython"}}),
-                json!({"index": 0, "function": {"arguments": "\"print(1)\"}"}}),
+                json!({"index": 0, "id": "js1234567", "function": {"name": "javascript"}}),
+                json!({"index": 0, "function": {"arguments": "\"console.log(1)\"}"}}),
             ],
-            json!([{"id": "python123", "name": "ipython", "arguments": {"code": "print(1)"}}]),
+            json!([{"id": "js1234567", "name": "javascript", "arguments": {"code": "console.log(1)"}}]),
         ),
         (
             // A phantom call that never gets a name (#3648) is dropped from the final message.
             vec![
-                json!({"index": 0, "id": "python123", "function": {"name": "ipython", "arguments": "{\"code\":\"print(1)\"}"}}),
-                json!({"index": 1, "function": {"arguments": "{\"code\":\"print(2)\"}"}}),
+                json!({"index": 0, "id": "js1234567", "function": {"name": "javascript", "arguments": "{\"code\":\"console.log(1)\"}"}}),
+                json!({"index": 1, "function": {"arguments": "{\"code\":\"console.log(2)\"}"}}),
             ],
-            json!([{"id": "python123", "name": "ipython", "arguments": {"code": "print(1)"}}]),
+            json!([{"id": "js1234567", "name": "javascript", "arguments": {"code": "console.log(1)"}}]),
         ),
     ];
     for (deltas, expected) in cases {
@@ -152,7 +152,7 @@ async fn an_error_stop_keeps_the_named_call_arguments_beside_a_dropped_nameless_
     let deltas = vec![
         json!({"index": 0, "function": {"arguments": format!("{{\"code\":\"{large}")}}),
         json!({"index": 0, "function": {"arguments": "y\"}"}}),
-        json!({"index": 1, "id": "python123", "function": {"name": "ipython", "arguments": "{\"code\":\"print(1)\"}"}}),
+        json!({"index": 1, "id": "js1234567", "function": {"name": "javascript", "arguments": "{\"code\":\"console.log(1)\"}"}}),
     ];
     let result = stream_tool_call_deltas(deltas, "error").await;
     assert_eq!(result.stop_reason, StopReason::Error);
@@ -168,6 +168,6 @@ async fn an_error_stop_keeps_the_named_call_arguments_beside_a_dropped_nameless_
         .collect();
     assert_eq!(
         json!(actual),
-        json!([{"id": "python123", "name": "ipython", "arguments": {"code": "print(1)"}}])
+        json!([{"id": "js1234567", "name": "javascript", "arguments": {"code": "console.log(1)"}}])
     );
 }

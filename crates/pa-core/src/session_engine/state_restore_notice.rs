@@ -1,5 +1,5 @@
-//! The resumed-session kernel-state notice (`ipython_state_restored`): a resumed session
-//! spawns a fresh kernel and the namespace snapshot revives the variables; the
+//! The resumed-session kernel-state notice (`javascript_state_restored`): a resumed session
+//! spawns a fresh Bun kernel and the namespace snapshot revives the bindings; the
 //! provisioner's `on_restore` seam reports the outcome so the model is told BEFORE
 //! the first turn. The fresh kernel owns nothing, so this notice never prunes.
 
@@ -7,7 +7,7 @@ use pa_types::session::CustomMessage;
 
 use crate::kernel::state_snapshot::RestoreResult;
 
-pub const IPYTHON_STATE_RESTORED_CUSTOM_TYPE: &str = "ipython_state_restored";
+pub const JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE: &str = "javascript_state_restored";
 
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
@@ -16,19 +16,19 @@ fn now_millis() -> u64 {
         .unwrap_or_default()
 }
 
-/// The notice text: the `[python-state-restored]` header, the
-/// revived-or-fresh line, the failed-names disclosure, and the env/cwd
-/// reset line (a fresh kernel revives neither).
+/// The notice text: the `[javascript-state-restored]` header, the
+/// revived-or-fresh line, and the failed-names disclosure (Bun snapshots
+/// also restore `process.cwd()` and `process.env` deltas).
 #[must_use]
 pub fn notice_content(result: &RestoreResult) -> String {
-    let mut lines = vec!["[python-state-restored]".to_string(), String::new()];
+    let mut lines = vec!["[javascript-state-restored]".to_string(), String::new()];
     if result.restored.is_empty() {
         lines.push(
-            "Your previous Python kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.".to_string(),
+            "Your previous JavaScript kernel state could not be revived; the Bun kernel is starting fresh, so re-create any variables, imports, or loaded data you need.".to_string(),
         );
     } else {
         lines.push(format!(
-            "Your Python kernel state was revived from your previous session. These names are available again: {}.",
+            "Your JavaScript kernel state was revived from your previous session. These names are available again: {}.",
             result.restored.join(", ")
         ));
     }
@@ -43,9 +43,6 @@ pub fn notice_content(result: &RestoreResult) -> String {
                 .join(", ")
         ));
     }
-    lines.push(
-        "The working directory and environment variables were reset to the session defaults; re-apply any os.chdir(...) or os.environ[...] changes you still need.".to_string(),
-    );
     lines.join("\n")
 }
 
@@ -54,7 +51,7 @@ pub fn notice_content(result: &RestoreResult) -> String {
 #[must_use]
 pub fn notice_message(result: &RestoreResult) -> CustomMessage {
     CustomMessage {
-        custom_type: IPYTHON_STATE_RESTORED_CUSTOM_TYPE.to_string(),
+        custom_type: JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE.to_string(),
         content: pa_types::ai::UserContent::Text(notice_content(result)),
         display: true,
         details: Some(serde_json::json!({
@@ -80,14 +77,14 @@ mod tests {
                     reason: reason.to_string(),
                 })
                 .collect(),
-            path: std::path::PathBuf::from("/tmp/art/kernel-state.dill"),
+            path: std::path::PathBuf::from("/tmp/art/kernel-state.bin"),
         }
     }
 
     #[test]
     fn revived_notice_lists_names() {
         let message = notice_message(&restore(vec!["data", "helper"], vec![]));
-        assert_eq!(message.custom_type, "ipython_state_restored");
+        assert_eq!(message.custom_type, "javascript_state_restored");
         assert!(message.display);
         assert_eq!(
             message.details,
@@ -98,7 +95,7 @@ mod tests {
         };
         assert_eq!(
             content,
-            "[python-state-restored]\n\nYour Python kernel state was revived from your previous session. These names are available again: data, helper.\nThe working directory and environment variables were reset to the session defaults; re-apply any os.chdir(...) or os.environ[...] changes you still need."
+            "[javascript-state-restored]\n\nYour JavaScript kernel state was revived from your previous session. These names are available again: data, helper."
         );
     }
 
@@ -114,13 +111,13 @@ mod tests {
         };
         assert_eq!(
             content,
-            "[python-state-restored]\n\nYour previous Python kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.\nThe working directory and environment variables were reset to the session defaults; re-apply any os.chdir(...) or os.environ[...] changes you still need."
+            "[javascript-state-restored]\n\nYour previous JavaScript kernel state could not be revived; the Bun kernel is starting fresh, so re-create any variables, imports, or loaded data you need."
         );
     }
 
     #[test]
     fn failed_names_get_the_recreate_line() {
-        let message = notice_message(&restore(vec!["data"], vec![("sock", "cannot pickle")]));
+        let message = notice_message(&restore(vec!["data"], vec![("sock", "unserializable")]));
         let pa_types::ai::UserContent::Text(content) = &message.content else {
             panic!("text content");
         };

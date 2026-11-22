@@ -76,10 +76,10 @@ pub struct PrimeAgentSessionMeta {
     pub cwd: Option<PrimeAgentCwdMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quiescence: Option<PrimeAgentQuiescenceMeta>,
-    /// Rich kernel output reported by the ipython tool (attachments the cell
+    /// Rich kernel output reported by the javascript tool (attachments the cell
     /// loaded into context, plus the number of diffs it displayed).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ipython: Option<Value>,
+    pub javascript: Option<Value>,
     /// Set when the session's heartbeat or cron schedule changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heartbeats_changed: Option<bool>,

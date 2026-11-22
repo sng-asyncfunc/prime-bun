@@ -158,9 +158,9 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
     let tools: Vec<&str> = options
         .selected_tools
         .clone()
-        .unwrap_or_else(|| vec![pa_types::ai::PYTHON_TOOL_NAME]);
-    let has_ipython = tools.contains(&pa_types::ai::PYTHON_TOOL_NAME);
-    let has_file_access = has_ipython || tools.contains(&"bash");
+        .unwrap_or_else(|| vec![pa_types::ai::JAVASCRIPT_TOOL_NAME]);
+    let has_javascript = tools.contains(&pa_types::ai::JAVASCRIPT_TOOL_NAME);
+    let has_file_access = has_javascript || tools.contains(&"bash");
 
     segments.push(PromptSegment::dynamic_segment(
         "packages",
@@ -191,7 +191,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         ));
     }
 
-    if has_ipython {
+    if has_javascript {
         let mcp = format_generic_mcp_guidance(&options.generic_mcp_servers);
         if !mcp.is_empty() {
             segments.push(PromptSegment::dynamic_segment(
@@ -208,7 +208,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         environment_section(options),
     ));
 
-    let role = session_role_section(options, has_ipython);
+    let role = session_role_section(options, has_javascript);
     if !role.is_empty() {
         segments.push(PromptSegment::dynamic_segment(
             "session-role",
@@ -240,15 +240,10 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
 }
 
 fn packages_section() -> String {
-    use crate::kernel::bootstrap::default_rlm_extra_import_labels;
-    let mut lines = vec![format!(
-        "Pre-installed Python packages: {}.",
-        default_rlm_extra_import_labels().join(", ")
-    )];
-    lines.push(
-        "Install additional packages with `uv pip install <pkg>` (this is a uv-managed venv with no pip module)."
-            .to_string(),
-    );
+    let lines = [
+        "Preloaded Bun/JavaScript globals: `fs` (sync + `fs.promises`), `path`, `os`, `util`, `require`, `Bun`, `$` (Bun Shell), `sh`, `bash`, `fetch`, `process`, `Buffer`, `crypto`, `rlm`, `mcp`, `installPackage`.",
+        "Static `import` statements persist across cells and session recovery. Install additional npm packages into the kernel runtime with `await installPackage('pkg')`.",
+    ];
     lines.join("\n")
 }
 
@@ -282,18 +277,18 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
     ];
     match options.vision_capable {
         Some(true) => lines.push(
-            "Image input: this model can see images; `attach_image` loads them into context."
+            "Image input: this model can see images; `attachImage` loads them into context."
                 .to_string(),
         ),
         Some(false) => lines.push(
-            "Image input: this model cannot see images; `attach_image` errors for it.".to_string(),
+            "Image input: this model cannot see images; `attachImage` errors for it.".to_string(),
         ),
         None => {}
     }
     lines.join("\n")
 }
 
-fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -> String {
+fn session_role_section(options: &BuildSystemPromptOptions, has_javascript: bool) -> String {
     let depth = options.rlm_depth.unwrap_or(0);
     let mut lines = vec![format!(
         "Recursive agent depth: {depth}{}",
@@ -308,18 +303,18 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
                 .to_string()
         });
     }
-    if has_ipython {
+    if has_javascript {
         lines.push(
-            "`await bash(cmd)` waits at most 1 second. If the command is still running, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the output so far, and `r.handle` is the live handle. A completed result has `r.running` False and an integer `r.exit_code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
+            "`await bash(cmd)` waits at most 1 second. If the command is still running, it returns a snapshot: `r.running` is `true`, `r.exitCode` is `null`, `r.output` is the output so far, and `r.handle` is the live handle. A completed result has `r.running` `false` and an integer `r.exitCode`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
                 .to_string(),
         );
         lines.push(
-            "Do not run long blocking work in a cell; start long Python work as an asyncio task and check on it in later cells."
+            "Do not run long blocking work in a cell; keep long shell work in `bash()` handles or non-blocking async promises and check on them in later cells."
                 .to_string(),
         );
     } else {
         lines.push(
-            "This session has no Python REPL (`python_repl` tool): the programmatic tools described above are unavailable here."
+            "This session has no JavaScript REPL (`javascript` tool): the programmatic tools described above are unavailable here."
                 .to_string(),
         );
     }
@@ -335,14 +330,14 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
             lines.push(
                 "Your final message is this state's output, which the factory reads; do not message the parent.".to_string(),
             );
-        } else if has_ipython {
+        } else if has_javascript {
             lines.push(
-                "When a task calls for an answer, reply explicitly with `await agent_message.send(message, receiver_role=\"parent\")`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.".to_string(),
+                "When a task calls for an answer, reply explicitly with `await agentMessage.send(message, { receiverRole: \"parent\" })`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.".to_string(),
             );
         }
-        if has_ipython {
+        if has_javascript {
             lines.push(
-                "For long-running work, report brief progress with `await rlm.progress_note('...')` (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply.".to_string(),
+                "For long-running work, report brief progress with `await rlm.progressNote('...')` (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply.".to_string(),
             );
         }
     }
@@ -383,7 +378,7 @@ fn format_generic_mcp_guidance(servers: &[String]) -> String {
     let mut lines = vec![
         "# Generic MCP Connections".to_string(),
         String::new(),
-        "Generic MCP connections are accessed through the pre-imported Python `mcp` object in the Python REPL, not as top-level native tool namespaces or installed Python skills.".to_string(),
+        "Generic MCP connections are accessed through the preloaded JavaScript `mcp` object in the Bun REPL, not as top-level native tool namespaces or installed JavaScript skills.".to_string(),
         format!(
             "Enabled generic MCP servers: {}.",
             enabled
@@ -395,7 +390,7 @@ fn format_generic_mcp_guidance(servers: &[String]) -> String {
     ];
     for server in &enabled {
         lines.push(format!(
-            "For `{server}`, first discover its tools with `await mcp.list_tools(\"{server}\")`, then call one with `await mcp.call_tool(\"{server}\", \"<tool>\", arguments)`."
+            "For `{server}`, first discover its tools with `await mcp.listTools(\"{server}\")`, then call one with `await mcp.callTool(\"{server}\", \"<tool>\", arguments)`."
         ));
     }
     lines.join("\n")
@@ -407,7 +402,7 @@ mod tests {
     use crate::skills::{create_synthetic_source_info, SkillKind, SourceScope};
     use std::path::PathBuf;
 
-    fn skill(name: &str, import: Option<&str>) -> Skill {
+    fn skill(name: &str, global: Option<&str>) -> Skill {
         Skill {
             name: name.to_string(),
             description: format!("Skill {name}"),
@@ -415,15 +410,16 @@ mod tests {
             base_dir: PathBuf::from("/skills"),
             source_info: create_synthetic_source_info("/skills", "user", SourceScope::User, None),
             disable_model_invocation: false,
-            kind: if import.is_some() {
-                SkillKind::Python
+            kind: if global.is_some() {
+                SkillKind::JavaScript
             } else {
                 SkillKind::Markdown
             },
-            python: import.map(|import_name| crate::skills::SkillPythonMetadata {
-                import_name: import_name.to_string(),
+            javascript: global.map(|global_name| crate::skills::SkillJavaScriptMetadata {
+                global_name: global_name.to_string(),
+                entry_path: PathBuf::from("/skills/src/index.ts"),
                 package_path: PathBuf::from("/skills"),
-                pyproject_path: PathBuf::from("/skills/pyproject.toml"),
+                package_json_path: PathBuf::from("/skills/package.json"),
             }),
         }
     }
@@ -435,7 +431,7 @@ mod tests {
             skills: vec![
                 skill("web-search", Some("websearch")),
                 skill("refine", Some("refine")),
-                skill("agent-message", Some("agent_message")),
+                skill("agent-message", Some("agentMessage")),
             ],
             ..Default::default()
         }
@@ -472,7 +468,7 @@ mod tests {
         assert!(tail.contains("Conversation log: /log.jsonl"));
         assert!(tail.contains("<available_skills>"));
         assert!(tail.contains("Recursive agent depth: 0 (root)"));
-        assert!(tail.contains("Pre-installed Python packages: requests, httpx,"));
+        assert!(tail.contains("Preloaded Bun/JavaScript globals:"));
     }
 
     #[test]
@@ -499,7 +495,7 @@ mod tests {
 
     #[test]
     fn factory_child_gets_the_factory_line_instead_of_the_reply_line() {
-        const REPLY: &str = "reply explicitly with `await agent_message.send(";
+        const REPLY: &str = "reply explicitly with `await agentMessage.send(";
         const FACTORY: &str = "Your final message is this state's output";
         let mut child = base_options();
         child.rlm_depth = Some(1);

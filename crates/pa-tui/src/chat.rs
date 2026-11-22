@@ -168,7 +168,7 @@ pub enum MessageBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkingState {
     pub activity: &'static str,
-    /// A transient message owned by the running tool (set by the python-kernel
+    /// A transient message owned by the running tool (set by the Bun worker
     /// bootstrap): replaces the activity label and the token count until the tool clears it.
     pub message: Option<String>,
     /// Streaming direction: `true` while tokens flow down.

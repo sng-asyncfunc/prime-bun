@@ -13,7 +13,7 @@ async fn get_last_assistant_text_steps_back_over_an_ended_turns_textless_row() {
         let store = core.store.as_mut().expect("the create opened the store");
         // The ended turn's suffix: the assistant row that carried the
         // batch's answer, then the final assistant row holding only the
-        // `rlm.end_turn()` python_repl call.
+        // `rlm.endTurn()` javascript call.
         store.append_message(&json!({
             "role": "assistant",
             "content": [{ "type": "text", "text": "the answer" }],
@@ -22,7 +22,7 @@ async fn get_last_assistant_text_steps_back_over_an_ended_turns_textless_row() {
         store.append_message(&json!({
             "role": "assistant",
             "content": [
-                { "type": "toolCall", "id": "call-1", "name": "python_repl", "arguments": {} },
+                { "type": "toolCall", "id": "call-1", "name": "javascript", "arguments": {} },
             ],
             "timestamp": 2,
         }));

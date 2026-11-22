@@ -1076,11 +1076,11 @@ fn compact_session_command_emits_the_result_on_success() {
     assert!(result.get("usage").is_none());
     // The durable rows stay minimal (TS's queued `/compact` catch arm
     // records no result row): the echo row is the only custom row —
-    // except the kernel-dependent `ipython_state` notice, scoped out of
+    // except the kernel-dependent `javascript_state` notice, scoped out of
     // this assertion.
     let rows: Vec<_> = custom_rows(&events)
         .into_iter()
-        .filter(|row| row["customType"] != "ipython_state")
+        .filter(|row| row["customType"] != "javascript_state")
         .collect();
     assert_eq!(rows.len(), 1, "the /compact echo only: {rows:?}");
     assert_eq!(rows[0]["customType"], "session_slash_command");

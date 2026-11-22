@@ -574,7 +574,7 @@ impl SessionEngine for ScriptedEngine {
                     }),
                     usage: None,
                     entry: Value::Null,
-                    ipython_state: None,
+                    javascript_state: None,
                 }),
             };
         };
@@ -613,7 +613,7 @@ impl SessionEngine for ScriptedEngine {
                 result,
                 usage: entry.get("usage").cloned().filter(|usage| !usage.is_null()),
                 entry: Value::Null,
-                ipython_state: None,
+                javascript_state: None,
             }),
         }
     }

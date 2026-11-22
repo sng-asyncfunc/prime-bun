@@ -330,7 +330,7 @@ mod tests {
             local_dir: crate::refinement::get_local_harness_state_dir(
                 manager.get_session_artifact_dir().as_deref(),
             ),
-            include_ipython: false,
+            include_javascript: false,
             include_shell_examples: false,
             include_refine: false,
         };

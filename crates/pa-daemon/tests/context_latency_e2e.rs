@@ -136,7 +136,7 @@ impl Client {
 
     /// One command round trip with its elapsed wall time; non-response frames are skipped.
     fn read_response(&mut self, id: &str) -> (Duration, serde_json::Value) {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         loop {
             assert!(Instant::now() < deadline, "no response for {id} arrived");
             let started = Instant::now();

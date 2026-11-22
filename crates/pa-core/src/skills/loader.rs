@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::diagnostics::{ResourceCollision, ResourceDiagnostic};
 use super::discovery::{load_skill_from_file, load_skills_from_dir};
-use super::Skill;
+use super::{Skill, SkillKind};
 
 pub struct LoadSkillsOptions {
     /// Working directory for project-local skills.
@@ -74,54 +74,60 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     let mut skills: Vec<Skill> = Vec::new();
     let mut name_winner: HashMap<String, PathBuf> = HashMap::new();
     let mut real_path_set: HashSet<PathBuf> = HashSet::new();
-    let mut python_import_map: HashMap<String, String> = HashMap::new();
+    let mut javascript_global_map: HashMap<String, String> = HashMap::new();
     let mut all_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
     let mut collision_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
-    let mut python_import_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
+    let mut javascript_global_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
 
-    let add_skill = |skill: Skill,
-                     skills: &mut Vec<Skill>,
-                     name_winner: &mut HashMap<String, PathBuf>,
-                     real_path_set: &mut HashSet<PathBuf>,
-                     python_import_map: &mut HashMap<String, String>,
-                     collision_diagnostics: &mut Vec<ResourceDiagnostic>,
-                     python_import_diagnostics: &mut Vec<ResourceDiagnostic>| {
-        let real_path = canonicalize_path(&skill.file_path);
-        if real_path_set.contains(&real_path) {
-            return;
-        }
-        if let Some(winner_path) = name_winner.get(&skill.name) {
-            collision_diagnostics.push(ResourceDiagnostic::Collision {
-                message: format!("name \"{}\" collision", skill.name),
-                path: skill.file_path.display().to_string(),
-                collision: ResourceCollision {
-                    resource_type: "skill",
-                    name: skill.name.clone(),
-                    winner_path: winner_path.display().to_string(),
-                    loser_path: skill.file_path.display().to_string(),
-                },
-            });
-        } else {
-            real_path_set.insert(real_path);
-            if let Some(python) = &skill.python {
-                let existing = python_import_map.get(&python.import_name).cloned();
-                match existing {
-                    Some(existing_name) => python_import_diagnostics.push(ResourceDiagnostic::Warning {
-                        message: format!(
-                            "python import name \"{}\" is shared by skills \"{existing_name}\" and \"{}\"",
-                            python.import_name, skill.name
-                        ),
-                        path: Some(skill.file_path.display().to_string()),
-                    }),
-                    None => {
-                        python_import_map.insert(python.import_name.clone(), skill.name.clone());
+    let add_skill =
+        |mut skill: Skill,
+         skills: &mut Vec<Skill>,
+         name_winner: &mut HashMap<String, PathBuf>,
+         real_path_set: &mut HashSet<PathBuf>,
+         javascript_global_map: &mut HashMap<String, String>,
+         collision_diagnostics: &mut Vec<ResourceDiagnostic>,
+         javascript_global_diagnostics: &mut Vec<ResourceDiagnostic>| {
+            let real_path = canonicalize_path(&skill.file_path);
+            if real_path_set.contains(&real_path) {
+                return;
+            }
+            if let Some(winner_path) = name_winner.get(&skill.name) {
+                collision_diagnostics.push(ResourceDiagnostic::Collision {
+                    message: format!("name \"{}\" collision", skill.name),
+                    path: skill.file_path.display().to_string(),
+                    collision: ResourceCollision {
+                        resource_type: "skill",
+                        name: skill.name.clone(),
+                        winner_path: winner_path.display().to_string(),
+                        loser_path: skill.file_path.display().to_string(),
+                    },
+                });
+            } else {
+                real_path_set.insert(real_path);
+                if let Some(js) = &skill.javascript {
+                    let existing = javascript_global_map.get(&js.global_name).cloned();
+                    match existing {
+                        Some(existing_name) => {
+                            javascript_global_diagnostics.push(ResourceDiagnostic::Warning {
+                            message: format!(
+                                "javascript global name \"{}\" is shared by skills \"{existing_name}\" and \"{}\"; loading \"{}\" as markdown-only",
+                                js.global_name, skill.name, skill.name
+                            ),
+                            path: Some(skill.file_path.display().to_string()),
+                        });
+                            skill.kind = SkillKind::Markdown;
+                            skill.javascript = None;
+                        }
+                        None => {
+                            javascript_global_map
+                                .insert(js.global_name.clone(), skill.name.clone());
+                        }
                     }
                 }
+                name_winner.insert(skill.name.clone(), skill.file_path.clone());
+                skills.push(skill);
             }
-            name_winner.insert(skill.name.clone(), skill.file_path.clone());
-            skills.push(skill);
-        }
-    };
+        };
 
     let user_skills_dir = options.agent_dir.join("skills");
     let project_skills_dir = options.cwd.join(CONFIG_DIR_NAME).join("skills");
@@ -135,9 +141,9 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
                 &mut skills,
                 &mut name_winner,
                 &mut real_path_set,
-                &mut python_import_map,
+                &mut javascript_global_map,
                 &mut collision_diagnostics,
-                &mut python_import_diagnostics,
+                &mut javascript_global_diagnostics,
             );
         }
         let project_result = load_skills_from_dir(&project_skills_dir, "project");
@@ -148,9 +154,9 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
                 &mut skills,
                 &mut name_winner,
                 &mut real_path_set,
-                &mut python_import_map,
+                &mut javascript_global_map,
                 &mut collision_diagnostics,
-                &mut python_import_diagnostics,
+                &mut javascript_global_diagnostics,
             );
         }
     }
@@ -192,9 +198,9 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
                     &mut skills,
                     &mut name_winner,
                     &mut real_path_set,
-                    &mut python_import_map,
+                    &mut javascript_global_map,
                     &mut collision_diagnostics,
-                    &mut python_import_diagnostics,
+                    &mut javascript_global_diagnostics,
                 );
             }
         } else if meta.is_file() && resolved_path.extension().is_some_and(|ext| ext == "md") {
@@ -207,9 +213,9 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
                         &mut skills,
                         &mut name_winner,
                         &mut real_path_set,
-                        &mut python_import_map,
+                        &mut javascript_global_map,
                         &mut collision_diagnostics,
-                        &mut python_import_diagnostics,
+                        &mut javascript_global_diagnostics,
                     );
                 }
                 None => all_diagnostics.extend(diagnostics),
@@ -224,7 +230,7 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
 
     let mut diagnostics = all_diagnostics;
     diagnostics.extend(collision_diagnostics);
-    diagnostics.extend(python_import_diagnostics);
+    diagnostics.extend(javascript_global_diagnostics);
     LoadSkillsResult {
         skills,
         diagnostics,

@@ -36,7 +36,7 @@ impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
             max_attempts: 5,
-            max_backoff: Duration::from_secs(60),
+            max_backoff: Duration::from_mins(1),
         }
     }
 }
@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(DEFAULT_MAX_BATCH_BYTES, 30_000);
         assert_eq!(MAX_AGE, Duration::from_hours(24));
         assert_eq!(RetryPolicy::default().max_attempts, 5);
-        assert_eq!(RetryPolicy::default().max_backoff, Duration::from_secs(60));
+        assert_eq!(RetryPolicy::default().max_backoff, Duration::from_mins(1));
     }
 
     #[test]
@@ -537,14 +537,14 @@ mod tests {
         config.flush_interval = Duration::from_secs(10);
         assert_eq!(config.retry_backoff(1), Duration::from_secs(20));
         assert_eq!(config.retry_backoff(2), Duration::from_secs(40));
-        assert_eq!(config.retry_backoff(3), Duration::from_secs(60), "capped");
-        assert_eq!(config.retry_backoff(9), Duration::from_secs(60), "capped");
+        assert_eq!(config.retry_backoff(3), Duration::from_mins(1), "capped");
+        assert_eq!(config.retry_backoff(9), Duration::from_mins(1), "capped");
     }
 
     #[tokio::test]
     async fn batch_size_triggers_flush() {
         let mock = Arc::new(MockSink::new());
-        let client = client_with(mock.clone(), 3, Duration::from_secs(60));
+        let client = client_with(mock.clone(), 3, Duration::from_mins(1));
         for i in 0..2 {
             client.track(format!("event {i}"), Properties::new());
         }
@@ -559,7 +559,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_flush_drains_partial_batches() {
         let mock = Arc::new(MockSink::new());
-        let client = client_with(mock.clone(), 10, Duration::from_secs(60));
+        let client = client_with(mock.clone(), 10, Duration::from_mins(1));
         client.track("solo", Properties::new());
         assert_eq!(mock.batches().len(), 0);
         client.flush().await.unwrap();
@@ -581,7 +581,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_flushes_and_stops() {
         let mock = Arc::new(MockSink::new());
-        let client = client_with(mock.clone(), 100, Duration::from_secs(60));
+        let client = client_with(mock.clone(), 100, Duration::from_mins(1));
         client.track("last", Properties::new());
         client.shutdown().await.unwrap();
         assert_eq!(mock.event_names(), vec!["last"]);
@@ -595,7 +595,7 @@ mod tests {
         let mock = Arc::new(MockSink::new());
         let mut config = TelemetryClientConfig::new("install-1");
         config.batch_size = 1;
-        config.flush_interval = Duration::from_secs(60);
+        config.flush_interval = Duration::from_mins(1);
         config.sinks = vec![mock.clone() as Arc<dyn TelemetrySink>];
         let mut base = Properties::new();
         base.set("version", serde_json::Value::from("0.1.0"));
@@ -628,7 +628,7 @@ mod tests {
         let mock = Arc::new(MockSink::new());
         let mut config = TelemetryClientConfig::new("install-1");
         config.batch_size = 1000; // never self-flush; queue only
-        config.flush_interval = Duration::from_secs(60);
+        config.flush_interval = Duration::from_mins(1);
         config.queue_capacity = 4;
         config.sinks = vec![mock.clone() as Arc<dyn TelemetrySink>];
         let client = TelemetryClient::spawn(config).unwrap();
@@ -649,7 +649,7 @@ mod tests {
         let b = Arc::new(MockSink::new());
         let mut config = TelemetryClientConfig::new("install-1");
         config.batch_size = 1;
-        config.flush_interval = Duration::from_secs(60);
+        config.flush_interval = Duration::from_mins(1);
         config.sinks = vec![
             a.clone() as Arc<dyn TelemetrySink>,
             b.clone() as Arc<dyn TelemetrySink>,
@@ -750,7 +750,7 @@ mod tests {
         let mock = Arc::new(MockSink::new());
         let mut config = TelemetryClientConfig::new("install-1");
         config.batch_size = 20;
-        config.flush_interval = Duration::from_secs(60);
+        config.flush_interval = Duration::from_mins(1);
         config.max_batch_bytes = 1_000;
         config.sinks = vec![mock.clone() as Arc<dyn TelemetrySink>];
         let client = TelemetryClient::spawn(config).unwrap();
@@ -827,7 +827,7 @@ mod tests {
     #[tokio::test]
     async fn flush_sanitizes_events_against_the_catalog() {
         let mock = Arc::new(MockSink::new());
-        let client = client_with(mock.clone(), 1, Duration::from_secs(60));
+        let client = client_with(mock.clone(), 1, Duration::from_mins(1));
         let mut properties = Properties::new();
         properties.set(
             "session_id",

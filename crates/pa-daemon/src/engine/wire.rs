@@ -326,9 +326,9 @@ pub struct CompactionRun {
     /// The full durable `compaction` record; null for scripted engines
     /// (a test seam with no real entry).
     pub entry: Value,
-    /// The post-compaction `ipython_state` notice (`role: "custom"`) when
+    /// The post-compaction `javascript_state` notice (`role: "custom"`) when
     /// the engine's kernel was running.
-    pub ipython_state: Option<Value>,
+    pub javascript_state: Option<Value>,
 }
 
 /// How one compaction run ended (TS `compact` outcomes: result, skip,

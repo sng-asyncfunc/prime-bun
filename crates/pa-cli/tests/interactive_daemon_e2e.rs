@@ -279,7 +279,7 @@ fn graceful_shutdown(socket: &Path) -> Option<u32> {
 
 /// The headless run's wall: a turn that never settles holds the idle gate
 /// closed and parks the run forever; the wall makes that a failing test.
-const HEADLESS_RUN_BOUND: Duration = Duration::from_secs(300);
+const HEADLESS_RUN_BOUND: Duration = Duration::from_mins(5);
 
 async fn run_headless_bounded(
     options: pa_tui::interactive::InteractiveOptions,
@@ -5419,7 +5419,7 @@ async fn tui_headless_done_with_a_turn_settling_parks_the_closed_input_channel()
     let started = Instant::now();
     let mode = pa_tui::interactive::UiMode::Headless(plan);
     let outcome = tokio::time::timeout(
-        Duration::from_secs(120),
+        Duration::from_mins(2),
         pa_tui::interactive::run_interactive(options, mode),
     )
     .await

@@ -1,6 +1,7 @@
 use super::{
-    auxiliary_model, compaction, compaction_exec, image_model_routing, ipython_state, model_usage,
-    provider_adapter, refine, rlm_usage, semantic_edges, telemetry, AgentSession, PromptBatchRow,
+    auxiliary_model, compaction, compaction_exec, image_model_routing, javascript_state,
+    model_usage, provider_adapter, refine, rlm_usage, semantic_edges, telemetry, AgentSession,
+    PromptBatchRow,
 };
 
 impl AgentSession {
@@ -150,13 +151,13 @@ impl AgentSession {
     }
 
     /// Bind the kernel-state probe behind the post-compaction
-    /// `ipython_state` notice (the engine wiring hands over the session's
-    /// kernel provisioner, TS `AgentSession._ipythonKernelProvisioner`).
+    /// `javascript_state` notice (the engine wiring hands over the session's
+    /// kernel provisioner).
     /// Without a probe no notice lands: sessions without a kernel keep
     /// the pre-notice compaction flow.
     pub fn set_kernel_state_probe(
         &mut self,
-        probe: Option<std::sync::Arc<dyn ipython_state::CompactionKernelProbe>>,
+        probe: Option<std::sync::Arc<dyn javascript_state::CompactionKernelProbe>>,
     ) {
         self.kernel_state = probe;
     }

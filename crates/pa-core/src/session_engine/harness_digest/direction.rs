@@ -121,7 +121,7 @@ async fn direction_rig(
                     .join("s1")
                     .join("harness"),
             ),
-            include_ipython: false,
+            include_javascript: false,
             include_shell_examples: false,
             include_refine: false,
         }),

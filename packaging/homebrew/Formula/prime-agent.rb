@@ -12,23 +12,22 @@
 # Submission note: the sha256 below is a placeholder, filled from the
 # v1.0.0 release's SHA256SUMS when the tag publishes.
 class PrimeAgent < Formula
-  desc "Coding agent harness with a persistent Python control environment"
-  homepage "https://github.com/PrimeIntellect-ai/prime-agent"
-  url "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v1.0.0/prime-agent-1.0.0-src.tar.gz"
-  # TODO: replace with the v1.0.0 src-tarball sha256 from the release SHA256SUMS
+  desc "Coding agent harness with a persistent Bun JavaScript control environment"
+  homepage "https://github.com/sashimikun/prime-agent"
+  url "https://github.com/sashimikun/prime-agent/releases/download/v0.10.5/prime-agent-0.10.5-src.tar.gz"
+  # TODO: replace with the release src-tarball sha256 from the release SHA256SUMS
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
 
   livecheck do
-    url "https://github.com/PrimeIntellect-ai/prime-agent/releases/latest"
+    url "https://github.com/sashimikun/prime-agent/releases/latest"
     # Stable releases only: the beta cuts (-beta.N) build no source tarball.
     regex(/prime-agent-v?(\d+(?:\.\d+)+)-src\.tar\.gz/i)
   end
 
   depends_on "rust" => :build
-  # The binary bootstraps its kernel venv through uv whenever one must be
-  # created or refreshed, so it is a hard runtime dependency.
-  depends_on "uv"
+  # The binary runs its persistent JavaScript REPL through Bun (>= 1.3.14).
+  depends_on "oven-sh/bun/bun"
 
   def install
     system "cargo", "build", "--release", "--locked"

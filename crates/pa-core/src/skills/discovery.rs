@@ -1,13 +1,13 @@
 //! Skill directory discovery.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::diagnostics::ResourceDiagnostic;
 use super::frontmatter::parse_frontmatter;
 use super::skill_markdown_name;
 use super::{
-    create_synthetic_source_info, validate_skill_description, validate_skill_name, Skill,
-    SkillKind, SkillPythonMetadata, SourceScope,
+    create_synthetic_source_info, is_reserved_javascript_global, validate_skill_description,
+    validate_skill_name, Skill, SkillJavaScriptMetadata, SkillKind, SourceScope,
 };
 
 /// Sources that pick up a synthetic scope.
@@ -19,11 +19,7 @@ fn scope_for_source(source: &str) -> SourceScope {
     }
 }
 
-fn python_import_name_for_skill(name: &str) -> String {
-    name.replace('-', "_")
-}
-
-fn is_valid_python_import_name(name: &str) -> bool {
+fn is_valid_javascript_global_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
@@ -32,35 +28,126 @@ fn is_valid_python_import_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn detect_python_skill(
+fn is_relative_subpath_inside(skill_dir: &Path, entry: &str) -> Option<PathBuf> {
+    if entry.is_empty() {
+        return None;
+    }
+    let rel = Path::new(entry);
+    if rel.is_absolute()
+        || rel.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return None;
+    }
+    let joined = skill_dir.join(rel);
+    if !joined.is_file() {
+        return None;
+    }
+    // Also verify canonicalized path does not escape skill_dir via symlink.
+    if let (Ok(canon_dir), Ok(canon_entry)) = (skill_dir.canonicalize(), joined.canonicalize()) {
+        if !canon_entry.starts_with(&canon_dir) {
+            return None;
+        }
+    }
+    Some(joined)
+}
+
+fn detect_javascript_skill(
     skill_dir: &Path,
-    name: &str,
     diagnostics: &mut Vec<ResourceDiagnostic>,
-) -> Option<SkillPythonMetadata> {
-    let pyproject_path = skill_dir.join("pyproject.toml");
-    if !pyproject_path.is_file() {
+) -> Option<SkillJavaScriptMetadata> {
+    let package_json_path = skill_dir.join("package.json");
+    if !package_json_path.is_file() {
         return None;
     }
-    let import_name = python_import_name_for_skill(name);
-    if !is_valid_python_import_name(&import_name) {
+    let raw = match std::fs::read_to_string(&package_json_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            diagnostics.push(ResourceDiagnostic::Warning {
+                message: format!("failed to read package.json: {error}"),
+                path: Some(package_json_path.display().to_string()),
+            });
+            return None;
+        }
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            diagnostics.push(ResourceDiagnostic::Warning {
+                message: format!("invalid JSON in package.json: {error}"),
+                path: Some(package_json_path.display().to_string()),
+            });
+            return None;
+        }
+    };
+    let Some(prime_agent) = parsed
+        .get("primeAgent")
+        .and_then(serde_json::Value::as_object)
+    else {
         diagnostics.push(ResourceDiagnostic::Warning {
-            message: format!("python skill import name \"{import_name}\" is invalid"),
-            path: Some(pyproject_path.display().to_string()),
+            message: "package.json is missing a \"primeAgent\" object".to_string(),
+            path: Some(package_json_path.display().to_string()),
+        });
+        return None;
+    };
+    let Some(global_name) = prime_agent
+        .get("global")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        diagnostics.push(ResourceDiagnostic::Warning {
+            message: "package.json primeAgent.global must be a non-empty string".to_string(),
+            path: Some(package_json_path.display().to_string()),
+        });
+        return None;
+    };
+    if !is_valid_javascript_global_name(global_name) {
+        diagnostics.push(ResourceDiagnostic::Warning {
+            message: format!("javascript skill global name \"{global_name}\" is invalid"),
+            path: Some(package_json_path.display().to_string()),
         });
         return None;
     }
-    let package_init_path = skill_dir.join("src").join(&import_name).join("__init__.py");
-    if !package_init_path.is_file() {
+    if is_reserved_javascript_global(global_name) {
         diagnostics.push(ResourceDiagnostic::Warning {
-            message: format!("python skill package src/{import_name}/__init__.py not found"),
-            path: Some(pyproject_path.display().to_string()),
+            message: format!(
+                "javascript skill global name \"{global_name}\" conflicts with a reserved Bun runtime global"
+            ),
+            path: Some(package_json_path.display().to_string()),
         });
         return None;
     }
-    Some(SkillPythonMetadata {
-        import_name,
+    let Some(entry) = prime_agent
+        .get("entry")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        diagnostics.push(ResourceDiagnostic::Warning {
+            message: "package.json primeAgent.entry must be a non-empty relative path".to_string(),
+            path: Some(package_json_path.display().to_string()),
+        });
+        return None;
+    };
+    let Some(entry_path) = is_relative_subpath_inside(skill_dir, entry) else {
+        diagnostics.push(ResourceDiagnostic::Warning {
+            message: format!(
+                "javascript skill entry \"{entry}\" must be a regular file inside the skill directory"
+            ),
+            path: Some(package_json_path.display().to_string()),
+        });
+        return None;
+    };
+    Some(SkillJavaScriptMetadata {
+        global_name: global_name.to_string(),
+        entry_path,
         package_path: skill_dir.to_path_buf(),
-        pyproject_path,
+        package_json_path,
     })
 }
 
@@ -127,8 +214,8 @@ pub(crate) fn load_skill_from_file(
         return (None, diagnostics);
     }
 
-    let python = if file_path.file_name().is_some_and(|n| n == "SKILL.md") {
-        detect_python_skill(skill_dir, &name, &mut diagnostics)
+    let javascript = if file_path.file_name().is_some_and(|n| n == "SKILL.md") {
+        detect_javascript_skill(skill_dir, &mut diagnostics)
     } else {
         None
     };
@@ -147,12 +234,12 @@ pub(crate) fn load_skill_from_file(
             .get("disable-model-invocation")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
-        kind: if python.is_some() {
-            SkillKind::Python
+        kind: if javascript.is_some() {
+            SkillKind::JavaScript
         } else {
             SkillKind::Markdown
         },
-        python,
+        javascript,
     };
     (Some(skill), diagnostics)
 }

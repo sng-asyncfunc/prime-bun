@@ -1,7 +1,6 @@
-//! Golden preview cases recorded from the TypeScript tools; the shipped
-//! previews must match them.
+//! Golden preview cases matching the TypeScript `code-preview.ts` rules.
 
-use super::{preview_bash_command, preview_ipython_code, CodePreviewLanguage};
+use super::{preview_bash_command, preview_javascript_code, CodePreviewLanguage};
 
 #[test]
 fn golden_previews_match_ts() {
@@ -11,7 +10,7 @@ fn golden_previews_match_ts() {
             .expect("corpus JSON");
     let language = |preview: CodePreviewLanguage| match preview {
         CodePreviewLanguage::Bash => "bash",
-        CodePreviewLanguage::Python => "python",
+        CodePreviewLanguage::JavaScript => "javascript",
     };
     let mut checked = 0;
     for case in corpus["cases"].as_array().expect("cases array") {
@@ -22,12 +21,15 @@ fn golden_previews_match_ts() {
             "text": preview.text,
         });
         assert_eq!(actual, case["bash"], "bash preview for {input:?}");
-        let preview = preview_ipython_code(input);
+        let preview = preview_javascript_code(input);
         let actual = serde_json::json!({
             "language": language(preview.language),
             "text": preview.text,
         });
-        assert_eq!(actual, case["ipython"], "ipython preview for {input:?}");
+        assert_eq!(
+            actual, case["javascript"],
+            "javascript preview for {input:?}"
+        );
         checked += 1;
     }
     assert_eq!(checked, corpus["caseCount"].as_u64().expect("caseCount"));

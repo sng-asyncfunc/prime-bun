@@ -24,17 +24,27 @@ use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 use serde_json::{json, Value};
 
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         return Some(PathBuf::from(explicit));
     }
-    let candidate = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".prime/agent/kernel-venv/bin/python");
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let candidate = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".bun/bin/bun");
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live persistent-shell e2e",
+        "kernel bun {} not found; skipping live persistent-shell e2e",
         candidate.display()
     );
     None
@@ -77,7 +87,7 @@ fn group_alive(pgid: i32) -> bool {
 
 // The returned Daemon's Drop kills and reaps the child.
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_bun: Option<&Path>) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -95,8 +105,8 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path
         )
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if let Some(python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", python);
+    if let Some(bun) = kernel_bun {
+        command.env("PRIME_AGENT_KERNEL_BUN", bun);
     }
     let child = command.spawn().expect("spawn pa-daemon supervisor");
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -179,24 +189,23 @@ fn saved_row(client: &mut Client, id: &str, sessions_dir: &Path, session_id: &st
 }
 
 #[test]
-fn persistent_python_unit_regressions() {
-    let Some(python) = kernel_python() else {
+fn persistent_bun_unit_regressions() {
+    let Some(bun) = kernel_bun() else {
         assert!(
             std::env::var_os("CI").is_none(),
-            "CI must bootstrap the kernel interpreter before persistent-shell tests"
+            "CI must install Bun before persistent-shell tests"
         );
         return;
     };
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime");
-    let output = Command::new(python)
+    let output = Command::new(bun)
         .current_dir(&runtime)
-        .env("PYTHONPATH", runtime.join("src"))
-        .args(["-m", "unittest", "test.test_bash.PersistentBashTest"])
+        .args(["test", "test/bash.test.ts"])
         .output()
-        .expect("run persistent-shell Python regressions");
+        .expect("run persistent-shell Bun regressions");
     assert!(
         output.status.success(),
-        "persistent-shell Python regressions failed:\n{}\n{}",
+        "persistent-shell Bun regressions failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -283,7 +292,7 @@ fn saved_row_lists_its_live_shells_and_the_machine_wide_list_every_shell() {
 
 #[test]
 fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_delete() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -294,14 +303,14 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
     let script = write_faux_script(
         &dir.path().join("faux.json"),
         &format!(
-            "h = bash('echo hi; sleep 600', persistent=True)\nopen({:?}, 'w').write(str(h.pid))\n",
+            "const h = bash('echo hi; sleep 600', {{ persistent: true }});\nfs.writeFileSync({:?}, String(h.pid));\n",
             receipt.to_string_lossy()
         ),
     );
 
     let baseline = kernel_pids();
     let socket = dir.path().join("supervisor.sock");
-    let mut daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_python));
+    let mut daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_bun));
     let mut client = Client::connect(&socket);
     let created = client.request(
         "c1",
@@ -351,7 +360,7 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
 
     // A fresh daemon lists the inactive session's shell.
     let socket = dir.path().join("supervisor-2.sock");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_python));
+    let _daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_bun));
     let mut client = Client::connect(&socket);
     let row = saved_row(&mut client, "l1", &sessions_dir, &session_id);
     assert_eq!(row["persistentShells"][0]["pid"], pid);
@@ -361,7 +370,7 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
     let script = write_faux_script(
         &dir.path().join("faux-reopen.json"),
         &format!(
-            "import json\nfrom rlm import persistent_shells\njson.dump([[h.pid, h.running, h.output()] for h in persistent_shells()], open({:?}, 'w'))\n",
+            "fs.writeFileSync({:?}, JSON.stringify(rlm.persistentShells().map((h) => [h.pid, h.running, h.output()])));\n",
             reattached.to_string_lossy()
         ),
     );
@@ -450,7 +459,7 @@ fn write_faux_script(path: &Path, cell: &str) -> PathBuf {
     std::fs::write(
         path,
         json!({ "engine": "faux", "responses": [
-            { "content": [{ "type": "toolCall", "name": "python_repl",
+            { "content": [{ "type": "toolCall", "name": "javascript",
                             "arguments": { "code": cell } }] },
             { "text": "done" },
         ] })
@@ -460,7 +469,7 @@ fn write_faux_script(path: &Path, cell: &str) -> PathBuf {
     path.to_path_buf()
 }
 
-/// Every live `python -m rlm.repl` kernel pid on the box.
+/// Every live `bun run .../src/repl.ts` kernel pid on the box.
 fn kernel_pids() -> Vec<u32> {
     std::fs::read_dir("/proc")
         .expect("read /proc")
@@ -470,7 +479,7 @@ fn kernel_pids() -> Vec<u32> {
             let cmdline = std::fs::read_to_string(entry.path().join("cmdline")).ok()?;
             let args: Vec<&str> = cmdline.split('\0').collect();
             args.windows(2)
-                .any(|window| window == ["-m", "rlm.repl"])
+                .any(|window| window[0] == "run" && window[1].ends_with("/src/repl.ts"))
                 .then_some(pid)
         })
         .collect()

@@ -1,6 +1,5 @@
-//! Late (fire-and-forget) `agent_message.send` receipts: the persisted
-//! custom entry plus the `python_repl` tool-result patch (TS
-//! `IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY` handling in agent-session.ts).
+//! Late (fire-and-forget) `agentMessage.send` receipts: the persisted
+//! custom entry plus the `javascript` tool-result patch.
 
 use std::sync::Arc;
 
@@ -12,11 +11,10 @@ use tokio::sync::Mutex;
 
 use crate::kernel::shared::{parse_sent_agent_message, KernelSentAgentMessage};
 use crate::session::manager::SessionManager;
-use crate::tools::ipython::sent_agent_message_json;
+use crate::tools::javascript::sent_agent_message_json;
 
-/// The persisted row for one receipt that landed after its cell's tool
-/// result (TS `IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY`).
-pub const IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE: &str = "ipython_sent_agent_message";
+/// The persisted row for one receipt that landed after its cell's tool result.
+pub const JAVASCRIPT_SENT_AGENT_MESSAGE_CUSTOM_TYPE: &str = "javascript_sent_agent_message";
 
 /// One persisted receipt parsed off the session branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +53,7 @@ pub fn scan_sent_agent_message_entries<'a>(
         .into_iter()
         .filter_map(|entry| match entry {
             FileEntry::Custom { payload, .. }
-                if payload.custom_type == IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE =>
+                if payload.custom_type == JAVASCRIPT_SENT_AGENT_MESSAGE_CUSTOM_TYPE =>
             {
                 payload
                     .data
@@ -78,10 +76,8 @@ pub(crate) fn append_to_tool_result(
     let AgentMessage::Standard(Message::ToolResult(result)) = row else {
         return false;
     };
-    // The python tool's aliases all count (an `ipython`/`python`-named
-    // call, and TS-era files, store the name the model called): the
-    // receipt patches the row whatever the alias was.
-    if result.tool_call_id != tool_call_id || !pa_types::ai::is_python_tool_name(&result.tool_name)
+    if result.tool_call_id != tool_call_id
+        || !pa_types::ai::is_javascript_tool_name(&result.tool_name)
     {
         return false;
     }
@@ -124,7 +120,7 @@ pub(crate) async fn record(
         } else {
             session
                 .append_custom_entry(
-                    IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE,
+                    JAVASCRIPT_SENT_AGENT_MESSAGE_CUSTOM_TYPE,
                     Some(sent_agent_message_entry(tool_call_id, message)),
                 )
                 .map(|_| ())
@@ -183,7 +179,7 @@ pub(crate) fn landing_transform(
             if !matches!(
                 &message,
                 AgentMessage::Standard(Message::ToolResult(result))
-                    if pa_types::ai::is_python_tool_name(&result.tool_name)
+                    if pa_types::ai::is_javascript_tool_name(&result.tool_name)
             ) {
                 return message;
             }
@@ -201,7 +197,7 @@ mod tests {
     use super::*;
     use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
     use pa_agent::types::{Message, ThinkingLevel, ToolResultMessage};
-    use pa_types::ai::PYTHON_TOOL_NAME;
+    use pa_types::ai::JAVASCRIPT_TOOL_NAME;
 
     fn receipt(id: &str) -> KernelSentAgentMessage {
         KernelSentAgentMessage {
@@ -217,10 +213,10 @@ mod tests {
         }
     }
 
-    fn python_tool_result(tool_call_id: &str, details: Option<Value>) -> AgentMessage {
+    fn javascript_tool_result(tool_call_id: &str, details: Option<Value>) -> AgentMessage {
         AgentMessage::Standard(Message::ToolResult(ToolResultMessage {
             tool_call_id: tool_call_id.to_string(),
-            tool_name: PYTHON_TOOL_NAME.to_string(),
+            tool_name: JAVASCRIPT_TOOL_NAME.to_string(),
             content: Vec::new(),
             details,
             is_error: false,
@@ -261,8 +257,8 @@ mod tests {
     }
 
     #[test]
-    fn append_to_tool_result_patches_only_the_matching_python_repl_row() {
-        let mut matching = python_tool_result("call-1", Some(json!({ "status": "ok" })));
+    fn append_to_tool_result_patches_only_the_matching_javascript_row() {
+        let mut matching = javascript_tool_result("call-1", Some(json!({ "status": "ok" })));
         let sent = receipt("agentmsg_1");
 
         assert!(append_to_tool_result(&mut matching, "call-1", &sent));
@@ -284,8 +280,8 @@ mod tests {
         );
 
         // A row without details gains them; a foreign tool id and a
-        // non-python_repl result stay untouched.
-        let mut bare = python_tool_result("call-2", None);
+        // non-javascript result stay untouched.
+        let mut bare = javascript_tool_result("call-2", None);
         assert!(append_to_tool_result(&mut bare, "call-2", &sent));
         assert_eq!(
             tool_result_details(&bare).expect("details")["sentAgentMessages"]
@@ -310,9 +306,8 @@ mod tests {
         assert!(!append_to_tool_result(&mut foreign_tool, "call-3", &sent));
         assert!(tool_result_details(&foreign_tool).is_none());
 
-        // The python tool's aliases count too (an `ipython`-named call,
-        // the name TS-era files store).
-        let mut aliased = AgentMessage::Standard(Message::ToolResult(ToolResultMessage {
+        // Legacy names do not match: clean break on `javascript`.
+        let mut legacy = AgentMessage::Standard(Message::ToolResult(ToolResultMessage {
             tool_call_id: "call-4".to_string(),
             tool_name: "ipython".to_string(),
             content: Vec::new(),
@@ -320,14 +315,8 @@ mod tests {
             is_error: false,
             timestamp: 0,
         }));
-        assert!(append_to_tool_result(&mut aliased, "call-4", &sent));
-        assert_eq!(
-            tool_result_details(&aliased).expect("details")["sentAgentMessages"]
-                .as_array()
-                .expect("receipts")
-                .len(),
-            1
-        );
+        assert!(!append_to_tool_result(&mut legacy, "call-4", &sent));
+        assert!(tool_result_details(&legacy).is_none());
     }
 
     #[tokio::test]
@@ -335,7 +324,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session = SessionManager::persisted(dir.path(), &dir.path().join("sessions"));
         let session = Arc::new(Mutex::new(session));
-        let agent = agent_with(vec![python_tool_result("call-1", None)]);
+        let agent = agent_with(vec![javascript_tool_result("call-1", None)]);
 
         record(&session, &agent, "call-1", &receipt("agentmsg_1"))
             .await
@@ -393,7 +382,7 @@ mod tests {
             std::fs::create_dir(&file).unwrap(); // deterministic append failure, even as root
             let session = Arc::new(Mutex::new(session));
             let agent = agent_with(if landed {
-                vec![python_tool_result("call-1", None)]
+                vec![javascript_tool_result("call-1", None)]
             } else {
                 vec![]
             });
@@ -434,7 +423,7 @@ mod tests {
 
         // The rebuilt engine's rows: the tool result alone, without the
         // receipts (they landed after the cell settled).
-        let agent = agent_with(vec![python_tool_result("call-1", None)]);
+        let agent = agent_with(vec![javascript_tool_result("call-1", None)]);
         restore(&session, &agent).await;
         let state = agent.state().await;
         let details = state

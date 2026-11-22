@@ -327,7 +327,7 @@ impl Harness {
     /// The bounded event wait: read streaming events until one matches `predicate` (the deadline
     /// catches a stall) — the quiet `drain_events` cannot observe a mid-churn moment.
     fn wait_for_event(&mut self, what: &str, predicate: impl Fn(&Value) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         let mut line = String::new();
         loop {
             assert!(

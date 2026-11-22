@@ -16,7 +16,7 @@ pub enum SkillState {
     Active,
     /// `disable-model-invocation`: out of the prompt, callable via `/skill:<name>`.
     Hidden,
-    /// A project Python skill: its markdown loads, its code does not.
+    /// A project JavaScript skill: its markdown loads, its code does not.
     ProjectCodeNotLoaded,
     /// Another skill with the same name loaded first.
     #[serde(rename_all = "camelCase")]
@@ -72,7 +72,7 @@ impl SkillStatus {
             SkillState::Active => "active".to_string(),
             SkillState::Hidden => format!("hidden from the model (use /skill:{})", self.name),
             SkillState::ProjectCodeNotLoaded => {
-                "active as markdown (project Python code is not loaded)".to_string()
+                "active as markdown (project JavaScript code is not loaded)".to_string()
             }
             SkillState::Shadowed { winner_path } => {
                 format!("not loaded: {winner_path} has the same name and loads first")

@@ -2,15 +2,15 @@
 //! TypeScript tools (frozen in `tests/golden/corpus/`) against the Rust port
 //! and assert identical model-facing output.
 //!
-//! Corpus cases cover ipython result composition and the exact tool schema.
+//! Corpus cases cover javascript result composition and the exact tool schema.
 
 #![cfg(test)]
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::tools::ipython::{
-    self, ExecuteResult, ExecuteStatus, IpythonKernelProvisioner, IpythonToolOptions,
+use crate::tools::javascript::{
+    self, ExecuteResult, ExecuteStatus, JavaScriptKernelProvisioner, JavaScriptToolOptions,
     KernelAttachment, KernelErrorInfo, KernelExecuteOptions, KernelExecutor,
 };
 use crate::tools::tool_definition::ToolDefinition;
@@ -83,7 +83,7 @@ struct MockProvisioner {
     kill_calls: AtomicUsize,
 }
 
-impl IpythonKernelProvisioner for MockProvisioner {
+impl JavaScriptKernelProvisioner for MockProvisioner {
     fn ensure(
         &self,
         _on_progress: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
@@ -152,8 +152,8 @@ fn mock_execution(entry: &serde_json::Value) -> ExecuteResult {
 }
 
 #[tokio::test]
-async fn golden_ipython_group_matches_ts() {
-    let corpus = corpus("ipython");
+async fn golden_javascript_group_matches_ts() {
+    let corpus = corpus("javascript");
     let mut checked = 0;
     for case in corpus["cases"].as_array().expect("cases array") {
         let name = case["name"].as_str().expect("name");
@@ -173,11 +173,11 @@ async fn golden_ipython_group_matches_ts() {
             ensure_calls: AtomicUsize::new(0),
             kill_calls: AtomicUsize::new(0),
         });
-        let options = IpythonToolOptions {
+        let options = JavaScriptToolOptions {
             provisioner: provisioner.clone(),
             on_late_sent_agent_message: None,
         };
-        let result = ipython::execute_ipython(
+        let result = javascript::execute_javascript(
             &options,
             case["code"].as_str().expect("code"),
             None,
@@ -191,29 +191,29 @@ async fn golden_ipython_group_matches_ts() {
             Ok(result) => {
                 assert!(
                     recorded["ok"].as_bool().expect("ok"),
-                    "ipython/{name}: TS failed, Rust succeeded"
+                    "javascript/{name}: expected failure, got success"
                 );
                 assert_eq!(
                     result.is_error,
                     recorded["isError"].as_bool().expect("isError"),
-                    "ipython/{name} isError"
+                    "javascript/{name} isError"
                 );
                 let text = result.content[0].as_text().expect("text block");
                 assert_eq!(
                     text,
                     recorded["outputText"].as_str().expect("outputText"),
-                    "ipython/{name} outputText"
+                    "javascript/{name} outputText"
                 );
             }
             Err(err) => {
                 assert!(
                     !recorded["ok"].as_bool().expect("ok"),
-                    "ipython/{name}: TS succeeded, Rust failed: {err}"
+                    "javascript/{name}: expected success, got error: {err}"
                 );
                 assert_eq!(
                     err.to_string(),
                     recorded["error"].as_str().expect("error"),
-                    "ipython/{name} error"
+                    "javascript/{name} error"
                 );
             }
         }
@@ -225,7 +225,7 @@ async fn golden_ipython_group_matches_ts() {
         assert_json_eq(
             &calls,
             &case["provisionerCalls"].clone(),
-            "ipython/{name} calls",
+            "javascript/{name} calls",
         );
         checked += 1;
     }
@@ -234,18 +234,18 @@ async fn golden_ipython_group_matches_ts() {
 
 /// Cell edits reach the result details as the edit tool's numbered diff text.
 #[tokio::test]
-async fn ipython_details_carry_the_cell_edit_diffs() {
+async fn javascript_details_carry_the_cell_edit_diffs() {
     let diff = |start_line| crate::kernel::shared::KernelDiffDisplay {
-        path: "src/app.py".to_string(),
-        old_str: "x = 1".to_string(),
-        new_str: "x = 2".to_string(),
+        path: "src/app.ts".to_string(),
+        old_str: "const x = 1;".to_string(),
+        new_str: "const x = 2;".to_string(),
         start_line,
     };
     let result = ExecuteResult {
         diffs: vec![diff(Some(10)), diff(None)],
         ..ExecuteResult::default()
     };
-    let options = IpythonToolOptions {
+    let options = JavaScriptToolOptions {
         provisioner: Arc::new(MockProvisioner {
             kernel: Arc::new(MockKernel {
                 executions: Mutex::new(vec![result]),
@@ -257,14 +257,14 @@ async fn ipython_details_carry_the_cell_edit_diffs() {
         }),
         on_late_sent_agent_message: None,
     };
-    let result = ipython::execute_ipython(&options, "edit()", None, None, None, None)
+    let result = javascript::execute_javascript(&options, "edit()", None, None, None, None)
         .await
         .expect("cell executes");
     assert_eq!(
         result.details.expect("details")["diffs"],
         serde_json::json!([
-            { "path": "src/app.py", "diff": "-10 x = 1\n+10 x = 2" },
-            { "path": "src/app.py", "diff": "-1 x = 1\n+1 x = 2" },
+            { "path": "src/app.ts", "diff": "-10 const x = 1;\n+10 const x = 2;" },
+            { "path": "src/app.ts", "diff": "-1 const x = 1;\n+1 const x = 2;" },
         ])
     );
 }
@@ -276,9 +276,9 @@ fn golden_schema_group_matches_ts() {
     for case in corpus["cases"].as_array().expect("cases array") {
         let tool = case["tool"].as_str().expect("tool");
         let definition: ToolDefinition = match tool {
-            "ipython" => crate::tools::ipython::create_ipython_tool_definition(
+            "javascript" => crate::tools::javascript::create_javascript_tool_definition(
                 "/tmp",
-                IpythonToolOptions {
+                JavaScriptToolOptions {
                     on_late_sent_agent_message: None,
                     provisioner: Arc::new(MockProvisioner {
                         kernel: Arc::new(MockKernel {

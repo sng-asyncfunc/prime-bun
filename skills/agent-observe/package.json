@@ -1,0 +1,9 @@
+{
+	"name": "@prime-agent/skill-agent-observe",
+	"private": true,
+	"type": "module",
+	"primeAgent": {
+		"entry": "src/index.ts",
+		"global": "agentObserve"
+	}
+}

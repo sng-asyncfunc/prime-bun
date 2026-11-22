@@ -1077,7 +1077,7 @@ impl AgentSessionEngine {
             model: Some(agent_model),
             thinking_level: Some(map_thinking_level(self.effective_thinking())),
             stream_fn: Some(stream_fn),
-            // Model tools: `python_repl` only; the engine adds the kernel-backed `python_repl` tool itself.
+            // Model tools: `javascript` only; the engine adds the kernel-backed `javascript` tool itself.
             tools: vec![],
             custom_system_prompt: create_resources.system_prompt,
             prompt_guidelines: create_resources.append_system_prompt,
@@ -1103,7 +1103,7 @@ impl AgentSessionEngine {
             model_info: Some(model.clone()),
             // Prewarm; the depth gate keeps subagent workers lazy.
             kernel_ready_gate: None,
-            prewarm_ipython_kernel: Some(true),
+            prewarm_javascript_kernel: Some(true),
             on_background_work_settled,
             bash_notice_wake: None,
             // The worker-installed purge withdraws queued minted continuations.

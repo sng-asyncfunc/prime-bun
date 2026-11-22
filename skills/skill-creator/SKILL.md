@@ -1,30 +1,30 @@
 ---
 name: skill-creator
-description: Create, validate, and install Prime Agent skills - both markdown skills and Python-backed skills callable from the Python kernel. Use when the user asks to create a skill, turn a workflow, script, or prompt into a reusable skill, add a Python skill the agent can call, or asks how to write a SKILL.md and where skills live.
+description: Create, validate, and install Prime Agent skills - both markdown skills and JavaScript-backed skills callable from the Bun REPL. Use when the user asks to create a skill, turn a workflow, script, or prompt into a reusable skill, add a JavaScript skill the agent can call, or asks how to write a SKILL.md and where skills live.
 ---
 
 # Skill Creator
 
-A skill is a directory with a `SKILL.md` file (YAML frontmatter + markdown instructions). At startup Prime Agent reads only each skill's name and description into the system prompt; the full file loads on demand when a task matches. Prime Agent follows the [Agent Skills standard](https://agentskills.io/specification) and extends it with Python-backed skills.
+A skill is a directory with a `SKILL.md` file (YAML frontmatter + markdown instructions). At startup Prime Agent reads only each skill's name and description into the system prompt; the full file loads on demand when a task matches. Prime Agent follows the [Agent Skills standard](https://agentskills.io/specification) and extends it with JavaScript-backed skills.
 
 | Kind | What it is | When to use |
 |---|---|---|
 | markdown | `SKILL.md` plus optional scripts, references, and assets | Workflows, CLI recipes, domain knowledge, multi-step instructions |
-| python | A markdown skill that also ships a Python package installed into the agent's persistent Python kernel | Capabilities that are naturally one Python call: API wrappers, fetchers, converters, computations |
+| javascript | A markdown skill that also ships a TypeScript or JavaScript module loaded into the persistent Bun worker | Capabilities that are naturally one JavaScript call: API wrappers, fetchers, converters, computations |
 
-Before writing a Python-backed skill, read [references/python-skills.md](references/python-skills.md) for the package contract.
+Before writing a JavaScript-backed skill, read [references/javascript-skills.md](references/javascript-skills.md) for the package contract.
 
 ## Creating a Skill
 
-1. **Pick the kind.** Default to markdown. Go Python only when the agent should *call* the capability (`await my_skill(...)`) instead of following instructions.
+1. **Pick the kind.** Default to markdown. Use JavaScript only when the agent should *call* the capability (`await mySkill(...)`) instead of following instructions.
 2. **Pick the location.** Ask the user when it is not obvious from context:
-   - Project skill, shared via the repo: `.prime/agent/skills/<name>/`
-   - Personal global skill: `~/.prime/agent/skills/<name>/`
+   - Project skill, shared via the repo: `.prime/agent/skills/<name>/` (note: project-scoped JavaScript skills are demoted to markdown-only so untrusted repository code never auto-executes on session start)
+   - Personal global skill: `~/.prime/agent/skills/<name>/` (use this for executable JavaScript skills)
    - Shipped with an npm package: a `skills/` directory in the package, or `pi.skills` paths in its `package.json`
 3. **Scaffold and write** the directory using the layout and frontmatter rules below.
 4. **Verify** the skill loads (see Verification).
 
-On a name collision the first skill found wins. Precedence: explicit `--skill` paths and `skills` settings entries, then project, then global, then package, then built-in skills.
+On a name collision, **bundled skills win by default**. To override a bundled skill, disable it with `"skills": ["-<name>"]` in `~/.prime/agent/settings.json`. Among non-bundled skills, the first skill found wins: explicit `--skill` paths and `skills` settings entries, then project, then global, then package.
 
 ## Layout
 
@@ -78,4 +78,4 @@ After writing the skill:
 2. In an interactive session, `/reload` picks up new skills without a restart; other sessions pick them up on start. Loading problems (bad name, missing description, name collisions) surface as warnings — ask the user to check, or check diagnostics yourself if you can.
 3. A loaded skill is also invocable as `/skill:<name>`, which the user can try directly.
 
-For Python-backed skills, also run the checks in [references/python-skills.md](references/python-skills.md).
+For JavaScript-backed skills, also run the checks in [references/javascript-skills.md](references/javascript-skills.md).

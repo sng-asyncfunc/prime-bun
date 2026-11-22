@@ -694,8 +694,8 @@ impl SessionEngine for AgentSessionEngine {
                             .usage
                             .and_then(|usage| serde_json::to_value(usage).ok()),
                         entry: serde_json::to_value(&run.entry).unwrap_or(Value::Null),
-                        ipython_state: run
-                            .ipython_state
+                        javascript_state: run
+                            .javascript_state
                             .as_ref()
                             .map(crate::session_commands::custom_message_value),
                     }),

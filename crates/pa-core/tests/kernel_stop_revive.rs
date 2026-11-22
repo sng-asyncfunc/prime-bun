@@ -23,34 +23,50 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pa_core::kernel::provisioner::{IpythonKernelProvisioner, IpythonKernelProvisionerOptions};
+use pa_core::kernel::provisioner::{
+    JavaScriptKernelProvisioner, JavaScriptKernelProvisionerOptions,
+};
 use pa_core::kernel::shared::{
     host_handler, ExecuteOptions, ExecuteStatus, HostRequestHandlers, KernelShutdownOptions,
 };
 
-/// The kernel Python with prime-agent-runtime installed (see
-/// `kernel_snapshot_resume.rs`); skipped with a note when absent.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available; skipped with a note when absent.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live stop-revive test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live stop-revive test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live stop-revive test");
     None
 }
 
@@ -59,23 +75,23 @@ fn kernel_python() -> Option<PathBuf> {
 /// — while `dispose` was never called.
 #[tokio::test]
 async fn stop_kernel_flushes_the_snapshot_and_the_next_ensure_revives_it() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
     let artifacts = dir.path().join("artifacts");
     std::fs::create_dir_all(&artifacts).unwrap();
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(python),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(python),
             snapshot_dir: Some(artifacts.clone()),
             ..Default::default()
         },
     );
     let first = provisioner.ensure(None, None).await.unwrap();
     let written = first
-        .execute("marker = 2483", ExecuteOptions::default())
+        .execute("const marker = 2483;", ExecuteOptions::default())
         .await
         .unwrap();
     assert_eq!(written.status, ExecuteStatus::Ok);
@@ -92,7 +108,7 @@ async fn stop_kernel_flushes_the_snapshot_and_the_next_ensure_revives_it() {
         "the stop released the kernel"
     );
     assert!(
-        artifacts.join("kernel-state.dill").exists(),
+        artifacts.join("kernel-state.bin").exists(),
         "the stop flushed the namespace snapshot"
     );
     let revived = provisioner.ensure(None, None).await.unwrap();
@@ -108,16 +124,16 @@ async fn stop_kernel_flushes_the_snapshot_and_the_next_ensure_revives_it() {
 /// stop supersedes the first (TS `pendingStop` last-writer-wins).
 #[tokio::test]
 async fn stop_kernel_without_a_kernel_is_a_no_op_and_stays_revivable() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
     let artifacts = dir.path().join("artifacts");
     std::fs::create_dir_all(&artifacts).unwrap();
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(python),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(python),
             snapshot_dir: Some(artifacts),
             ..Default::default()
         },
@@ -142,7 +158,7 @@ async fn stop_kernel_without_a_kernel_is_a_no_op_and_stays_revivable() {
 /// ordering barrier rather than relying on timing of the snapshot flush.
 #[tokio::test]
 async fn revival_waits_for_in_flight_stop_before_booting() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -170,10 +186,10 @@ async fn revival_waits_for_in_flight_stop_before_booting() {
             }
         }),
     );
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(python),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(python),
             snapshot_dir: Some(artifacts.clone()),
             host_handlers: handlers,
             ..Default::default()
@@ -182,7 +198,7 @@ async fn revival_waits_for_in_flight_stop_before_booting() {
     let first = provisioner.ensure(None, None).await.unwrap();
     let first_cell = tokio::spawn(async move {
         first
-            .execute("await rlm.find_models('hold')", ExecuteOptions::default())
+            .execute("await rlm.findModels('hold')", ExecuteOptions::default())
             .await
     });
     tokio::time::timeout(Duration::from_secs(10), entered_rx)
@@ -216,7 +232,7 @@ async fn revival_waits_for_in_flight_stop_before_booting() {
                     let _ = tx.send(());
                 }
             }
-            "Starting Python kernel..." => {
+            "Starting Bun kernel..." => {
                 boot_saw_release
                     .lock()
                     .unwrap()
@@ -275,7 +291,7 @@ async fn revival_waits_for_in_flight_stop_before_booting() {
 /// at two: nothing in the chain may arm a third interpreter.
 #[tokio::test]
 async fn superseding_stop_after_kill_cannot_deadlock_the_revival_gate() {
-    let Some(python) = kernel_python() else {
+    let Some(python) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().unwrap();
@@ -283,10 +299,10 @@ async fn superseding_stop_after_kill_cannot_deadlock_the_revival_gate() {
     let wrapped = counting_kernel(dir.path(), &python, &count);
     let artifacts = dir.path().join("artifacts");
     std::fs::create_dir_all(&artifacts).unwrap();
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(wrapped),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(wrapped),
             snapshot_dir: Some(artifacts),
             ..Default::default()
         },

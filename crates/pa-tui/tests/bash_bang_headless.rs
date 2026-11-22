@@ -217,7 +217,7 @@ impl MockSupervisor {
                                     let _ = cvar
                                         .wait_timeout_while(
                                             lock.lock().expect("ack lock"),
-                                            std::time::Duration::from_secs(60),
+                                            std::time::Duration::from_mins(1),
                                             |arrived| !*arrived,
                                         )
                                         .expect("ack wait");

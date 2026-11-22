@@ -870,7 +870,7 @@ pub(crate) async fn build_headless_engine_with(
             model_info: Some(model.clone()),
             // The kernel boots in the background at creation; a spawned
             // child boots lazily on first use.
-            prewarm_ipython_kernel: (!matches!(embedding, HeadlessEmbedding::Child(_)))
+            prewarm_javascript_kernel: (!matches!(embedding, HeadlessEmbedding::Child(_)))
                 .then_some(true),
             kernel_ready_gate,
             // The background-bash wake pair: the completion row's
@@ -1504,7 +1504,7 @@ pub(crate) fn render_selector_error(error: &SessionSelectorError) -> String {
     )
 }
 
-/// Model tools for the print runtime: `python_repl` only — the engine adds the kernel-backed tool
+/// Model tools for the print runtime: `javascript` only — the engine adds the kernel-backed tool
 /// itself.
 fn builtin_tools(_cwd: &std::path::Path) -> Vec<Arc<dyn pa_agent::types::AgentTool>> {
     Vec::new()

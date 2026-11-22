@@ -51,8 +51,8 @@ use serde_json::Value;
 pub const AGENT_MESSAGE_CUSTOM_TYPE: &str = "agent_message";
 pub const HEARTBEAT_PROMPT_CUSTOM_TYPE: &str = "heartbeat_prompt";
 pub const GOAL_CONTEXT_CUSTOM_TYPE: &str = "goal_context";
-pub const IPYTHON_STATE_RESTORED_CUSTOM_TYPE: &str = "ipython_state_restored";
-pub const PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE: &str = "python_skills_unavailable";
+pub const JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE: &str = "javascript_state_restored";
+pub const JAVASCRIPT_SKILLS_UNAVAILABLE_CUSTOM_TYPE: &str = "javascript_skills_unavailable";
 pub const RLM_CHILD_FAILURE_CUSTOM_TYPE: &str = "rlm_child_failure";
 pub const RLM_CHILD_TERMINAL_NOTICE_CUSTOM_TYPE: &str = "rlm_child_terminal_notice";
 pub const ASYNC_BASH_COMPLETION_CUSTOM_TYPE: &str = "async_bash_completion";
@@ -68,15 +68,15 @@ pub const MODEL_PROMPT_ERROR_CUSTOM_TYPE: &str = "model_prompt_error";
 pub const SKILL_PROBLEMS_CUSTOM_TYPE: &str = "skill_problems";
 
 /// Which agent-message side a row renders: the received transcript rows, or the
-/// sent/queued ipython cell receipts. The direction word folds into the
+/// sent/queued `javascript` cell receipts. The direction word folds into the
 /// viewer-relative arrow (`↓` received, `↑` sent/queued), so the variants carry no label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentMessageDirection {
     /// The transcript custom-message rows (this chat received the mail).
     Received,
-    /// A delivered receipt in ipython cell output.
+    /// A delivered receipt in `javascript` cell output.
     Sent,
-    /// An undelivered receipt in ipython cell output.
+    /// An undelivered receipt in `javascript` cell output.
     Queued,
 }
 
@@ -210,8 +210,10 @@ pub fn custom_message_entries(message: &Value) -> Vec<ChatEntry> {
         ))],
         HEARTBEAT_PROMPT_CUSTOM_TYPE
         | GOAL_CONTEXT_CUSTOM_TYPE
-        | IPYTHON_STATE_RESTORED_CUSTOM_TYPE
-        | PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE => {
+        | JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE
+        | JAVASCRIPT_SKILLS_UNAVAILABLE_CUSTOM_TYPE
+        | "ipython_state_restored"
+        | "python_skills_unavailable" => {
             vec![ChatEntry::InjectedPrompt(Box::new(injected_prompt_row(
                 custom_type,
                 message,
@@ -479,7 +481,7 @@ mod tests {
             "harness_digest",
             "refinement_notice",
             "prime-agent.worker_recovery",
-            "ipython_state",
+            "javascript_state",
             "thread_goal_state",
         ] {
             let entries = decoded(&json!({
@@ -608,8 +610,8 @@ mod tests {
         ));
         let restored = decoded(&json!({
             "role": "custom",
-            "customType": IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
-            "content": "[python-state-restored]",
+            "customType": JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE,
+            "content": "[javascript-state-restored]",
             "display": true,
             "details": { "restored": false },
         }));
@@ -621,8 +623,8 @@ mod tests {
         // The kernel-state row carries no expandable body.
         let restored = decoded(&json!({
             "role": "custom",
-            "customType": IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
-            "content": "[python-state-restored]",
+            "customType": JAVASCRIPT_STATE_RESTORED_CUSTOM_TYPE,
+            "content": "[javascript-state-restored]",
             "display": true,
             "details": { "restored": true },
         }));
@@ -703,11 +705,11 @@ mod tests {
     /// The unavailable-skills row decodes the failed names and keeps the
     /// full report as its expandable body.
     #[test]
-    fn python_skills_unavailable_row_decodes() {
+    fn javascript_skills_unavailable_row_decodes() {
         let unavailable = decoded(&json!({
             "role": "custom",
-            "customType": PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE,
-            "content": "[python-skills-unavailable]\n\n- websearch: No module named 'websearch'",
+            "customType": JAVASCRIPT_SKILLS_UNAVAILABLE_CUSTOM_TYPE,
+            "content": "[javascript-skills-unavailable]\n\n- websearch: Cannot find module 'websearch'",
             "display": true,
             "details": { "skills": ["websearch", "edit"] },
         }));
@@ -715,9 +717,9 @@ mod tests {
             unavailable.as_slice(),
             [ChatEntry::InjectedPrompt(boxed)]
                 if matches!(&boxed.kind,
-                    InjectedPromptKind::PythonSkillsUnavailable { skills }
+                    InjectedPromptKind::JavaScriptSkillsUnavailable { skills }
                         if skills == &vec!["websearch".to_string(), "edit".to_string()])
-                    && boxed.body.as_deref() == Some("[python-skills-unavailable]\n\n- websearch: No module named 'websearch'")
+                    && boxed.body.as_deref() == Some("[javascript-skills-unavailable]\n\n- websearch: Cannot find module 'websearch'")
         ));
     }
 

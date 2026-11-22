@@ -19,7 +19,7 @@ use pa_types::session::{
 use crate::rng::{iso_from_millis, Rng};
 
 /// The top-level tools the product exposes to the model.
-const TOOLS: [&str; 5] = ["bash", "edit", "python_repl", "websearch", "attach_image"];
+const TOOLS: [&str; 5] = ["bash", "edit", "javascript", "websearch", "attachImage"];
 /// The `custom_message` customType bank (a measured real-session mix).
 const CUSTOM_TYPES: [&str; 8] = [
     "async_bash_completion",
@@ -27,7 +27,7 @@ const CUSTOM_TYPES: [&str; 8] = [
     "agent_message",
     "rlm_child_terminal_notice",
     "session_slash_command",
-    "ipython_state",
+    "javascript_state",
     "provider_retry_outcome",
     "session_renamed",
 ];

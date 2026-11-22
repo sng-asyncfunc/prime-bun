@@ -47,9 +47,9 @@ enum Scenario {
     /// freezes the card; then a late end frame and a late start (the
     /// retick probe) must both land on nothing.
     Straggler,
-    /// The `python_repl` straggler: same shape with the ipython shell, so
+    /// The `javascript` straggler: same shape with the `javascript` shell, so
     /// the summary's duration slot freezes instead of vanishing.
-    IpythonStraggler,
+    JavaScriptStraggler,
     /// The lost turn: turn one's call never ends and its `turn_end`
     /// never lands; turn two's `turn_start` settles turn one's leftover
     /// card (partial preserved, stale timer stopped) and runs to its
@@ -233,12 +233,12 @@ impl MockSupervisor {
                                 );
                                 drain_barrier(&mut w);
                             }
-                            Scenario::IpythonStraggler => {
+                            Scenario::JavaScriptStraggler => {
                                 tool_start(
                                     &mut w,
                                     "call_1",
-                                    "ipython",
-                                    &json!({ "code": "print('x')" }),
+                                    "javascript",
+                                    &json!({ "code": "console.log('x')" }),
                                 );
                                 std::thread::sleep(std::time::Duration::from_millis(300));
                                 // The cell streams a partial before the turn
@@ -718,17 +718,17 @@ fn a_lost_turns_card_settles_when_the_next_turn_starts() {
     );
 }
 
-/// The `python_repl` straggler: the summary's duration slot ticks while the
+/// The `javascript` straggler: the summary's duration slot ticks while the
 /// cell runs, and at the settle it FREEZES on the run's honest duration
 /// (from the card timestamps) instead of vanishing — the
 /// bash panel keeps its static `Took` row from the same timestamps, and
-/// the ipython summary keeps its duration segment.
+/// the `javascript` summary keeps its duration segment.
 #[test]
-fn a_python_repl_straggler_freezes_its_duration_slot() {
+fn a_javascript_straggler_freezes_its_duration_slot() {
     std::env::remove_var("TMUX");
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("tui.sock");
-    let supervisor = MockSupervisor::bind(&socket, Scenario::IpythonStraggler);
+    let supervisor = MockSupervisor::bind(&socket, Scenario::JavaScriptStraggler);
     let handle = std::thread::spawn(move || supervisor.serve());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -779,7 +779,7 @@ fn a_python_repl_straggler_freezes_its_duration_slot() {
         .filter_map(|frame| {
             frame
                 .lines()
-                .find(|line| line.contains("\u{2717} python"))
+                .find(|line| line.contains("\u{2717} js"))
                 .map(std::string::ToString::to_string)
         })
         .collect::<Vec<_>>();

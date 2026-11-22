@@ -244,7 +244,7 @@ mod tests {
             "tool_execution_update",
             "agent_start",
             "goal_update",
-            "ipython_sent_agent_message",
+            "javascript_sent_agent_message",
         ] {
             let frame = session_event_frame(&json!({ "type": event_type }));
             assert!(

@@ -75,13 +75,14 @@ pub fn create_synthetic_source_info(
     }
 }
 
-/// Python runtime metadata for a Python-backed skill.
+/// JavaScript runtime metadata for a Bun/JavaScript-backed skill.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SkillPythonMetadata {
-    pub import_name: String,
+pub struct SkillJavaScriptMetadata {
+    pub global_name: String,
+    pub entry_path: PathBuf,
     pub package_path: PathBuf,
-    pub pyproject_path: PathBuf,
+    pub package_json_path: PathBuf,
 }
 
 /// A discovered skill.
@@ -95,62 +96,232 @@ pub struct Skill {
     pub source_info: SourceInfo,
     pub disable_model_invocation: bool,
     pub kind: SkillKind,
-    pub python: Option<SkillPythonMetadata>,
+    pub javascript: Option<SkillJavaScriptMetadata>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum SkillKind {
     Markdown,
-    Python,
+    JavaScript,
 }
 
 impl Skill {
     #[must_use]
-    pub fn is_python(&self) -> bool {
-        self.kind == SkillKind::Python
+    pub fn is_javascript(&self) -> bool {
+        self.kind == SkillKind::JavaScript
     }
 
     /// The kind label the prompt inventory and telemetry share
     /// (`<type>` in `format_skills_for_prompt`, `skill_kind` in events).
     #[must_use]
     pub fn kind_label(&self) -> &'static str {
-        if self.is_python() {
-            "python"
+        if self.is_javascript() {
+            "javascript"
         } else {
             "markdown"
         }
     }
 }
 
-/// Runtime info for kernel-side Python skill preparation.
+/// Runtime info for kernel-side JavaScript skill preparation.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PythonSkillRuntimeInfo {
+pub struct JavaScriptSkillRuntimeInfo {
     pub name: String,
-    pub import_name: String,
+    pub global_name: String,
+    pub entry_path: PathBuf,
     pub package_path: PathBuf,
-    pub pyproject_path: PathBuf,
+    pub package_json_path: PathBuf,
 }
 
-/// The runtime info for every Python skill in the list.
+/// Reserved runtime and Bun/JavaScript globals that a skill must never shadow.
+#[must_use]
+pub fn is_reserved_javascript_global(name: &str) -> bool {
+    matches!(
+        name,
+        // Prime runtime globals
+        "$"
+            | "Bun"
+            | "fs"
+            | "os"
+            | "path"
+            | "util"
+            | "require"
+            | "sh"
+            | "bash"
+            | "persistentShells"
+            | "mcp"
+            | "installPackage"
+            | "hostRequest"
+            | "emit"
+            | "rlm"
+            | "__primeDisplay"
+            | "__primeHostRequest"
+            | "__primeLoadSkills"
+            | "__primeSetCompletionNoticesWired"
+            | "__primePersist"
+            // Standard JS / Web / Node / Bun globals
+            | "globalThis"
+            | "global"
+            | "process"
+            | "console"
+            | "Buffer"
+            | "fetch"
+            | "URL"
+            | "URLSearchParams"
+            | "URLPattern"
+            | "crypto"
+            | "Crypto"
+            | "SubtleCrypto"
+            | "TextEncoder"
+            | "TextDecoder"
+            | "AbortController"
+            | "AbortSignal"
+            | "Event"
+            | "EventTarget"
+            | "CustomEvent"
+            | "ErrorEvent"
+            | "CloseEvent"
+            | "Headers"
+            | "Request"
+            | "Response"
+            | "FormData"
+            | "Blob"
+            | "File"
+            | "ReadableStream"
+            | "WritableStream"
+            | "TransformStream"
+            | "WebSocket"
+            | "Worker"
+            | "HTMLRewriter"
+            | "ShadowRealm"
+            | "PerformanceTiming"
+            | "PerformanceServerTiming"
+            | "performance"
+            | "setTimeout"
+            | "clearTimeout"
+            | "setInterval"
+            | "clearInterval"
+            | "setImmediate"
+            | "clearImmediate"
+            | "queueMicrotask"
+            | "structuredClone"
+            | "atob"
+            | "btoa"
+            | "Object"
+            | "Function"
+            | "Array"
+            | "String"
+            | "Number"
+            | "Boolean"
+            | "Symbol"
+            | "BigInt"
+            | "Math"
+            | "Date"
+            | "RegExp"
+            | "Error"
+            | "EvalError"
+            | "RangeError"
+            | "ReferenceError"
+            | "SyntaxError"
+            | "TypeError"
+            | "URIError"
+            | "AggregateError"
+            | "SuppressedError"
+            | "Promise"
+            | "Proxy"
+            | "Reflect"
+            | "Map"
+            | "Set"
+            | "WeakMap"
+            | "WeakSet"
+            | "WeakRef"
+            | "FinalizationRegistry"
+            | "ArrayBuffer"
+            | "SharedArrayBuffer"
+            | "DataView"
+            | "Int8Array"
+            | "Uint8Array"
+            | "Uint8ClampedArray"
+            | "Int16Array"
+            | "Uint16Array"
+            | "Int32Array"
+            | "Uint32Array"
+            | "Float16Array"
+            | "Float32Array"
+            | "Float64Array"
+            | "BigInt64Array"
+            | "BigUint64Array"
+            | "JSON"
+            | "Intl"
+            | "Atomics"
+            | "WebAssembly"
+            | "DisposableStack"
+            | "AsyncDisposableStack"
+            | "BuildError"
+            | "BuildMessage"
+            | "ResolveError"
+            | "ResolveMessage"
+            | "addEventListener"
+            | "removeEventListener"
+            | "dispatchEvent"
+            | "reportError"
+            | "postMessage"
+            | "onerror"
+            | "onmessage"
+            | "alert"
+            | "confirm"
+            | "prompt"
+            | "self"
+            | "ffi"
+            | "jsc"
+            | "sqlite"
+            | "eval"
+            | "isFinite"
+            | "isNaN"
+            | "parseFloat"
+            | "parseInt"
+            | "decodeURI"
+            | "decodeURIComponent"
+            | "encodeURI"
+            | "encodeURIComponent"
+            | "undefined"
+            | "NaN"
+            | "Infinity"
+    )
+}
+
+/// The runtime info for every eligible JavaScript skill in the list (excluding
+/// project-scoped skills, reserved globals, and duplicate global names).
 ///
 /// # Panics
 ///
-/// The `expect` cannot fire: a skill is marked `Python` only when its metadata was parsed.
+/// The `expect` cannot fire: a skill is marked `JavaScript` only when its metadata was parsed.
 #[must_use]
-pub fn get_python_skill_runtime_info(skills: &[Skill]) -> Vec<PythonSkillRuntimeInfo> {
+pub fn get_javascript_skill_runtime_info(skills: &[Skill]) -> Vec<JavaScriptSkillRuntimeInfo> {
+    let mut seen_globals = std::collections::HashSet::new();
     skills
         .iter()
-        .filter(|skill| skill.is_python() && skill.source_info.scope != SourceScope::Project)
-        .map(|skill| {
-            let python = skill.python.as_ref().expect("python skill has metadata");
-            PythonSkillRuntimeInfo {
-                name: skill.name.clone(),
-                import_name: python.import_name.clone(),
-                package_path: python.package_path.clone(),
-                pyproject_path: python.pyproject_path.clone(),
+        .filter(|skill| skill.is_javascript() && skill.source_info.scope != SourceScope::Project)
+        .filter_map(|skill| {
+            let js = skill
+                .javascript
+                .as_ref()
+                .expect("javascript skill has metadata");
+            if is_reserved_javascript_global(&js.global_name) {
+                return None;
             }
+            if !seen_globals.insert(js.global_name.clone()) {
+                return None;
+            }
+            Some(JavaScriptSkillRuntimeInfo {
+                name: skill.name.clone(),
+                global_name: js.global_name.clone(),
+                entry_path: js.entry_path.clone(),
+                package_path: js.package_path.clone(),
+                package_json_path: js.package_json_path.clone(),
+            })
         })
         .collect()
 }
@@ -216,8 +387,8 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     }
     let mut lines = vec![
         "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
-        "Use python_repl to inspect a skill's file when the task matches its description.".to_string(),
-        "Skills with a python_import are prepared in the persistent Python kernel when available and can be called directly by that import name.".to_string(),
+        "Use the javascript tool to inspect a skill's file when the task matches its description.".to_string(),
+        "Skills with a javascript_global are prepared in the persistent Bun kernel when available and can be called directly by that global name.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
         String::new(),
         "<available_skills>".to_string(),
@@ -226,10 +397,10 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
         lines.push(format!("    <type>{}</type>", skill.kind_label()));
-        if let Some(python) = &skill.python {
+        if let Some(js) = &skill.javascript {
             lines.push(format!(
-                "    <python_import>{}</python_import>",
-                escape_xml(&python.import_name)
+                "    <javascript_global>{}</javascript_global>",
+                escape_xml(&js.global_name)
             ));
         }
         lines.push(format!(
@@ -360,7 +531,7 @@ mod tests {
             ),
             disable_model_invocation: false,
             kind: SkillKind::Markdown,
-            python: None,
+            javascript: None,
         }
     }
 
@@ -528,7 +699,7 @@ mod tests {
             source_info: create_synthetic_source_info("/s", "user", SourceScope::User, None),
             disable_model_invocation: disable,
             kind: SkillKind::Markdown,
-            python: None,
+            javascript: None,
         };
         let hidden = format_skills_for_prompt(&[skill("hidden", true)]);
         assert_eq!(hidden, "");

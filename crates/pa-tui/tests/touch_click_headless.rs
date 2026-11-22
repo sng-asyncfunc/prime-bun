@@ -107,7 +107,7 @@ impl MockSupervisor {
     }
 }
 
-/// The slim attach result: eight ipython calls around a received agent message and hidden thinking
+/// The slim attach result: eight `javascript` calls around a received agent message and hidden thinking
 /// — every call renders as its own card (the 2026-09-28 undo of the condensed-run summary block).
 #[expect(
     clippy::too_many_lines,
@@ -118,7 +118,7 @@ fn attach_data(id: &str) -> Value {
         json!({
             "type": "toolCall",
             "id": format!("c{index}"),
-            "name": "ipython",
+            "name": "javascript",
             "arguments": { "code": format!("print({index})") },
         })
     };
@@ -137,7 +137,7 @@ fn attach_data(id: &str) -> Value {
         json!({
             "role": "toolResult",
             "toolCallId": "c0",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "out 0" }],
             "details": { "status": "ok" },
             "isError": false,
@@ -146,7 +146,7 @@ fn attach_data(id: &str) -> Value {
         json!({
             "role": "toolResult",
             "toolCallId": "c1",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "out 1" }],
             "details": { "status": "ok" },
             "isError": false,
@@ -155,7 +155,7 @@ fn attach_data(id: &str) -> Value {
         json!({
             "role": "toolResult",
             "toolCallId": "c2",
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": "out 2" }],
             "details": { "status": "ok" },
             "isError": false,
@@ -202,7 +202,7 @@ fn attach_data(id: &str) -> Value {
         messages.push(json!({
             "role": "toolResult",
             "toolCallId": format!("c{index}"),
-            "toolName": "ipython",
+            "toolName": "javascript",
             "content": [{ "type": "text", "text": format!("out {index}") }],
             "details": details,
             "isError": false,

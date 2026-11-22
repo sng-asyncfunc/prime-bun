@@ -116,7 +116,7 @@ impl Inner {
 
         // Restore revives only the user namespace; live handles (rlm, bash, skills) come
         // from the runtime bootstrap, so a repaired kernel must re-run it.
-        let Some(code) = self.options.bootstrap_code.clone() else {
+        let Some(code) = lock(&self.bootstrap_code).clone() else {
             return;
         };
         let bootstrapped = self.bootstrap_repaired_kernel(&code).await;
@@ -186,7 +186,7 @@ impl Inner {
         self: &Arc<Self>,
         signal: Option<&AbortSignal>,
     ) -> anyhow::Result<()> {
-        let code = self.options.bootstrap_code.clone();
+        let code = lock(&self.bootstrap_code).clone();
         let needs_restore = self.options.snapshot.is_some() && lock(&self.guarded).pending_restore;
         let needs_bootstrap = code.is_some() && lock(&self.guarded).pending_rebootstrap;
         // An in-flight repair owns its kernel's restore/bootstrap sequence,
@@ -247,7 +247,7 @@ impl Inner {
             // empty namespace (ordinary startup semantics), never a retry loop.
             lock(&self.guarded).pending_restore = false;
         }
-        let Some(code) = self.options.bootstrap_code.clone() else {
+        let Some(code) = lock(&self.bootstrap_code).clone() else {
             return true;
         };
         if !lock(&self.guarded).pending_rebootstrap {

@@ -391,7 +391,7 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
         host_handler(|_payload| {
             Box::pin(async {
                 Err(anyhow::anyhow!(
-                    "agent_message.list_agents was removed; the family roster now lives in agent_observe.list_agents(). Restart the Python kernel to load the current skills, then call await agent_observe.list_agents()."
+                    "agent_message.list_agents was removed; the family roster now lives in agentObserve.listAgents(). Restart the Bun JavaScript kernel to load the current skills, then call await agentObserve.listAgents()."
                 ))
             })
         }),

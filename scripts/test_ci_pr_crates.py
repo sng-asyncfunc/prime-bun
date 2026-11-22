@@ -166,7 +166,7 @@ class TheMappingTestCase(unittest.TestCase):
             ".github/workflows/ci.yml",
             "scripts/ci_test_shard.py",
             "vendor/crossterm/src/lib.rs",
-            "prime-agent-runtime/src/rlm/repl.py",
+            "prime-agent-runtime/src/repl.ts",
             "Cargo.toml",
             "install-rust.sh",
         ]:

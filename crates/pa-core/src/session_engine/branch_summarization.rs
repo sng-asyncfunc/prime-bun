@@ -112,7 +112,7 @@ fn get_message_from_entry(entry: &FileEntry) -> Option<AgentMessage> {
         },
         FileEntry::CustomMessage { payload, .. } => {
             if payload.custom_type == "harness_digest"
-                || payload.custom_type == super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE
+                || payload.custom_type == super::javascript_state::JAVASCRIPT_STATE_CUSTOM_TYPE
             {
                 return None;
             }
@@ -216,7 +216,7 @@ fn prepare_branch_entries_with_refinements(
 
 const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n";
 
-const BRANCH_SUMMARY_PROMPT: &str = "Create a structured summary of this conversation branch for context when returning later.\n\nUse this EXACT format:\n\n## Goal\n[What was the user trying to accomplish in this branch?]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Work that was started but not finished]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Outstanding Work\n- [Running subagents: name / task / status (recovery pointer: rlm.list_subagents())]\n- [Background bash handles: command / status (recovery: the [bash-done] notification; a lost handle cannot be re-awaited)]\n- [Active heartbeats and the goal: schedule / objective (recovery pointers: rlm_heartbeat.list() and goal.get())]\n- [Or \"(none)\" if nothing is in flight]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [What should happen next to continue this work]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
+const BRANCH_SUMMARY_PROMPT: &str = "Create a structured summary of this conversation branch for context when returning later.\n\nUse this EXACT format:\n\n## Goal\n[What was the user trying to accomplish in this branch?]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Work that was started but not finished]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Outstanding Work\n- [Running subagents: name / task / status (recovery pointer: rlm.listSubagents())]\n- [Background bash handles: command / status (recovery: the [bash-done] notification; a lost handle cannot be re-awaited)]\n- [Active heartbeats and the goal: schedule / objective (recovery pointers: rlmHeartbeat.list() and goal.get())]\n- [Or \"(none)\" if nothing is in flight]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [What should happen next to continue this work]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
 
 /// Build the branch-summary request messages for the model.
 #[must_use]
@@ -578,14 +578,14 @@ mod tests {
     }
 
     #[test]
-    fn branch_summary_request_skips_python_state_notices() {
+    fn branch_summary_request_skips_javascript_state_notices() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = crate::session::manager::SessionManager::in_memory(tmp.path());
         session.append_message(user("explore the widget")).unwrap();
         session
             .append_custom_message(
-                super::super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE,
-                pa_types::ai::UserContent::Text(super::super::ipython_state::notice_content(
+                super::super::javascript_state::JAVASCRIPT_STATE_CUSTOM_TYPE,
+                pa_types::ai::UserContent::Text(super::super::javascript_state::notice_content(
                     None,
                     Some(&["stacked_kernel_var".to_string()]),
                 )),
@@ -600,7 +600,7 @@ mod tests {
             _ => panic!("expected a user message"),
         };
         assert!(text.contains("explore the widget"));
-        assert!(!text.contains("[python-state]"));
+        assert!(!text.contains("[javascript-state]"));
         assert!(!text.contains("stacked_kernel_var"));
     }
 
@@ -672,9 +672,9 @@ mod tests {
             _ => panic!("expected a user message"),
         };
         assert!(text.contains("## Outstanding Work"));
-        assert!(text.contains("rlm.list_subagents()"));
+        assert!(text.contains("rlm.listSubagents()"));
         assert!(text.contains("the [bash-done] notification"));
-        assert!(text.contains("rlm_heartbeat.list()"));
+        assert!(text.contains("rlmHeartbeat.list()"));
     }
 
     #[test]

@@ -14,7 +14,7 @@ impl AgentView {
     /// and the card renderers read this `Detail` only through
     /// `tool_output_expanded()`. The level's other readers never see the
     /// flip: thinking blocks belong to rows no click can toggle, and the
-    /// ipython card's edit diffs read the conversation level (`self.detail`)
+    /// `javascript` card's edit diffs read the conversation level (`self.detail`)
     /// passed beside this one.
     #[must_use]
     pub(super) fn entry_detail(&self, index: usize) -> Detail {

@@ -888,14 +888,10 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        let kernel = [
-            "/opt/kernel-venv/bin/python",
-            "-m",
-            "prime_agent_runtime.kernel",
-        ]
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
+        let kernel = ["/usr/local/bin/bun", "run", "/opt/kernel-bun/src/repl.ts"]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         let bash_child = ["/usr/bin/sleep", "300"]
             .iter()
             .map(ToString::to_string)

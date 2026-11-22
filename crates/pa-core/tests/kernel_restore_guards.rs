@@ -25,44 +25,61 @@ use pa_core::kernel::shared::{
 };
 use pa_core::kernel::state_snapshot::{manifest_path_in, snapshot_path_in};
 
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live restore test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live restore test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live restore test");
     None
 }
 
-/// Options with a snapshot dir; `None` (skip) when no kernel interpreter is
+/// Options with a snapshot dir; `None` (skip) when no Bun kernel runtime is
 /// available. `debounce_ms` shortens the auto-snapshot window in tests.
 fn test_options(
     snapshot_dir: Option<&Path>,
     debounce_ms: Option<u64>,
 ) -> Option<KernelManagerOptions> {
-    let python = kernel_python()?;
+    let bun = kernel_bun()?;
     Some(KernelManagerOptions {
-        python: Some(python),
+        bun: Some(bun),
+        worker_entry: None,
+        kernel_dir: None,
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),
         session_id: Some("restore-guards-test".to_string()),
         host_handlers: HostRequestHandlers::new(),
-        python_skills: Vec::new(),
+        javascript_skills: Vec::new(),
         snapshot: snapshot_dir.map(|dir| KernelSnapshotConfig {
             path: snapshot_path_in(dir),
             manifest_path: manifest_path_in(dir),
@@ -110,7 +127,7 @@ async fn restored_functions_run_against_live_namespace_globals() {
         .expect("kernel must start");
     let defined = execute(
         &writer,
-        "G = 1\ndef reader():\n    return G\ndef prober():\n    return late",
+        "let G = 1;\nfunction reader() { return G; }\nfunction prober() { return late; }",
     )
     .await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
@@ -134,7 +151,7 @@ async fn restored_functions_run_against_live_namespace_globals() {
 
     // A global redefined after the restore wins over the frozen value the
     // saved function captured at snapshot time (pre-fix this returned 1).
-    let live = execute(&reader, "G = 2\nreader()").await;
+    let live = execute(&reader, "G = 2;\nreader()").await;
     assert_eq!(
         live.status,
         ExecuteStatus::Ok,
@@ -144,15 +161,15 @@ async fn restored_functions_run_against_live_namespace_globals() {
     assert_eq!(live.result.as_deref(), Some("2"));
 
     // A name the saved function references but the snapshot never saved
-    // resolves once defined in the live namespace (pre-fix: NameError).
-    let late = execute(&reader, "late = 'live'\nprober()").await;
+    // resolves once defined in the live namespace.
+    let late = execute(&reader, "let late = 'live';\nprober()").await;
     assert_eq!(
         late.status,
         ExecuteStatus::Ok,
         "prober cell: {:?}",
         late.error.map(|e| e.evalue)
     );
-    assert_eq!(late.result.as_deref(), Some("'live'"));
+    assert_eq!(late.result.as_deref(), Some("\"live\""));
 
     let shutdown = reader.shutdown(KernelShutdownOptions::default()).await;
     assert!(shutdown.is_ok());
@@ -172,7 +189,7 @@ async fn post_restore_auto_snapshot_skips_until_a_real_cell_changes_the_namespac
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&writer, "restored_var = 'from-disk'").await;
+    let defined = execute(&writer, "const restored_var = 'from-disk';").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
     let _ = writer
         .shutdown(KernelShutdownOptions {
@@ -224,7 +241,7 @@ async fn post_restore_auto_snapshot_skips_until_a_real_cell_changes_the_namespac
 
     // A real cell changes the namespace: the next debounced snapshot runs and
     // carries both variables.
-    let changed = execute(&reader, "user_var = 7").await;
+    let changed = execute(&reader, "const user_var = 7;").await;
     assert_eq!(changed.status, ExecuteStatus::Ok);
     wait_out_debounce(400).await;
     let manifest: serde_json::Value =
@@ -266,7 +283,7 @@ async fn failed_restore_keeps_the_on_disk_payload_through_the_debounced_snapshot
     // Production order: a cell, then the arm. The first execute reprovisions (the failed restore
     // left pending_restore set): the re-attempt fails again and hands the flush duty back — exactly
     // why the debounced snapshot needs its own guard.
-    let pass = execute(&reader, "pass").await;
+    let pass = execute(&reader, "undefined").await;
     assert_eq!(pass.status, ExecuteStatus::Ok);
     reader.mark_restored_namespace_fresh();
 
@@ -303,14 +320,34 @@ async fn failed_restore_keeps_the_on_disk_payload_through_the_debounced_snapshot
     );
 }
 
-/// One v2 snapshot record: 4-byte LE name length + name + 8-byte LE blob length + blob.
-fn v2_record(name: &str, blob: &[u8]) -> Vec<u8> {
-    let mut record = Vec::new();
-    record.extend_from_slice(&(name.len() as u32).to_le_bytes());
-    record.extend_from_slice(name.as_bytes());
-    record.extend_from_slice(&(blob.len() as u64).to_le_bytes());
-    record.extend_from_slice(blob);
-    record
+/// Encode a v3 Bun kernel snapshot payload (4-byte BE header length + JSON header + entry bytes).
+fn encode_v3_snapshot(entries: &[(&str, Option<&str>, &[u8])]) -> Vec<u8> {
+    let mut offset = 0usize;
+    let mut header_entries = Vec::with_capacity(entries.len());
+    for (name, kind, blob) in entries {
+        let mut entry = serde_json::json!({
+            "name": name,
+            "offset": offset,
+            "length": blob.len(),
+        });
+        if let Some(kind) = kind {
+            entry["kind"] = serde_json::json!(kind);
+        }
+        header_entries.push(entry);
+        offset += blob.len();
+    }
+    let header = serde_json::to_vec(&serde_json::json!({
+        "version": 3,
+        "entries": header_entries,
+    }))
+    .expect("serialize snapshot header");
+    let mut payload = Vec::with_capacity(4 + header.len() + offset);
+    payload.extend_from_slice(&(header.len() as u32).to_be_bytes());
+    payload.extend_from_slice(&header);
+    for (_, _, blob) in entries {
+        payload.extend_from_slice(blob);
+    }
+    payload
 }
 
 #[tokio::test]
@@ -318,18 +355,14 @@ async fn partial_restore_keeps_the_fuller_on_disk_payload_through_the_dispose_fl
     let dir = tempfile::TempDir::new().expect("temp dir");
     let snapshot_path = snapshot_path_in(dir.path());
     let manifest_path = manifest_path_in(dir.path());
-    // A v2 payload with one loadable record and one whose blob cannot unpickle:
+    // A v3 Bun payload with one loadable function record and one corrupt JSC blob:
     // the restore reports a partial namespace, and the on-disk payload (which
     // still carries both) must stay the fresher copy at dispose.
-    let magic = b"PRIME-AGENT-KERNEL-SNAPSHOT-V2\n";
-    let good_blob: &[u8] = &[0x80, 0x04, b'K', 0x07, b'.']; // protocol-4 pickle of 7
-    let bad_blob: &[u8] = &[
-        0x80, 0x00, b'n', b'o', b't', b'-', b'a', b'-', b'p', b'i', b'c', b'k', b'l', b'e',
-    ];
-    let mut payload = magic.to_vec();
-    payload.extend(v2_record("good", good_blob));
-    payload.extend(v2_record("bad", bad_blob));
-    std::fs::write(&snapshot_path, &payload).expect("write v2 payload");
+    let good_fn = b"function good() { return 7; }";
+    let bad_blob = b"not-a-valid-jsc-serialized-value";
+    let payload =
+        encode_v3_snapshot(&[("good", Some("function"), good_fn), ("bad", None, bad_blob)]);
+    std::fs::write(&snapshot_path, &payload).expect("write v3 payload");
 
     let Some(options) = test_options(Some(dir.path()), Some(50)) else {
         return;
@@ -423,7 +456,7 @@ async fn zero_debounce_after_a_failed_restore_still_cannot_clobber_the_payload()
         .await
         .expect("kernel must start");
     assert!(reader.restore_state().await.is_none());
-    let pass = execute(&reader, "pass").await;
+    let pass = execute(&reader, "undefined").await;
     assert_eq!(pass.status, ExecuteStatus::Ok);
     reader.mark_restored_namespace_fresh();
     wait_out_debounce(400).await;
@@ -436,7 +469,7 @@ async fn zero_debounce_after_a_failed_restore_still_cannot_clobber_the_payload()
     assert!(!manifest_path.exists());
 
     // A real cell ends the boot hold: the debounced snapshot runs again.
-    let changed = execute(&reader, "user_var = 7").await;
+    let changed = execute(&reader, "const user_var = 7;").await;
     assert_eq!(changed.status, ExecuteStatus::Ok);
     wait_out_debounce(400).await;
     let manifest: serde_json::Value =

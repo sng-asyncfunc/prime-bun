@@ -95,10 +95,10 @@ REQUIRED_FILES = (
     "LICENSE",
     "models.bundled.json",
     "mcp-services.bundled.json",
-    "prime-agent-runtime/pyproject.toml",
-    "prime-agent-runtime/src/rlm/repl.py",
+    "prime-agent-runtime/package.json",
+    "prime-agent-runtime/src/repl.ts",
 )
-REQUIRED_DIRS = ("prime-agent-runtime/src/rlm", "skills")
+REQUIRED_DIRS = ("prime-agent-runtime/src", "skills")
 
 # Tree assets copied with the exclusion filter; everything else is a single file.
 TREE_ASSETS = ("prime-agent-runtime", "skills")

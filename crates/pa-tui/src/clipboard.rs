@@ -219,7 +219,7 @@ impl Env {
 
 /// A helper deadline: a tool that wedges — `wl-copy` waiting on a compositor that never
 /// focuses — dies at the deadline instead of hanging the input loop that copied.
-const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5_000);
+const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// The bounded wait's poll cadence.
 const PIPE_POLL: Duration = Duration::from_millis(20);
 

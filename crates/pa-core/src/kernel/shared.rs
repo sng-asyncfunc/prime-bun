@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::kernel::bootstrap::KernelPythonSkill;
+use crate::kernel::bootstrap::KernelJavaScriptSkill;
 
 /// Per-cell stdout/stderr cap. `HeadTailBuffer` splits it between head and
 /// tail, so a long failing run keeps its printed verdict.
@@ -30,7 +30,7 @@ pub const KERNEL_ABORT_GRACE_MS: u64 = 1_000;
 pub const KERNEL_BUSY_REUSE_WAIT_MS: u64 = 5_000;
 pub const KERNEL_BUSY_INTERRUPT_INTERVAL_MS: u64 = 500;
 pub const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS: usize = 256;
-pub const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE: &str = "The Python kernel is still running the previously interrupted cell. Wait and try again, or kill the kernel to start fresh.";
+pub const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE: &str = "The Bun JavaScript kernel is still running the previously interrupted cell. Wait and try again, or kill the kernel to start fresh.";
 
 /// Cap for unattributed background output buffered between and during cells.
 pub const MAX_BACKGROUND_OUTPUT_CHARS: usize = 64 * 1024;
@@ -76,7 +76,7 @@ pub const TRANSCRIPT_READ_DISPLAY_MIME: &str = "application/vnd.prime-agent.tran
 pub const BASH_COMPLETED_REQUEST_TYPE: &str = "bash.completed";
 
 /// The kernel host request that ends the turn from inside a cell
-/// (`rlm.end_turn()`). The host-request dispatch answers it by marking
+/// (`rlm.endTurn()`). The host-request dispatch answers it by marking
 /// the executing cell's result, so the turn ends once the batch settles.
 pub const END_TURN_REQUEST_TYPE: &str = "rlm.end_turn";
 
@@ -252,7 +252,7 @@ pub struct ExecuteOptions {
     pub cell_timeout_ms: Option<u64>,
 }
 
-/// A typed request from Python code running in the kernel to the host.
+/// A typed request from JavaScript code running in the kernel to the host.
 #[derive(Debug, Clone)]
 pub struct HostRequestPayload {
     /// The request payload.
@@ -262,8 +262,8 @@ pub struct HostRequestPayload {
 pub type HostHandlerFuture = Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>>;
 pub type HostHandlerFn = Arc<dyn Fn(HostRequestPayload) -> HostHandlerFuture + Send + Sync>;
 
-/// Handles one typed request from Python code running in the kernel.
-/// The returned value is delivered verbatim to the Python caller.
+/// Handles one typed request from JavaScript code running in the kernel.
+/// The returned value is delivered verbatim to the JavaScript caller.
 pub trait HostRequestHandler: Send + Sync {
     fn handle(&self, payload: HostRequestPayload) -> HostHandlerFuture;
 }
@@ -336,7 +336,7 @@ impl HostRequestHandlers {
 /// Where and how to persist the kernel's user namespace so it survives resume.
 #[derive(Debug, Clone)]
 pub struct KernelSnapshotConfig {
-    /// Absolute path for the dill payload.
+    /// Absolute path for the binary snapshot payload.
     pub path: std::path::PathBuf,
     /// Absolute path for the JSON manifest written alongside the payload.
     pub manifest_path: std::path::PathBuf,
@@ -351,13 +351,17 @@ pub struct KernelSnapshotConfig {
 /// Options for constructing a [`ReplKernelManager`].
 #[derive(Clone, Default)]
 pub struct KernelManagerOptions {
-    /// Python interpreter with the kernel runtime available. Defaults to the auto-bootstrapped kernel.
-    pub python: Option<std::path::PathBuf>,
+    /// Bun executable override (or fake kernel script in tests). Defaults to the auto-bootstrapped Bun runtime.
+    pub bun: Option<std::path::PathBuf>,
+    /// Optional explicit worker entrypoint (`src/repl.ts`) when `bun` is overridden.
+    pub worker_entry: Option<std::path::PathBuf>,
+    /// Optional explicit kernel runtime directory (`PRIME_AGENT_KERNEL_BUN_DIR`).
+    pub kernel_dir: Option<std::path::PathBuf>,
     pub cwd: Option<std::path::PathBuf>,
     pub env: HashMap<String, String>,
     pub session_id: Option<String>,
     pub host_handlers: HostRequestHandlers,
-    pub python_skills: Vec<KernelPythonSkill>,
+    pub javascript_skills: Vec<KernelJavaScriptSkill>,
     /// Fires when the last live background `bash()` handle settles (its activity
     /// track empties or the kernel tears down), so owed continuations can resume.
     pub on_background_work_settled: Option<BackgroundWorkSettledCallback>,

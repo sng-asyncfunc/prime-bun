@@ -1,6 +1,6 @@
 //! Locations and result shapes for the kernel's persisted user namespace, revived on session
-//! resume. Snapshotting is best-effort and per-variable: a single unpicklable object is skipped and
-//! reported, never aborting the whole snapshot.
+//! resume. Snapshotting is best-effort and per-variable: a single unserializable value is skipped
+//! and reported, never aborting the whole snapshot.
 
 use std::path::{Path, PathBuf};
 
@@ -40,11 +40,11 @@ pub struct RestoreResult {
     pub path: PathBuf,
 }
 
-/// Absolute path to the dill payload within a session's artifact directory.
+/// Absolute path to the binary snapshot payload within a session's artifact directory.
 pub fn snapshot_path_in(artifact_dir: impl AsRef<Path>) -> PathBuf {
     artifact_dir
         .as_ref()
-        .join(format!("{KERNEL_STATE_BASENAME}.dill"))
+        .join(format!("{KERNEL_STATE_BASENAME}.bin"))
 }
 
 /// Absolute path to the JSON manifest within a session's artifact directory.
@@ -62,7 +62,7 @@ mod tests {
     fn paths_match_ts_layout() {
         assert_eq!(
             snapshot_path_in("/tmp/art"),
-            PathBuf::from("/tmp/art/kernel-state.dill")
+            PathBuf::from("/tmp/art/kernel-state.bin")
         );
         assert_eq!(
             manifest_path_in("/tmp/art"),

@@ -12,14 +12,14 @@
 
 //! Kernel bootstrap / lifecycle benchmark harness (verifier tooling, not a
 //! test): measures cold and warm kernel bootstrap, per-execute overhead,
-//! and snapshot/restore cost against a real `python -m rlm.repl` child.
-//! Modes: `ensure-python`, `boot`, `snapshot-restore`.
+//! and snapshot/restore cost against a real `bun run src/repl.ts` child.
+//! Modes: `ensure-bun`, `boot`, `snapshot-restore`.
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 use pa_core::kernel::bootstrap::{
-    ensure_kernel_python, EnsureKernelPythonOptions, KernelPythonSkill,
+    ensure_kernel_bun, EnsureKernelBunOptions, KernelBunRuntime, KernelJavaScriptSkill,
 };
 use pa_core::kernel::manager::{KernelStartOptions, ReplKernelManager};
 use pa_core::kernel::shared::{
@@ -30,33 +30,28 @@ use pa_core::kernel::state_snapshot::{manifest_path_in, snapshot_path_in};
 
 fn skills_dir() -> PathBuf {
     std::env::var("PA_BENCH_SKILLS_DIR").map_or_else(
-        |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skills"),
+        |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills"),
         PathBuf::from,
     )
 }
 
-fn bench_python_skills() -> Vec<KernelPythonSkill> {
+fn bench_javascript_skills() -> Vec<KernelJavaScriptSkill> {
     let dir = skills_dir();
-    let mut skills = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return skills;
-    };
-    for entry in entries.flatten() {
-        let package_path = entry.path();
-        let pyproject_path = package_path.join("pyproject.toml");
-        if !pyproject_path.exists() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        let import_name = name.replace('-', "_");
-        skills.push(KernelPythonSkill {
-            name,
-            import_name,
-            package_path,
-            pyproject_path,
-        });
-    }
-    skills
+    let loaded = pa_core::skills::load_skills_from_dir(&dir, "package");
+    loaded
+        .skills
+        .into_iter()
+        .filter_map(|skill| {
+            let js = skill.javascript?;
+            Some(KernelJavaScriptSkill {
+                name: skill.name,
+                global_name: js.global_name,
+                entry_path: js.entry_path,
+                package_path: js.package_path,
+                package_json_path: js.package_json_path,
+            })
+        })
+        .collect()
 }
 
 fn ms(t: Instant) -> u64 {
@@ -64,16 +59,18 @@ fn ms(t: Instant) -> u64 {
 }
 
 fn manager_options(
-    python: PathBuf,
+    runtime: &KernelBunRuntime,
     snapshot_dir: Option<&std::path::Path>,
 ) -> KernelManagerOptions {
     KernelManagerOptions {
-        python: Some(python),
+        bun: Some(runtime.bun_path.clone()),
+        worker_entry: Some(runtime.worker_entry.clone()),
+        kernel_dir: Some(runtime.kernel_dir.clone()),
         cwd: Some(std::env::temp_dir()),
         env: std::collections::HashMap::default(),
         session_id: Some("kernel-bench".to_string()),
         host_handlers: HostRequestHandlers::new(),
-        python_skills: bench_python_skills(),
+        javascript_skills: bench_javascript_skills(),
         on_background_work_settled: None,
         snapshot: snapshot_dir.map(|dir| KernelSnapshotConfig {
             path: snapshot_path_in(dir),
@@ -83,7 +80,7 @@ fn manager_options(
             debounce_ms: Some(60_000),
         }),
         bootstrap_code: Some(pa_core::kernel::bootstrap::build_rlm_bootstrap_code(
-            &bench_python_skills(),
+            &runtime.prepared_skills,
             false,
         )),
         stderr_log_path: None,
@@ -109,31 +106,34 @@ async fn boot_manager(options: &KernelManagerOptions) -> ReplKernelManager {
 async fn main() {
     let mode = std::env::args().nth(1).expect("mode argument");
     match mode.as_str() {
-        "ensure-python" => {
+        "ensure-bun" => {
             let t = Instant::now();
-            let python = ensure_kernel_python(EnsureKernelPythonOptions {
-                python_skills: bench_python_skills(),
+            let runtime = ensure_kernel_bun(EnsureKernelBunOptions {
+                javascript_skills: bench_javascript_skills(),
                 on_progress: None,
+                runtime_source_dir: None,
             })
             .await
-            .expect("kernel python");
-            println!("ensure-kernel-python-ms {}", ms(t));
-            println!("python {}", python.display());
+            .expect("kernel bun");
+            println!("ensure-kernel-bun-ms {}", ms(t));
+            println!("bun {}", runtime.bun_path.display());
+            println!("worker {}", runtime.worker_entry.display());
         }
         "boot" => {
             let snapshot_dir = std::env::var("PA_BENCH_SNAPSHOT_DIR")
                 .map(PathBuf::from)
                 .ok();
             let t = Instant::now();
-            let python = ensure_kernel_python(EnsureKernelPythonOptions {
-                python_skills: bench_python_skills(),
+            let runtime = ensure_kernel_bun(EnsureKernelBunOptions {
+                javascript_skills: bench_javascript_skills(),
                 on_progress: None,
+                runtime_source_dir: None,
             })
             .await
-            .expect("kernel python");
-            println!("ensure-kernel-python-ms {}", ms(t));
+            .expect("kernel bun");
+            println!("ensure-kernel-bun-ms {}", ms(t));
             let t = Instant::now();
-            let options = manager_options(python, snapshot_dir.as_deref());
+            let options = manager_options(&runtime, snapshot_dir.as_deref());
             let manager = boot_manager(&options).await;
             println!("kernel-boot-and-bootstrap-ms {}", ms(t));
 
@@ -146,7 +146,7 @@ async fn main() {
             for i in 0..rounds {
                 let result = manager
                     .execute(
-                        &format!("x{i} = {i}"),
+                        &format!("var x{i} = {i};"),
                         ExecuteOptions {
                             internal: true,
                             ..Default::default()
@@ -175,18 +175,19 @@ async fn main() {
         "snapshot-restore" => {
             let snapshot_dir =
                 std::env::var("PA_BENCH_SNAPSHOT_DIR").expect("PA_BENCH_SNAPSHOT_DIR");
-            let python = ensure_kernel_python(EnsureKernelPythonOptions {
-                python_skills: bench_python_skills(),
+            let runtime = ensure_kernel_bun(EnsureKernelBunOptions {
+                javascript_skills: bench_javascript_skills(),
                 on_progress: None,
+                runtime_source_dir: None,
             })
             .await
-            .expect("kernel python");
-            let options = manager_options(python, Some(std::path::Path::new(&snapshot_dir)));
+            .expect("kernel bun");
+            let options = manager_options(&runtime, Some(std::path::Path::new(&snapshot_dir)));
             let manager = boot_manager(&options).await;
-            // ~5 MiB namespace: one large bytes blob plus small scalars.
+            // ~5 MiB namespace: one large Uint8Array plus small scalars.
             manager
                 .execute(
-                    "big = bytes(5 * 1024 * 1024)\nsmall = [i for i in range(100)]\nname = 'bench'",
+                    "const big = new Uint8Array(5 * 1024 * 1024);\nconst small = Array.from({ length: 100 }, (_, i) => i);\nconst name = 'bench';",
                     ExecuteOptions::default(),
                 )
                 .await
@@ -220,13 +221,13 @@ async fn main() {
             );
             let check = manager2
                 .execute(
-                    "len(big) == 5 * 1024 * 1024 and name == 'bench'",
+                    "big.byteLength === 5 * 1024 * 1024 && name === 'bench'",
                     ExecuteOptions::default(),
                 )
                 .await
                 .expect("check");
             assert_eq!(check.status, ExecuteStatus::Ok, "restored namespace usable");
-            assert!(check.result.as_deref().is_some_and(|r| r.contains("True")));
+            assert!(check.result.as_deref().is_some_and(|r| r.contains("true")));
             let _ = manager2
                 .shutdown(KernelShutdownOptions {
                     snapshot: false,

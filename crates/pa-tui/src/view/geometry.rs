@@ -154,7 +154,7 @@ mod tests {
             4 => "[a-z 界é\u{301}🙂\u{200d}*_`#>|\\-\\[\\]()\t]{0,40}",
             1 => "[a-z ]{60,400}",
             1 => prop::sample::select(vec![
-                "", "```python", "```", "| a | b |", "|---|---|", "- item",
+                "", "```ts", "```python", "```", "| a | b |", "|---|---|", "- item",
                 "1. item", "10. item", "> quote", "# Heading", "---",
                 "    indented", "/model --flag @src/a.rs",
                 "| a | b |\n|---|---|",
@@ -218,7 +218,11 @@ mod tests {
             Just(serde_json::json!({"command": null})),
             Just(serde_json::json!({"long": [1, 2, 3, 4], "unicode": "数据"})),
             (
-                prop::sample::select(vec!["", "!", "%%bash\n"]),
+                prop::sample::select(vec![
+                    "",
+                    "await ",
+                    "await agentObserve.recentMessages(\"mechanics-auditor\", { limit: 100 });\n",
+                ]),
                 markdown_text(),
                 any::<bool>()
             )
@@ -241,12 +245,16 @@ mod tests {
                 serde_json::json!({"stdout": "abc 界\n\n", "stderr": "err\n", "result": "value",
                 "backgroundOutput": "async\nlog", "status": "ok", "durationMs": 3})
             ),
-            Just(serde_json::json!({"error": {"ename": "E", "evalue": "boom", "traceback": []}})),
-            Just(serde_json::json!({"error": {"ename": "E", "evalue": "boom",
-                "traceback": ["Traceback", "E: boom"]}, "status": "error"})),
+            Just(
+                serde_json::json!({"error": {"ename": "TypeError", "evalue": "boom", "traceback": []}})
+            ),
+            Just(
+                serde_json::json!({"error": {"ename": "TypeError", "evalue": "boom",
+                "traceback": ["TypeError: boom", "    at eval (<anonymous>:1:1)"]}, "status": "error"})
+            ),
             Just(serde_json::json!({"diffs": [
-                {"path": "x.py", "diff": "-3 a\tb\n+3 a\n 4 c\n   ...\n+9 d 界"},
-                {"path": "x.py", "diff": "-1 e\n+1 f"}], "stdout": "Edited x.py"})),
+                {"path": "x.ts", "diff": "-3 const a\tb\n+3 const a\n 4 c\n   ...\n+9 d 界"},
+                {"path": "x.ts", "diff": "-1 e\n+1 f"}], "stdout": "Edited x.ts"})),
             markdown_text().prop_map(|message| serde_json::json!({"sentAgentMessages": [
                 {"message": message, "deliveryStatus": "delivered", "receiverRole": "parent"},
                 {"id": "invalid"}]})),
@@ -259,7 +267,7 @@ mod tests {
                 "mimeType": "image/png"}),
         ]));
         (
-            prop::sample::select(vec!["bash", "ipython", "other"]),
+            prop::sample::select(vec!["bash", "javascript", "other"]),
             args,
             prop::bool::weighted(0.75),
             any::<bool>(),
@@ -303,7 +311,7 @@ mod tests {
                 .prop_map(|(kind, objective)| InjectedPromptKind::Goal { kind, objective }),
             any::<bool>().prop_map(|restored| InjectedPromptKind::KernelRestored { restored }),
             prop::collection::vec("[a-z 数据]{1,12}", 0..4)
-                .prop_map(|skills| InjectedPromptKind::PythonSkillsUnavailable { skills }),
+                .prop_map(|skills| InjectedPromptKind::JavaScriptSkillsUnavailable { skills }),
         ]
     }
 

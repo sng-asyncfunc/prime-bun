@@ -330,17 +330,17 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
 }
 
 /// Prepare the kernel runtime at install time: resolve or bootstrap the kernel
-/// Python and print its path. Failures print the error and exit 1.
+/// Bun runtime and print its path. Failures print the error and exit 1.
 fn run_runtime_bootstrap() -> Result<i32, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    match runtime.block_on(pa_core::kernel::ensure_kernel_python(
-        pa_core::kernel::EnsureKernelPythonOptions::default(),
+    match runtime.block_on(pa_core::kernel::ensure_kernel_bun(
+        pa_core::kernel::EnsureKernelBunOptions::default(),
     )) {
-        Ok(python) => {
-            println!("kernel python: {}", python.display());
+        Ok(kernel) => {
+            println!("kernel bun: {}", kernel.bun_path.display());
             Ok(0)
         }
         Err(error) => Err(format!("{error:#}")),

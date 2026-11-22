@@ -474,7 +474,7 @@ impl SessionUi {
                 tool_call_id,
                 partial,
             } => {
-                // A `starting` partial (python-kernel bootstrap) owns the loader note; other
+                // A `starting` partial (Bun worker bootstrap) owns the loader note; other
                 // updates leave any current note alone. The note rides the landed-result gate so an
                 // aborted card's late frames cannot clobber the delivered turn's loader.
                 let loader_message = crate::snapshot::working_message_from_update(&partial);
@@ -1025,7 +1025,7 @@ impl SessionUi {
                 if !partial {
                     card.ended_at = Some(std::time::Instant::now());
                     self.pending_tools.remove(tool_call_id);
-                    self.track_ipython_bash_rendered(card);
+                    self.track_javascript_bash_rendered(card);
                 }
                 view.mark_entry_stale(index);
                 return true;
@@ -1044,13 +1044,13 @@ impl SessionUi {
         });
     }
 
-    /// `tui ipython bash rendered`: the settled ipython card that renders
+    /// `tui javascript bash rendered`: the settled `javascript` card that renders
     /// as bash reports its bash share, primitives only.
-    fn track_ipython_bash_rendered(&self, card: &crate::tool_card::ToolCallCard) {
-        if !pa_types::ai::is_python_tool_name(&card.name) {
+    fn track_javascript_bash_rendered(&self, card: &crate::tool_card::ToolCallCard) {
+        if !pa_types::ai::is_javascript_tool_name(&card.name) {
             return;
         }
-        let Some(stats) = crate::tool_card::ipython::bash_dominated_stats(card) else {
+        let Some(stats) = crate::tool_card::javascript::bash_dominated_stats(card) else {
             return;
         };
         let Some(telemetry) = self.telemetry.clone() else {
@@ -1058,7 +1058,7 @@ impl SessionUi {
         };
         tokio::spawn(async move {
             telemetry
-                .ipython_bash_rendered(stats.bash_lines, stats.cell_lines, stats.count)
+                .javascript_bash_rendered(stats.bash_lines, stats.cell_lines, stats.count)
                 .await;
         });
     }

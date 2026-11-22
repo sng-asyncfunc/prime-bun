@@ -295,7 +295,7 @@ mod tests {
                 .content
                 .push(AssistantContentBlock::ToolCall(ToolCall {
                     id: "call-1".to_string(),
-                    name: "python_repl".to_string(),
+                    name: "javascript".to_string(),
                     arguments: serde_json::Map::default(),
                     thought_signature: None,
                     rest: serde_json::Map::default(),
@@ -310,7 +310,7 @@ mod tests {
             text_assistant("the answer", StopReason::Stop),
             AgentMessage::ToolResult(ToolResultMessage {
                 tool_call_id: "call-0".to_string(),
-                tool_name: "python_repl".to_string(),
+                tool_name: "javascript".to_string(),
                 content: vec![],
                 details: None,
                 is_error: false,
@@ -320,7 +320,7 @@ mod tests {
             end_call,
             AgentMessage::ToolResult(ToolResultMessage {
                 tool_call_id: "call-1".to_string(),
-                tool_name: "python_repl".to_string(),
+                tool_name: "javascript".to_string(),
                 content: vec![UserContentBlock::Text(TextContent {
                     text: "{'endedTurn': True}turn ended".to_string(),
                     text_signature: None,
@@ -368,7 +368,7 @@ mod tests {
                 .content
                 .push(AssistantContentBlock::ToolCall(ToolCall {
                     id: "call-1".to_string(),
-                    name: "python_repl".to_string(),
+                    name: "javascript".to_string(),
                     arguments: serde_json::Map::default(),
                     thought_signature: None,
                     rest: serde_json::Map::default(),
@@ -383,7 +383,7 @@ mod tests {
             assistant,
             AgentMessage::ToolResult(ToolResultMessage {
                 tool_call_id: "call-1".to_string(),
-                tool_name: "python_repl".to_string(),
+                tool_name: "javascript".to_string(),
                 content: vec![UserContentBlock::Text(TextContent {
                     text: "{'endedTurn': True}\nturn ended".to_string(),
                     text_signature: None,

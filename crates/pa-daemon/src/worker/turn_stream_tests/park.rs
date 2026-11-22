@@ -97,8 +97,7 @@ async fn the_idle_park_releases_a_parent_owned_childs_kernel_only() {
         });
         // The wait is the observable readiness: the park arm fires the release when
         // the policy holds; the tear-down runs after the await resolves either way.
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_millis(2000), fired.notified()).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), fired.notified()).await;
         task.abort();
         ParkedProbe { releases }
     }
@@ -299,7 +298,7 @@ async fn idle_passivation_window_arms_only_for_idle_unattached_sessions() {
     // A 1-minute threshold from now: the remaining window is under a
     // minute (the clock already ran during the test).
     assert!(
-        window.unwrap() <= std::time::Duration::from_secs(60),
+        window.unwrap() <= std::time::Duration::from_mins(1),
         "the remaining window must be the threshold minus the elapsed idle"
     );
 

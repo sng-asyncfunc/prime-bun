@@ -33,30 +33,44 @@ use pa_core::session_engine::messages::ASYNC_BASH_COMPLETION_CUSTOM_TYPE;
 use pa_core::session_engine::PromptOptions;
 use serde_json::json;
 
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available. Skipped (with a note)
+/// on machines without a live runtime; `PA_CORE_KERNEL_BUN` points at an explicit one.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live kernel test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live kernel test");
     None
 }
 
@@ -116,7 +130,7 @@ fn registry_model() -> pa_types::ai::Model {
 
 #[tokio::test]
 async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::tempdir().expect("temp dir");
@@ -126,12 +140,12 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("project dir");
 
-    // Hermeticity: the kernel runs on the bootstrapped kernel venv, and no
+    // Hermeticity: the kernel runs on the bootstrapped Bun runtime, and no
     // ambient agent state leaks in.
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
+            "PRIME_AGENT_KERNEL_BUN",
+            Some(kernel_bun.display().to_string()),
         ),
         ("PRIME_AGENT_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
@@ -163,8 +177,8 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         Some("ending the turn"),
         vec![(
             "call-1",
-            "python_repl",
-            json!({ "code": "h = bash('sleep 3 && echo background-marker')\nresult = await rlm.end_turn()\nresult" }),
+            "javascript",
+            json!({ "code": "const h = bash('sleep 3 && echo background-marker');\nconst result = await rlm.endTurn();\nresult" }),
         )],
     )));
     provider.push_text_turn("never reached");
@@ -204,7 +218,7 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         model_info: Some(registry_model()),
         mcp_manager: None,
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: Some(wake),
         queued_goal_context_purge: None,
@@ -247,7 +261,7 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         "the tool result must carry the end-turn confirmation: {serialized}"
     );
     assert!(
-        serialized.contains("{'endedTurn': True}"),
+        serialized.contains("endedTurn") && serialized.contains("true"),
         "the cell must surface the host reply: {serialized}"
     );
 

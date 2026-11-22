@@ -324,12 +324,12 @@ fn install_ps1_names_the_dll_not_found_failure_honestly() {
         "the DLL-not-found warning must name the missing runtime dependency:\n{dll_warning}"
     );
     assert!(
-        !dll_warning.contains("bootstraps the kernel venv"),
-        "the DLL-not-found class must not claim the kernel-venv bootstrap:\n{dll_warning}"
+        !dll_warning.contains("bootstraps the Bun kernel"),
+        "the DLL-not-found class must not claim the Bun-kernel bootstrap:\n{dll_warning}"
     );
     assert!(
-        text.contains("the first run bootstraps the kernel venv"),
-        "the non-DLL failure classes keep their honest venv-bootstrap hint"
+        text.contains("the first run bootstraps the Bun kernel"),
+        "the non-DLL failure classes keep their honest kernel-bootstrap hint"
     );
 }
 
@@ -547,7 +547,7 @@ fn install_rust_sh_honors_the_uv_bin_dir_knob() {
         "the 'uv found' and pre-warm gates must see a default-location uv only outside the store-alias shape"
     );
     assert!(
-        text.contains("if uv_on_path \\\n   || { [ -n \"$uv_bin_dir\" ] && [ -x \"${uv_bin_dir}/${uv_name}\" ]; } \\\n   || { [ \"$uv_under_store\" = \"no\" ] && [ -x \"${HOME}/.local/bin/${uv_name}\" ]; }; then\n  step_start \"Preparing the Python kernel\""),
+        text.contains("if uv_on_path \\\n   || { [ -n \"$uv_bin_dir\" ] && [ -x \"${uv_bin_dir}/${uv_name}\" ]; } \\\n   || { [ \"$uv_under_store\" = \"no\" ] && [ -x \"${HOME}/.local/bin/${uv_name}\" ]; }; then\n  step_start \"Preparing the Bun kernel\""),
         "the kernel pre-warm gate must agree with the 'uv found' gate (a default-location uv must actually warm the kernel, not just be reported found)"
     );
     assert!(

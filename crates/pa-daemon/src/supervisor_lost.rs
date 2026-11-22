@@ -94,7 +94,7 @@ async fn monitor(worker: Arc<Worker>) {
 /// runs; the monitor only reaches this with no session work in flight,
 /// so nothing else needs to settle first). The kernel dispose is the TS
 /// `shutdown(0)` close pass (`closeSession` -> runtime dispose ->
-/// `IpythonKernelProvisioner.dispose`): the process exit runs no
+/// `JavaScriptKernelProvisioner.dispose`): the process exit runs no
 /// destructors, so an undisposed kernel would be orphaned here.
 async fn exit_orphaned(worker: &Worker, absent_since: tokio::time::Instant) {
     eprintln!(

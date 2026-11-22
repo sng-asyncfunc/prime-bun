@@ -132,35 +132,42 @@ fn set_executable(path: &Path) {
     let _ = path;
 }
 
-/// The kernel Python with prime-agent-runtime installed (skipped with a
-/// note without a live install).
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (skipped with a note without Bun available).
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    // The kernel venv's interpreter spelling is platform-shaped (the venv
-    // layout the product's own bootstrap creates: `bin/python` on unix,
-    // `Scripts\python.exe` on Windows).
-    let venv_python = if cfg!(windows) {
-        "kernel-venv/Scripts/python.exe"
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let bun_rel = if cfg!(windows) {
+        ".bun/bin/bun.exe"
     } else {
-        "kernel-venv/bin/python"
+        ".bun/bin/bun"
     };
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| format!("/home/ubuntu/.prime/agent/{venv_python}"),
-        |home| format!("{home}/.prime/agent/{venv_python}"),
+        |_| format!("/home/ubuntu/{bun_rel}"),
+        |home| format!("{home}/{bun_rel}"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live kernel e2e",
+        "kernel bun {} not found; skipping live kernel e2e",
         candidate.display()
     );
     None
@@ -195,8 +202,8 @@ impl Sandbox {
             .env("HOME", self.home.path())
             .env("PRIME_AGENT_CODING_AGENT_DIR", &self.agent_dir)
             .env_remove("PI_PACKAGE_DIR")
-            .env_remove("PRIME_AGENT_KERNEL_PYTHON")
-            .env_remove("PRIME_AGENT_KERNEL_VENV")
+            .env_remove("PRIME_AGENT_KERNEL_BUN")
+            .env_remove("PRIME_AGENT_KERNEL_BUN_DIR")
             .env_remove("PRIME_AGENT_SESSION_DIR")
             .env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR")
             .env_remove("PRIME_API_KEY")
@@ -205,15 +212,15 @@ impl Sandbox {
     }
 }
 
-/// One ipython cell that proves the kernel runs, then the closing text turn.
+/// One javascript cell that proves the kernel runs, then the closing text turn.
 fn kernel_boot_script(receipt: &Path) -> serde_json::Value {
     let cell = format!(
-        "import json\nfrom rlm import rlm as _r\npayload = {{\n  \"kernel_boot\": True,\n  \"rlm_available\": _r is not None,\n  \"spawn\": callable(_r.spawn),\n}}\nopen({receipt:?}, \"w\").write(json.dumps(payload))\nprint(\"KERNEL_BOOT_OK\")",
+        "const payload = {{\n  kernel_boot: true,\n  rlm_available: rlm !== undefined,\n  spawn: typeof rlm.spawn === \"function\",\n}};\nfs.writeFileSync({receipt:?}, JSON.stringify(payload));\nconsole.log(\"KERNEL_BOOT_OK\");",
         receipt = receipt.display().to_string(),
     );
     serde_json::json!({
         "responses": [
-            { "content": [ { "type": "toolCall", "name": "python_repl", "arguments": {
+            { "content": [ { "type": "toolCall", "name": "javascript", "arguments": {
                 "code": cell,
             } } ] },
             // The next assistant message echoes the request's system
@@ -249,7 +256,7 @@ fn run_json_turn(
 #[test]
 fn packaged_session_boots_kernel_without_pi_package_dir() {
     let _guard = serial_lock();
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("stage dir");
@@ -269,7 +276,7 @@ fn packaged_session_boots_kernel_without_pi_package_dir() {
     let script = kernel_boot_script(&receipt);
 
     let mut command = box_.command(staged);
-    command.env("PRIME_AGENT_KERNEL_PYTHON", &kernel_python);
+    command.env("PRIME_AGENT_KERNEL_BUN", &kernel_bun);
     let (stdout, stderr, code) = run_json_turn(&mut command, &script);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
@@ -346,8 +353,8 @@ fn missing_sidecar_reports_actionable_bootstrap_error() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Failed to set up the Python kernel runtime"),
-        "TS bootstrap failure text missing: {stderr}"
+        stderr.contains("Failed to set up the Bun JavaScript kernel runtime"),
+        "bootstrap failure text missing: {stderr}"
     );
     assert!(
         stderr.contains("prime-agent-runtime directory was not found"),
@@ -359,26 +366,26 @@ fn missing_sidecar_reports_actionable_bootstrap_error() {
     );
 }
 
-/// A `PRIME_AGENT_KERNEL_PYTHON` that lacks the runtime reports the TS override error.
+/// A `PRIME_AGENT_KERNEL_BUN` that is unusable reports the override error.
 #[test]
-fn invalid_kernel_python_override_reports_ts_error() {
+fn invalid_kernel_bun_override_reports_error() {
     let _guard = serial_lock();
     let dir = tempfile::TempDir::new().expect("stage dir");
     let staged = dir.path();
     stage_packaged_layout(staged, false);
     let box_ = sandbox();
-    let bogus = box_.home.path().join("not-a-kernel-python");
+    let bogus = box_.home.path().join("not-a-kernel-bun");
     let output = box_
         .command(staged)
         .arg("--prime-agent-bootstrap")
-        .env("PRIME_AGENT_KERNEL_PYTHON", &bogus)
+        .env("PRIME_AGENT_KERNEL_BUN", &bogus)
         .output()
         .expect("run packaged binary");
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("PRIME_AGENT_KERNEL_PYTHON points to a Python missing"),
-        "TS override error missing: {stderr}"
+        stderr.contains("PRIME_AGENT_KERNEL_BUN points to an unusable Bun executable"),
+        "override error missing: {stderr}"
     );
 }
 
@@ -416,8 +423,8 @@ fn hostile_child_assertions(staged: &Path) {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Failed to set up the Python kernel runtime"),
-        "TS bootstrap failure text missing: {stderr}"
+        stderr.contains("Failed to set up the Bun JavaScript kernel runtime"),
+        "bootstrap failure text missing: {stderr}"
     );
     assert!(
         stderr.contains("prime-agent-runtime directory was not found"),
@@ -428,8 +435,8 @@ fn hostile_child_assertions(staged: &Path) {
         "the hint must name the staged dir: {stderr}"
     );
     assert!(
-        !stderr.contains("PRIME_AGENT_KERNEL_PYTHON points to"),
-        "the hostile kernel-python override leaked into the packaged layout: {stderr}"
+        !stderr.contains("PRIME_AGENT_KERNEL_BUN points to"),
+        "the hostile kernel-bun override leaked into the packaged layout: {stderr}"
     );
     if let Some(package_decoy) = std::env::var_os("PI_PACKAGE_DIR") {
         assert!(
@@ -468,23 +475,21 @@ fn packaged_layout_stays_hermetic_under_hostile_host_env() {
         r#"{"name":"prime-agent","version":"0.0.0-decoy"}"#,
     )
     .expect("decoy manifest");
-    let venv_decoy = decoys.path().join("kernel-venv");
-    std::fs::create_dir_all(venv_decoy.join("bin")).expect("venv decoy dir");
-    std::fs::write(venv_decoy.join("bin").join("python"), "#!/bin/sh\nexit 0\n")
-        .expect("decoy python");
+    let bun_dir_decoy = decoys.path().join("kernel-bun");
+    std::fs::create_dir_all(bun_dir_decoy.join("src")).expect("bun dir decoy");
+    std::fs::write(bun_dir_decoy.join("src").join("repl.ts"), "// decoy\n").expect("decoy repl");
 
-    // The most hostile PRIME_AGENT_KERNEL_PYTHON would satisfy the
-    // bootstrap if it leaked: the live venv when present, else a bogus path.
-    let hostile_python =
-        kernel_python().unwrap_or_else(|| decoys.path().join("hostile-kernel-python"));
+    // The most hostile PRIME_AGENT_KERNEL_BUN would satisfy the
+    // bootstrap if it leaked: the live bun when present, else a bogus path.
+    let hostile_bun = kernel_bun().unwrap_or_else(|| decoys.path().join("hostile-kernel-bun"));
 
     let child = Command::new(std::env::current_exe().expect("test binary"))
         .arg("--exact")
         .arg("packaged_layout_stays_hermetic_under_hostile_host_env")
         .env(HOSTILE_CHILD_STAGE, staged)
-        .env("PRIME_AGENT_KERNEL_PYTHON", &hostile_python)
+        .env("PRIME_AGENT_KERNEL_BUN", &hostile_bun)
         .env("PI_PACKAGE_DIR", &package_decoy)
-        .env("PRIME_AGENT_KERNEL_VENV", &venv_decoy)
+        .env("PRIME_AGENT_KERNEL_BUN_DIR", &bun_dir_decoy)
         .output()
         .expect("re-exec the test binary with the hostile host env");
     assert!(
@@ -575,28 +580,24 @@ fn packaging_dry_run_produces_artifact() {
         return;
     };
     // A synthetic tree: the packaging must ship the sidecar without its
-    // .venv or bytecode caches.
+    // node_modules or dev caches.
     let tree = tempfile::TempDir::new().expect("packaging tree");
     let runtime = tree.path().join("prime-agent-runtime");
-    std::fs::create_dir_all(runtime.join("src").join("rlm")).expect("runtime tree");
-    std::fs::write(runtime.join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
+    std::fs::create_dir_all(runtime.join("src")).expect("runtime tree");
     std::fs::write(
-        runtime.join("src").join("rlm").join("repl.py"),
-        "def main():\n    pass\n",
+        runtime.join("package.json"),
+        "{\"name\":\"prime-agent-runtime\"}\n",
+    )
+    .unwrap();
+    std::fs::write(runtime.join("src").join("repl.ts"), "export {};\n").unwrap();
+    std::fs::create_dir_all(runtime.join("node_modules").join("acorn")).expect("node_modules");
+    std::fs::write(
+        runtime.join("node_modules").join("acorn").join("index.js"),
+        "cache",
     )
     .unwrap();
     std::fs::create_dir_all(runtime.join(".venv").join("lib")).expect("venv");
     std::fs::write(runtime.join(".venv").join("lib").join("stale.so"), "cache").unwrap();
-    std::fs::create_dir_all(runtime.join("src").join("rlm").join("__pycache__")).expect("pycache");
-    std::fs::write(
-        runtime
-            .join("src")
-            .join("rlm")
-            .join("__pycache__")
-            .join("repl.pyc"),
-        "cache",
-    )
-    .unwrap();
     let skills = tree.path().join("skills").join("greet");
     std::fs::create_dir_all(&skills).expect("skills tree");
     std::fs::write(
@@ -721,7 +722,7 @@ fn packaging_dry_run_produces_artifact() {
     assert!(
         stage
             .join("prime-agent-runtime")
-            .join("pyproject.toml")
+            .join("package.json")
             .is_file(),
         "sidecar manifest missing"
     );
@@ -729,8 +730,7 @@ fn packaging_dry_run_produces_artifact() {
         stage
             .join("prime-agent-runtime")
             .join("src")
-            .join("rlm")
-            .join("repl.py")
+            .join("repl.ts")
             .is_file(),
         "sidecar REPL entry point missing"
     );
@@ -753,7 +753,7 @@ fn packaging_dry_run_produces_artifact() {
         stage.join("mcp-services.bundled.json").is_file(),
         "bundled MCP service catalog missing from the staged layout"
     );
-    // .venv handling (the TS installer exclusion set): dev caches never ship.
+    // Dev cache handling: node_modules and .venv never ship.
     assert!(
         !stage.join("prime-agent-runtime").join(".venv").exists(),
         ".venv rode the artifact"
@@ -761,11 +761,9 @@ fn packaging_dry_run_produces_artifact() {
     assert!(
         !stage
             .join("prime-agent-runtime")
-            .join("src")
-            .join("rlm")
-            .join("__pycache__")
+            .join("node_modules")
             .exists(),
-        "__pycache__ rode the artifact"
+        "node_modules rode the artifact"
     );
 
     let archive = out
@@ -950,22 +948,22 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     digest
 }
 
-/// Heavy (network + uv): the packaged sidecar bootstraps a fresh kernel
-/// venv and boots a session: `cargo test -p pa-cli --test packaged_layout_e2e -- --ignored`
+/// Heavy (network + bun install): the packaged sidecar bootstraps a fresh kernel
+/// Bun runtime dir and boots a session: `cargo test -p pa-cli --test packaged_layout_e2e -- --ignored`
 #[test]
-#[ignore = "network + uv bootstrap (~minutes); the lane verifier runs it explicitly"]
-fn bootstrap_kernel_venv_from_packaged_sidecar() {
+#[ignore = "network + bun bootstrap; the lane verifier runs it explicitly"]
+fn bootstrap_kernel_bun_from_packaged_sidecar() {
     let dir = tempfile::TempDir::new().expect("stage dir");
     let staged = dir.path();
     stage_packaged_layout(staged, true);
     let box_ = sandbox();
-    let venv = box_.home.path().join("kernel-venv");
+    let kernel_dir = box_.home.path().join("kernel-bun");
 
-    // --prime-agent-bootstrap builds the venv from the exe-adjacent sidecar.
+    // --prime-agent-bootstrap builds the kernel dir from the exe-adjacent sidecar.
     let output = box_
         .command(staged)
         .arg("--prime-agent-bootstrap")
-        .env("PRIME_AGENT_KERNEL_VENV", &venv)
+        .env("PRIME_AGENT_KERNEL_BUN_DIR", &kernel_dir)
         .output()
         .expect("run packaged binary");
     assert_eq!(
@@ -975,24 +973,17 @@ fn bootstrap_kernel_venv_from_packaged_sidecar() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("kernel bun:"), "bootstrap stdout: {stdout}");
     assert!(
-        stdout.contains("kernel python:"),
-        "bootstrap stdout: {stdout}"
+        kernel_dir.join("src").join("repl.ts").exists(),
+        "kernel bun repl.ts missing"
     );
-    // The venv layout the product's bootstrap creates: `bin/python` on
-    // unix, `Scripts\python.exe` on Windows.
-    let venv_python = if cfg!(windows) {
-        venv.join("Scripts").join("python.exe")
-    } else {
-        venv.join("bin").join("python")
-    };
-    assert!(venv_python.exists(), "kernel venv python missing");
 
-    // A session boots on the fresh venv, without any kernel override.
+    // A session boots on the fresh runtime dir, without any kernel override.
     let receipt = box_.home.path().join("kernel-receipt.json");
     let script = kernel_boot_script(&receipt);
     let mut command = box_.command(staged);
-    command.env("PRIME_AGENT_KERNEL_VENV", &venv);
+    command.env("PRIME_AGENT_KERNEL_BUN_DIR", &kernel_dir);
     let (stdout, stderr, code) = run_json_turn(&mut command, &script);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(

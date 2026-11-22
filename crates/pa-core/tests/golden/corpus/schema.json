@@ -3,11 +3,11 @@
   "caseCount": 1,
   "cases": [
     {
-      "tool": "ipython",
-      "name": "python_repl",
-      "label": "python_repl",
-      "description": "Execute Python code in a persistent Python REPL. Top-level `await` is supported. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Run shell commands with `bash('cmd')` / `await bash('cmd')`. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
-      "promptSnippet": "python_repl - persistent Python REPL for code, state, and bash() orchestration",
+      "tool": "javascript",
+      "name": "javascript",
+      "label": "Bun",
+      "description": "Execute JavaScript or TypeScript code in a persistent Bun REPL. Top-level `await`, `return`, and static `import` statements are supported. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (values that cannot be serialized are dropped and reported). Run shell commands with `bash('cmd')` / `await bash('cmd')`, `sh('cmd')`, or Bun Shell `$`. Project builds, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
+      "promptSnippet": "javascript - persistent Bun REPL for JavaScript/TypeScript, state, and bash() orchestration",
       "executionMode": "sequential",
       "parameters": {
         "type": "object",
@@ -17,7 +17,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Python code to execute in the persistent Python REPL. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports."
+            "description": "JavaScript or TypeScript code to execute in the persistent Bun REPL. Use the target project's own environment for project builds, tests, scripts, CLIs, and dependency checks instead of direct kernel imports."
           },
           "timeout": {
             "type": "integer",

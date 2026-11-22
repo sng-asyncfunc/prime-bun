@@ -9,7 +9,7 @@ use pa_agent::types::{
     AgentTool, AgentToolResult, AgentToolUpdateCallback,
     ToolExecutionMode as LoopToolExecutionMode, ToolResultContent,
 };
-use pa_types::ai::{is_python_tool_name, PYTHON_TOOL_NAME};
+use pa_types::ai::{is_javascript_tool_name, JAVASCRIPT_TOOL_NAME};
 
 use crate::tools::tool_definition::{ExecutionMode, ToolDefinition, ToolExecutionResult};
 
@@ -70,7 +70,7 @@ impl AgentTool for ToolDefinitionBridge {
     }
 
     fn accepts_alias(&self, name: &str) -> bool {
-        self.definition.name == PYTHON_TOOL_NAME && is_python_tool_name(name)
+        self.definition.name == JAVASCRIPT_TOOL_NAME && is_javascript_tool_name(name)
     }
 
     fn execute(

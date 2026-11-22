@@ -614,12 +614,12 @@ mod convert_messages_tests {
         let converted = convert(vec![
             json!({ "role": "user", "content": "run it", "timestamp": 1 }),
             assistant(&json!([
-                { "type": "toolCall", "id": "call_1", "name": "python_repl", "arguments": { "code": "await rlm.end_turn()" } },
+                { "type": "toolCall", "id": "call_1", "name": "javascript", "arguments": { "code": "await rlm.endTurn()" } },
             ])),
             json!({
                 "role": "toolResult",
                 "toolCallId": "call_1",
-                "toolName": "python_repl",
+                "toolName": "javascript",
                 "content": [{ "type": "text", "text": "turn ended" }],
                 "isError": false,
                 "timestamp": 3,
@@ -632,7 +632,7 @@ mod convert_messages_tests {
                 json!({ "role": "user", "content": [{ "text": "run it" }] }),
                 json!({
                     "role": "assistant",
-                    "content": [{ "toolUse": { "toolUseId": "call_1", "name": "python_repl", "input": { "code": "await rlm.end_turn()" } } }],
+                    "content": [{ "toolUse": { "toolUseId": "call_1", "name": "javascript", "input": { "code": "await rlm.endTurn()" } } }],
                 }),
                 json!({
                     "role": "user",

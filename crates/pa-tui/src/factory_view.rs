@@ -1015,7 +1015,9 @@ impl FactoryView {
                     row.push(theme.fg_span(color, format!(" ({occupancy})")));
                 }
             }
-            if let Some(python) = &state.python {
+            if let Some(javascript) = &state.javascript {
+                row.push(theme.fg_span(ThemeColor::Dim, format!(" (js {javascript})")));
+            } else if let Some(python) = &state.python {
                 row.push(theme.fg_span(ThemeColor::Dim, format!(" (py {python})")));
             } else if let Some(subagent) = &state.subagent {
                 row.push(theme.fg_span(ThemeColor::Dim, format!(" ({subagent})")));

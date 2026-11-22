@@ -467,16 +467,16 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let python = dir.path().join("ready-but-not-reading");
+        let fake_bun = dir.path().join("ready-but-not-reading");
         std::fs::write(
-            &python,
-            "#!/usr/bin/env python3\nimport json, time\nprint(json.dumps({'event': 'ready', 'protocol': 3, 'python': '3.13.0'}), flush=True)\ntime.sleep(30)\n",
+            &fake_bun,
+            "#!/usr/bin/env bun\nconsole.log(JSON.stringify({event: 'ready', protocol: 3, bun: '1.3.14'}));\nawait Bun.sleep(30000);\n",
         )
         .expect("write fake kernel");
-        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(&fake_bun, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake kernel");
         let manager = ReplKernelManager::new(crate::kernel::shared::KernelManagerOptions {
-            python: Some(python),
+            bun: Some(fake_bun),
             ..Default::default()
         });
         manager
@@ -521,32 +521,37 @@ mod tests {
         // sibling "go" file appears, then answers execute frames, ignores
         // glued garbage (a torn prefix makes any next line invalid), and
         // never answers interrupts (that would settle the aborted execution).
-        const TORN_FRAME_RUNTIME: &str = r#"#!/usr/bin/env python3
-import json
-import os
-import sys
-import time
+        const TORN_FRAME_RUNTIME: &str = r#"#!/usr/bin/env bun
+import fs from "node:fs";
+import path from "node:path";
 
-print(json.dumps({"event": "ready", "protocol": 3, "python": "3.13.0"}), flush=True)
-go = os.path.join(os.path.dirname(os.path.abspath(__file__)), "go")
-while not os.path.exists(go):
-    time.sleep(0.01)
-for line in sys.stdin:
-    try:
-        req = json.loads(line)
-    except Exception:
-        continue
-    if req.get("type") == "execute":
-        print(json.dumps({"event": "done", "id": req.get("id"), "status": "ok"}), flush=True)
+console.log(JSON.stringify({ event: "ready", protocol: 3, bun: "1.3.14" }));
+const go = path.join(path.dirname(process.argv[1]), "go");
+while (!fs.existsSync(go)) {
+  await Bun.sleep(10);
+}
+const text = await Bun.stdin.text();
+for (const line of text.split("\n")) {
+  if (!line.trim()) continue;
+  let req;
+  try {
+    req = JSON.parse(line);
+  } catch {
+    continue;
+  }
+  if (req?.type === "execute") {
+    console.log(JSON.stringify({ event: "done", id: req.id, status: "ok" }));
+  }
+}
 "#;
 
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let python = dir.path().join("torn-frame-kernel");
-        std::fs::write(&python, TORN_FRAME_RUNTIME).expect("write fake kernel");
-        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755))
+        let fake_bun = dir.path().join("torn-frame-kernel");
+        std::fs::write(&fake_bun, TORN_FRAME_RUNTIME).expect("write fake kernel");
+        std::fs::set_permissions(&fake_bun, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake kernel");
         let manager = ReplKernelManager::new(crate::kernel::shared::KernelManagerOptions {
-            python: Some(python),
+            bun: Some(fake_bun),
             ..Default::default()
         });
         manager
@@ -594,34 +599,62 @@ for line in sys.stdin:
         // Protocol v3: ready, then one execute answered by stdout frames of
         // filler past the cap (multi-byte text, so cut points can land inside
         // a char run) with a printed traceback LAST, then done.
-        const TRACEBACK_RUNTIME: &str = r#"#!/usr/bin/env python3
-import json
-import sys
-
-print(json.dumps({"event": "ready", "protocol": 3, "python": "3.13.0"}), flush=True)
-for line in sys.stdin:
-    try:
-        req = json.loads(line)
-    except Exception:
-        continue
-    if req.get("type") == "execute":
-        rid = req.get("id")
-        filler = "é🍁xyz" * 20_000
-        for start in range(0, len(filler), 4_096):
-            chunk = filler[start:start + 4_096]
-            print(json.dumps({"event": "stdout", "id": rid, "text": chunk}), flush=True)
-        traceback = "Traceback (most recent call last):\n ...\nAssertionError: t1-traceback-sentinel\n"
-        print(json.dumps({"event": "stdout", "id": rid, "text": traceback}), flush=True)
-        print(json.dumps({"event": "done", "id": rid, "status": "ok"}), flush=True)
+        const TRACEBACK_RUNTIME: &str = r#"#!/usr/bin/env bun
+import fs from "node:fs";
+function emit(obj) {
+  const bytes = Buffer.from(JSON.stringify(obj) + "\n", "utf8");
+  let offset = 0;
+  while (offset < bytes.length) {
+    try {
+      offset += fs.writeSync(1, bytes, offset, bytes.length - offset);
+    } catch (err) {
+      if (err?.code === "EAGAIN") {
+        Bun.sleepSync(1);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+emit({ event: "ready", protocol: 3, bun: "1.3.14" });
+const reader = Bun.stdin.stream().getReader();
+const decoder = new TextDecoder();
+let buf = "";
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buf += decoder.decode(value, { stream: true });
+  let idx;
+  while ((idx = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, idx);
+    buf = buf.slice(idx + 1);
+    let req;
+    try {
+      req = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (req?.type === "execute") {
+      const rid = req.id;
+      const filler = "é🍁xyz".repeat(20000);
+      for (let start = 0; start < filler.length; start += 4098) {
+        emit({ event: "stdout", id: rid, text: filler.slice(start, start + 4098) });
+      }
+      const traceback = "Traceback (most recent call last):\n ...\nAssertionError: t1-traceback-sentinel\n";
+      emit({ event: "stdout", id: rid, text: traceback });
+      emit({ event: "done", id: rid, status: "ok" });
+    }
+  }
+}
 "#;
 
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let python = dir.path().join("traceback-kernel");
-        std::fs::write(&python, TRACEBACK_RUNTIME).expect("write fake kernel");
-        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755))
+        let fake_bun = dir.path().join("traceback-kernel");
+        std::fs::write(&fake_bun, TRACEBACK_RUNTIME).expect("write fake kernel");
+        std::fs::set_permissions(&fake_bun, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake kernel");
         let manager = ReplKernelManager::new(crate::kernel::shared::KernelManagerOptions {
-            python: Some(python),
+            bun: Some(fake_bun),
             ..Default::default()
         });
         manager

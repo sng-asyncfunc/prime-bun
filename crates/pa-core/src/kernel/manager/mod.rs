@@ -1,7 +1,7 @@
 //! Kernel client for the REPL runtime: the kernel is a JSON-lines subprocess
-//! (`python -m rlm.repl`) — requests on stdin, events on stdout, stderr kept
+//! (`bun run src/repl.ts`) — requests on stdin, events on stdout, stderr kept
 //! as a diagnostics tail. The protocol is documented in
-//! prime-agent-runtime/src/rlm/repl.md (protocol version 3).
+//! `prime-agent-runtime/src/repl.md` (protocol version 3).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -319,7 +319,7 @@ struct ChildHandle {
     exit_rx: tokio::sync::watch::Receiver<Option<ExitInfo>>,
 }
 
-/// The RLM kernel manager: owns one `python -m rlm.repl` subprocess and the
+/// The RLM kernel manager: owns one `bun run src/repl.ts` subprocess and the
 /// JSON-lines protocol v3 conversation with it.
 #[derive(Clone)]
 pub struct ReplKernelManager {
@@ -339,7 +339,8 @@ impl std::fmt::Debug for ReplKernelManager {
 pub(crate) struct Inner {
     options: KernelManagerOptions,
     freshness_stat_probe: std::sync::atomic::AtomicBool,
-    resolved_python: Mutex<Option<std::path::PathBuf>>,
+    resolved_runtime: Mutex<Option<crate::kernel::bootstrap::KernelBunRuntime>>,
+    bootstrap_code: Mutex<Option<String>>,
     guarded: Mutex<Guarded>,
     child: Mutex<Option<ChildHandle>>,
     busy_notify: Notify,
@@ -411,10 +412,12 @@ use requests::{append_truncated, describe_failure, HeadTailBuffer, Signal};
 impl ReplKernelManager {
     #[must_use]
     pub fn new(options: KernelManagerOptions) -> Self {
+        let initial_bootstrap = options.bootstrap_code.clone();
         let inner = Arc::new(Inner {
             options,
             freshness_stat_probe: std::sync::atomic::AtomicBool::new(false),
-            resolved_python: Mutex::new(None),
+            resolved_runtime: Mutex::new(None),
+            bootstrap_code: Mutex::new(initial_bootstrap),
             guarded: Mutex::new(Guarded {
                 lifecycle: KernelLifecycle::new(),
                 pending_rebootstrap: false,
@@ -461,6 +464,22 @@ impl ReplKernelManager {
     #[must_use]
     pub fn owner_session_id(&self) -> Option<&str> {
         self.inner.options.session_id.as_deref()
+    }
+
+    /// Prepared JavaScript skills produced by [`ensure_kernel_bun_for_project`]
+    /// during startup, when the managed Bun runtime was resolved.
+    #[must_use]
+    pub fn prepared_skills(
+        &self,
+    ) -> Option<Vec<crate::kernel::bootstrap::PreparedJavaScriptSkill>> {
+        lock(&self.inner.resolved_runtime)
+            .as_ref()
+            .map(|rt| rt.prepared_skills.clone())
+    }
+
+    /// Update the runtime bootstrap code re-run after protocol repair.
+    pub fn set_bootstrap_code(&self, code: String) {
+        *lock(&self.inner.bootstrap_code) = Some(code);
     }
 
     /// Whether any background `bash()` handle is live: the `> 0` form of

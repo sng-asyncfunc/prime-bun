@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::anyhow;
 
 use crate::kernel::bootstrap::{
-    build_rlm_bootstrap_code, parse_unavailable_python_skills, KernelBootstrapProgressHandler,
-    KernelPythonSkill, UnavailablePythonSkills,
+    build_rlm_bootstrap_code, parse_unavailable_javascript_skills, KernelBootstrapProgressHandler,
+    KernelJavaScriptSkill, PreparedJavaScriptSkill, UnavailableJavaScriptSkills,
 };
 use crate::kernel::cancellation::AbortSignal;
 use crate::kernel::manager::{KernelStartOptions, ReplKernelManager};
@@ -75,9 +75,9 @@ pub type KernelReadyGate = Arc<dyn Fn() -> futures::future::BoxFuture<'static, (
 /// Publishes the restore outcome once the kernel is usable.
 pub type RestoreCallback = Arc<dyn Fn(&RestoreResult) + Send + Sync>;
 
-/// Publishes the skills that failed to import into a freshly started
-/// kernel (import name -> import error), once the kernel is usable.
-pub type UnavailableSkillsCallback = Arc<dyn Fn(&UnavailablePythonSkills) + Send + Sync>;
+/// Publishes the skills that failed to load into a freshly started
+/// kernel (global name -> load error), once the kernel is usable.
+pub type UnavailableSkillsCallback = Arc<dyn Fn(&UnavailableJavaScriptSkills) + Send + Sync>;
 
 /// Outcome of one full kernel bootstrap (spawn + handshake + namespace
 /// restore + runtime bootstrap), reported once per actual boot.
@@ -104,10 +104,14 @@ pub struct KernelBootstrapStats {
 pub type KernelBootstrapResultHandler = Arc<dyn Fn(KernelBootstrapStats) + Send + Sync>;
 
 #[derive(Default, Clone)]
-pub struct IpythonKernelProvisionerOptions {
-    /// Python override. Must have prime-agent-runtime installed.
-    pub python: Option<PathBuf>,
-    /// Default time limit for user `python_repl` cells, in milliseconds
+pub struct JavaScriptKernelProvisionerOptions {
+    /// Bun executable override (or fake kernel script in tests).
+    pub bun: Option<PathBuf>,
+    /// Optional explicit worker entrypoint (`src/repl.ts`) when `bun` is overridden.
+    pub worker_entry: Option<PathBuf>,
+    /// Optional explicit kernel runtime directory (`PRIME_AGENT_KERNEL_BUN_DIR`).
+    pub kernel_dir: Option<PathBuf>,
+    /// Default time limit for user `javascript` cells, in milliseconds
     /// (`None`: never armed; `0`: disabled). The daemon engine resolves it
     /// from settings and disarms it for daemonless sessions; a cell's own
     /// `timeout` argument replaces it. The runtime bootstrap and internal
@@ -121,7 +125,7 @@ pub struct IpythonKernelProvisionerOptions {
     pub shell_path: Option<PathBuf>,
     pub session_id: Option<String>,
     pub host_handlers: HostRequestHandlers,
-    pub python_skills: Vec<KernelPythonSkill>,
+    pub javascript_skills: Vec<KernelJavaScriptSkill>,
     /// Artifact directory of a persistent session; the revivable snapshot and
     /// the stderr log live there. `None` for ephemeral sessions.
     pub snapshot_dir: Option<PathBuf>,
@@ -132,7 +136,7 @@ pub struct IpythonKernelProvisionerOptions {
     /// Fires when the kernel's last live background `bash()` handle
     /// settles, so owed continuations can resume.
     pub on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
-    /// Fires once per kernel start when installed Python skills failed to import into the kernel,
+    /// Fires once per kernel start when installed JavaScript skills failed to load into the kernel,
     /// so the session can tell the model before it wastes turns calling them.
     pub on_unavailable_skills: Option<UnavailableSkillsCallback>,
     /// Publishes the per-boot result for the `kernel_bootstrap_*` counters.
@@ -240,19 +244,19 @@ struct ProvisionerState {
 ///
 /// Cloning shares the same kernel and startup state.
 #[derive(Clone)]
-pub struct IpythonKernelProvisioner {
+pub struct JavaScriptKernelProvisioner {
     inner: Arc<ProvisionerInner>,
 }
 
 struct ProvisionerInner {
     cwd: PathBuf,
-    options: IpythonKernelProvisionerOptions,
+    options: JavaScriptKernelProvisionerOptions,
     state: Mutex<ProvisionerState>,
     dispose_signal: AbortSignal,
 }
 
-impl IpythonKernelProvisioner {
-    pub fn new(cwd: impl Into<PathBuf>, options: IpythonKernelProvisionerOptions) -> Self {
+impl JavaScriptKernelProvisioner {
+    pub fn new(cwd: impl Into<PathBuf>, options: JavaScriptKernelProvisionerOptions) -> Self {
         Self {
             inner: Arc::new(ProvisionerInner {
                 cwd: cwd.into(),
@@ -294,11 +298,11 @@ impl IpythonKernelProvisioner {
         self.inner.options.cell_timeout_ms
     }
 
-    /// The Python skills pre-imported at kernel bootstrap.
+    /// The JavaScript skills pre-loaded at kernel bootstrap.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn python_skills(&self) -> &[KernelPythonSkill] {
-        &self.inner.options.python_skills
+    pub(crate) fn javascript_skills(&self) -> &[KernelJavaScriptSkill] {
+        &self.inner.options.javascript_skills
     }
 
     /// Result of reviving a prior session's namespace on the last kernel start.
@@ -343,7 +347,7 @@ impl IpythonKernelProvisioner {
     ) -> anyhow::Result<ReplKernelManager> {
         if let Some(signal) = &signal {
             if signal.is_aborted() {
-                return Err(anyhow!("Python execution aborted"));
+                return Err(anyhow!("JavaScript execution aborted"));
             }
         }
         // The guard is strictly scoped to this decision block: a
@@ -504,13 +508,13 @@ impl IpythonKernelProvisioner {
         let completion = match &signal {
             Some(signal) => tokio::select! {
                 result = wait => result,
-                () = signal.cancelled() => return Err(anyhow!("Python execution aborted")),
+                () = signal.cancelled() => return Err(anyhow!("JavaScript execution aborted")),
             },
             None => wait.await,
         };
         if let Some(signal) = &signal {
             if signal.is_aborted() {
-                return Err(anyhow!("Python execution aborted"));
+                return Err(anyhow!("JavaScript execution aborted"));
             }
         }
         completion.map_err(|error| anyhow!("kernel startup task closed: {error}"))?;
@@ -915,14 +919,15 @@ fn resolve_startup_budget_ms() -> u64 {
 /// A failed boot the provisioner may retry on its own: transient spawn or
 /// ready-handshake problems. Structural failures never auto-retry.
 fn startup_failure_is_retryable(error: &anyhow::Error) -> bool {
-    const FATAL_MARKERS: [&str; 9] = [
+    const FATAL_MARKERS: [&str; 10] = [
         "provisioner disposed",
         "provisioner killed",
         "aborted",
-        "Failed to set up the Python kernel runtime",
-        "PRIME_AGENT_KERNEL_PYTHON points to a Python",
+        "Failed to set up the Bun JavaScript kernel runtime",
+        "PRIME_AGENT_KERNEL_BUN points to an unusable Bun executable",
+        "Bun 1.3.14+ is required",
         "Failed to initialize rlm runtime",
-        "Update prime-agent-runtime in the kernel Python",
+        "Update prime-agent-runtime in the Bun kernel",
         "Kernel start superseded",
         "Kernel was disposed during startup",
     ];
@@ -1060,13 +1065,18 @@ async fn start_kernel_impl(
     let snapshot_dir = options.snapshot_dir.clone();
     // The bounded-await default keys on the bash.completed host handler:
     // one source of truth (the registry the daemon registers the notice in).
-    let bootstrap_code = build_rlm_bootstrap_code(
-        &options.python_skills,
-        options
-            .host_handlers
-            .get(BASH_COMPLETED_REQUEST_TYPE)
-            .is_some(),
-    );
+    let bash_notices_wired = options
+        .host_handlers
+        .get(BASH_COMPLETED_REQUEST_TYPE)
+        .is_some();
+    let initial_prepared_skills: Vec<PreparedJavaScriptSkill> = options
+        .javascript_skills
+        .iter()
+        .cloned()
+        .map(|skill| PreparedJavaScriptSkill::from_skill(skill, None))
+        .collect();
+    let initial_bootstrap_code =
+        build_rlm_bootstrap_code(&initial_prepared_skills, bash_notices_wired);
     let mut env = options.env.clone();
     if let Some(shell_path) = &options.shell_path {
         env.insert(
@@ -1091,19 +1101,21 @@ async fn start_kernel_impl(
         .as_ref()
         .map(|dir| dir.join("kernel-stderr.log"));
     let manager = ReplKernelManager::new(KernelManagerOptions {
-        python: options.python.clone(),
+        bun: options.bun.clone(),
+        worker_entry: options.worker_entry.clone(),
+        kernel_dir: options.kernel_dir.clone(),
         cwd: Some(cwd),
         env,
         session_id: options.session_id.clone(),
         host_handlers: options.host_handlers.clone(),
-        python_skills: options.python_skills.clone(),
+        javascript_skills: options.javascript_skills.clone(),
         on_background_work_settled: options.on_background_work_settled.clone(),
         snapshot,
-        bootstrap_code: Some(bootstrap_code.clone()),
+        bootstrap_code: Some(initial_bootstrap_code),
         stderr_log_path,
     });
 
-    emit_startup_progress(inner, on_progress, memo, "Starting Python kernel...");
+    emit_startup_progress(inner, on_progress, memo, "Starting Bun kernel...");
     // Only the process spawn + ready handshake contends for OS resources under
     // a fan-out, and it is bounded by start()'s own timeout — so the permit
     // covers only start(). Restore/bootstrap run per-kernel afterwards.
@@ -1166,13 +1178,17 @@ async fn start_kernel_impl(
     let mut snapshot_existed = false;
     if let Some(dir) = &snapshot_dir {
         snapshot_existed = snapshot_path_in(dir).exists();
-        emit_startup_progress(inner, on_progress, memo, "Restoring Python state...");
+        emit_startup_progress(inner, on_progress, memo, "Restoring JavaScript state...");
         let restore = manager.restore_state().await;
         if snapshot_existed {
             pending_restore = Some(restore.unwrap_or_default());
         }
     }
-    emit_startup_progress(inner, on_progress, memo, "Preparing Python runtime...");
+    let prepared_skills = manager.prepared_skills().unwrap_or(initial_prepared_skills);
+    let bootstrap_code = build_rlm_bootstrap_code(&prepared_skills, bash_notices_wired);
+    manager.set_bootstrap_code(bootstrap_code.clone());
+
+    emit_startup_progress(inner, on_progress, memo, "Preparing JavaScript runtime...");
     // The bootstrap runs on the dispose signal (TS startKernel races every
     // boot stage against the dispose-linked abort): a dispose mid-bootstrap
     // settles the cell aborted, and the aborted-status arm below tears the
@@ -1207,16 +1223,11 @@ async fn start_kernel_impl(
                 // auto-snapshot would rewrite identical content.
                 manager.mark_restored_namespace_fresh();
             }
-            // Broken skill imports stay importable-looking placeholders;
+            // Broken skill loads stay callable-looking placeholders;
             // report them so the model learns before its first call, not
-            // from the placeholder's error (TS startKernel) - but only a
-            // LIVE generation may report: the callback shares the restore
-            // notice's mailbox, and a boot kill() invalidated must not
-            // append stale skills-unavailable rows the next turn shows the
-            // model. Same contract as the restore gate below: the
-            // generation check and the callback share ONE lock scope, and
-            // the callbacks must not re-enter the provisioner.
-            let unavailable = parse_unavailable_python_skills(&bootstrap.stdout);
+            // from the placeholder's error - but only a LIVE generation may
+            // report.
+            let unavailable = parse_unavailable_javascript_skills(&bootstrap.stdout);
             if let Some(errors) = unavailable {
                 let state = inner
                     .state
@@ -1235,8 +1246,8 @@ async fn start_kernel_impl(
             }
         }
         Ok(bootstrap) => {
-            // The kernel booted but its runtime did not initialize: the venv is the prime suspect,
-            // so drop the memoized runtime-ready result.
+            // The kernel booted but its runtime did not initialize: drop the
+            // memoized runtime-ready result.
             crate::kernel::bootstrap::invalidate_runtime_probe_cache();
             let details = [bootstrap.stderr.clone()]
                 .into_iter()
@@ -1244,8 +1255,6 @@ async fn start_kernel_impl(
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n");
-            // TS startKernel's catch shuts the failed boot down with the
-            // dispose snapshot policy (default true), not `false`.
             let (snapshot_policy, _teardown_gate) = hold_snapshot_flush_gate(inner, memo);
             let _ = manager
                 .shutdown(KernelShutdownOptions {
@@ -1253,18 +1262,15 @@ async fn start_kernel_impl(
                     drain_host_requests: true,
                 })
                 .await;
-            // An aborted bootstrap with a live dispose signal is the bound
-            // firing on a kernel that stopped answering: name the lost
-            // bootstrap instead of a bare runtime failure.
             let error = if bootstrap.status == ExecuteStatus::Aborted
                 && !dispose_signal.is_aborted()
             {
                 anyhow!(
-                    "Failed to initialize rlm runtime in the Python kernel: \
+                    "Failed to initialize rlm runtime in the Bun kernel: \
                      the runtime bootstrap did not finish within {BOOTSTRAP_EXECUTION_TIMEOUT_MS}ms:\n{details}"
                 )
             } else {
-                anyhow!("Failed to initialize rlm runtime in the Python kernel:\n{details}")
+                anyhow!("Failed to initialize rlm runtime in the Bun kernel:\n{details}")
             };
             return Err(error);
         }
@@ -1310,13 +1316,13 @@ async fn start_kernel_impl(
     Ok(manager)
 }
 
-/// Same as [`IpythonKernelProvisioner::new`] for a `Path`-shaped cwd.
+/// Same as [`JavaScriptKernelProvisioner::new`] for a `Path`-shaped cwd.
 #[must_use]
 pub fn provisioner_for_path(
     cwd: &Path,
-    options: IpythonKernelProvisionerOptions,
-) -> IpythonKernelProvisioner {
-    IpythonKernelProvisioner::new(cwd.to_path_buf(), options)
+    options: JavaScriptKernelProvisionerOptions,
+) -> JavaScriptKernelProvisioner {
+    JavaScriptKernelProvisioner::new(cwd.to_path_buf(), options)
 }
 
 #[cfg(test)]
@@ -1361,7 +1367,7 @@ mod tests {
             agent_dir,
             model: Some(model),
             stream_fn: Some(provider.stream_fn()),
-            prewarm_ipython_kernel: Some(false),
+            prewarm_javascript_kernel: Some(false),
             ..Default::default()
         })
         .await
@@ -1561,9 +1567,9 @@ mod tests {
 
     #[test]
     fn a_spent_stop_arm_releases_only_its_own_boot() {
-        let provisioner = IpythonKernelProvisioner::new(
+        let provisioner = JavaScriptKernelProvisioner::new(
             PathBuf::from("/tmp"),
-            IpythonKernelProvisionerOptions::default(),
+            JavaScriptKernelProvisionerOptions::default(),
         );
         let (armed_tx, armed_rx) = tokio::sync::watch::channel(None::<StartupResult>);
         let (other_tx, other_rx) = tokio::sync::watch::channel(None::<StartupResult>);
@@ -1586,9 +1592,9 @@ mod tests {
 
     #[test]
     fn kill_releases_the_stop_arm_armed_for_the_killed_boot() {
-        let provisioner = IpythonKernelProvisioner::new(
+        let provisioner = JavaScriptKernelProvisioner::new(
             PathBuf::from("/tmp"),
-            IpythonKernelProvisionerOptions::default(),
+            JavaScriptKernelProvisionerOptions::default(),
         );
         let (memo_tx, memo_rx) = tokio::sync::watch::channel(None::<StartupResult>);
         drop(memo_tx);
@@ -1613,9 +1619,9 @@ mod tests {
 
     #[test]
     fn a_killed_boot_never_takes_the_dispose_teardown() {
-        let provisioner = IpythonKernelProvisioner::new(
+        let provisioner = JavaScriptKernelProvisioner::new(
             PathBuf::from("/tmp"),
-            IpythonKernelProvisionerOptions::default(),
+            JavaScriptKernelProvisionerOptions::default(),
         );
         {
             let mut state = provisioner.lock_state();
@@ -1643,9 +1649,9 @@ mod tests {
 
     #[test]
     fn a_doomed_boot_teardown_never_flushes_a_snapshot() {
-        let provisioner = IpythonKernelProvisioner::new(
+        let provisioner = JavaScriptKernelProvisioner::new(
             PathBuf::from("/tmp"),
-            IpythonKernelProvisionerOptions::default(),
+            JavaScriptKernelProvisionerOptions::default(),
         );
         let (memo_tx, memo_rx) = tokio::sync::watch::channel(None::<StartupResult>);
         drop(memo_tx);
@@ -1771,7 +1777,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_rejects_aborted_signal() {
         let provisioner =
-            IpythonKernelProvisioner::new("/tmp", IpythonKernelProvisionerOptions::default());
+            JavaScriptKernelProvisioner::new("/tmp", JavaScriptKernelProvisionerOptions::default());
         let error = provisioner
             .ensure(None, Some(AbortSignal::aborted()))
             .await
@@ -1782,7 +1788,7 @@ mod tests {
     #[tokio::test]
     async fn dispose_then_ensure_fails() {
         let provisioner =
-            IpythonKernelProvisioner::new("/tmp", IpythonKernelProvisionerOptions::default());
+            JavaScriptKernelProvisioner::new("/tmp", JavaScriptKernelProvisionerOptions::default());
         provisioner.dispose(None).await;
         let error = provisioner
             .ensure(None, None)
@@ -1794,7 +1800,7 @@ mod tests {
     #[test]
     fn retryable_failure_classification() {
         assert!(startup_failure_is_retryable(&anyhow!(
-            "failed to spawn kernel python /x"
+            "failed to spawn kernel bun /x"
         )));
         assert!(startup_failure_is_retryable(&anyhow!(
             "Kernel did not become ready within 30000ms. stderr tail: ..."
@@ -1806,28 +1812,28 @@ mod tests {
             "Kernel provisioner killed before start"
         )));
         assert!(!startup_failure_is_retryable(&anyhow!(
-            "Python execution aborted"
+            "JavaScript execution aborted"
         )));
         assert!(!startup_failure_is_retryable(&anyhow!(
-            "PRIME_AGENT_KERNEL_PYTHON points to a Python missing a current prime-agent-runtime: /bad"
+            "PRIME_AGENT_KERNEL_BUN points to an unusable Bun executable (/bad)"
         )));
         assert!(!startup_failure_is_retryable(&anyhow!(
             "Kernel runtime speaks protocol 2, expected 3. \
-             Update prime-agent-runtime in the kernel Python (PRIME_AGENT_KERNEL_PYTHON) to match this prime-agent."
+             Update prime-agent-runtime in the Bun kernel (PRIME_AGENT_KERNEL_BUN / PRIME_AGENT_KERNEL_BUN_DIR) to match this prime-agent."
         )));
     }
 
     #[tokio::test]
     async fn startup_failure_surfaces_cause_and_duration() {
-        let options = IpythonKernelProvisionerOptions {
-            python: Some(PathBuf::from("/nonexistent/kernel-python-for-test")),
+        let options = JavaScriptKernelProvisionerOptions {
+            bun: Some(PathBuf::from("/nonexistent/kernel-bun-for-test")),
             ..Default::default()
         };
-        let provisioner = IpythonKernelProvisioner::new("/tmp", options);
+        let provisioner = JavaScriptKernelProvisioner::new("/tmp", options);
         let error = provisioner
             .ensure(None, None)
             .await
-            .expect_err("bogus python must fail");
+            .expect_err("bogus bun must fail");
         let message = format!("{error:#}");
         assert!(
             message.contains("kernel startup failed after "),
@@ -1847,14 +1853,14 @@ mod tests {
 
     #[tokio::test]
     async fn startup_retries_transient_failure() {
-        // One retry (the default), so the bogus-python boot fails twice and
+        // One retry (the default), so the bogus-bun boot fails twice and
         // the backoff (>= 250ms) shows up in the elapsed time.
         let started = std::time::Instant::now();
-        let options = IpythonKernelProvisionerOptions {
-            python: Some(PathBuf::from("/nonexistent/kernel-python-for-test")),
+        let options = JavaScriptKernelProvisionerOptions {
+            bun: Some(PathBuf::from("/nonexistent/kernel-bun-for-test")),
             ..Default::default()
         };
-        let provisioner = IpythonKernelProvisioner::new("/tmp", options);
+        let provisioner = JavaScriptKernelProvisioner::new("/tmp", options);
         assert!(provisioner.ensure(None, None).await.is_err());
         assert!(
             started.elapsed() >= std::time::Duration::from_millis(250),
@@ -1864,11 +1870,11 @@ mod tests {
 
     #[tokio::test]
     async fn startup_retry_cancelled_by_dispose() {
-        let options = IpythonKernelProvisionerOptions {
-            python: Some(PathBuf::from("/nonexistent/kernel-python-for-test")),
+        let options = JavaScriptKernelProvisionerOptions {
+            bun: Some(PathBuf::from("/nonexistent/kernel-bun-for-test")),
             ..Default::default()
         };
-        let provisioner = IpythonKernelProvisioner::new("/tmp", options);
+        let provisioner = JavaScriptKernelProvisioner::new("/tmp", options);
         let p = provisioner.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -1887,7 +1893,7 @@ mod tests {
     #[tokio::test]
     async fn clone_shares_kernel_state() {
         let provisioner =
-            IpythonKernelProvisioner::new("/tmp", IpythonKernelProvisionerOptions::default());
+            JavaScriptKernelProvisioner::new("/tmp", JavaScriptKernelProvisionerOptions::default());
         let clone = provisioner.clone();
         provisioner.dispose(None).await;
         assert!(clone.ensure(None, None).await.is_err());
@@ -1895,11 +1901,11 @@ mod tests {
 
     #[tokio::test]
     async fn prewarm_swallows_failure_and_keeps_lazy_fallback() {
-        let options = IpythonKernelProvisionerOptions {
-            python: Some(PathBuf::from("/nonexistent/kernel-python-for-test")),
+        let options = JavaScriptKernelProvisionerOptions {
+            bun: Some(PathBuf::from("/nonexistent/kernel-bun-for-test")),
             ..Default::default()
         };
-        let provisioner = IpythonKernelProvisioner::new("/tmp", options);
+        let provisioner = JavaScriptKernelProvisioner::new("/tmp", options);
         provisioner.prewarm();
         // Let the background startup settle into its failure.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -1911,7 +1917,7 @@ mod tests {
         let error = provisioner
             .ensure(None, None)
             .await
-            .expect_err("the bogus python must fail ensure too");
+            .expect_err("the bogus bun must fail ensure too");
         assert!(
             format!("{error:#}").contains("failed to spawn"),
             "ensure must surface the spawn cause: {error:#}"
@@ -1926,23 +1932,24 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let python = dir.path().join("ready-but-not-reading");
+        let fake_bun = dir.path().join("ready-but-not-reading");
         std::fs::write(
-            &python,
-            "#!/usr/bin/env python3\nimport json, time\nprint(json.dumps({'event': 'ready', 'protocol': 3, 'python': '3.13.0'}), flush=True)\ntime.sleep(30)\n",
+            &fake_bun,
+            "#!/usr/bin/env bun\nconsole.log(JSON.stringify({event: 'ready', protocol: 3, bun: '1.3.14'}));\nawait Bun.sleep(30000);\n",
         )
         .expect("write fake kernel");
-        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(&fake_bun, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake kernel");
-        let provisioner = IpythonKernelProvisioner::new(
+        let provisioner = JavaScriptKernelProvisioner::new(
             dir.path(),
-            IpythonKernelProvisionerOptions {
-                python: Some(python),
-                python_skills: vec![KernelPythonSkill {
+            JavaScriptKernelProvisionerOptions {
+                bun: Some(fake_bun),
+                javascript_skills: vec![KernelJavaScriptSkill {
                     name: "oversized".into(),
-                    import_name: "x".repeat(1024 * 1024),
+                    global_name: "x".repeat(1024 * 1024),
+                    entry_path: dir.path().join("src/index.ts"),
                     package_path: dir.path().into(),
-                    pyproject_path: dir.path().join("pyproject.toml"),
+                    package_json_path: dir.path().join("package.json"),
                 }],
                 ..Default::default()
             },
@@ -1968,37 +1975,47 @@ mod tests {
     async fn silent_bootstrap_fails_bounded_and_leaves_no_kernel() {
         use std::os::unix::fs::PermissionsExt;
 
-        // Speaks protocol v3: answers the ready handshake, stays silent on
-        // every execute (the runtime bootstrap included), and answers the
-        // shutdown frame so a teardown does not wait out its kill deadline.
-        const SILENT_BOOTSTRAP_RUNTIME: &str = r#"#!/usr/bin/env python3
-import json
-import os
-import sys
+        const SILENT_BOOTSTRAP_RUNTIME: &str = r#"#!/usr/bin/env bun
+import fs from "node:fs";
+import path from "node:path";
 
-base = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(base, "starts"), "a") as f:
-    f.write("x")
-print(json.dumps({"event": "ready", "protocol": 3, "python": "3.13.0"}), flush=True)
-for line in sys.stdin:
-    try:
-        req = json.loads(line)
-    except Exception:
-        continue
-    if req.get("type") == "shutdown":
-        print(json.dumps({"event": "done", "id": req.get("id"), "status": "ok"}), flush=True)
-        break
+const base = path.dirname(process.argv[1]);
+fs.appendFileSync(path.join(base, "starts"), "x");
+console.log(JSON.stringify({ event: "ready", protocol: 3, bun: "1.3.14" }));
+const reader = Bun.stdin.stream().getReader();
+const decoder = new TextDecoder();
+let buf = "";
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buf += decoder.decode(value, { stream: true });
+  let idx;
+  while ((idx = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, idx);
+    buf = buf.slice(idx + 1);
+    let req;
+    try {
+      req = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (req?.type === "shutdown") {
+      console.log(JSON.stringify({ event: "done", id: req.id, status: "ok" }));
+      process.exit(0);
+    }
+  }
+}
 "#;
 
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let python = dir.path().join("fake-kernel");
-        std::fs::write(&python, SILENT_BOOTSTRAP_RUNTIME).expect("write fake runtime");
-        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755))
+        let fake_bun = dir.path().join("fake-kernel");
+        std::fs::write(&fake_bun, SILENT_BOOTSTRAP_RUNTIME).expect("write fake runtime");
+        std::fs::set_permissions(&fake_bun, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake runtime");
-        let provisioner = IpythonKernelProvisioner::new(
+        let provisioner = JavaScriptKernelProvisioner::new(
             dir.path(),
-            IpythonKernelProvisionerOptions {
-                python: Some(python),
+            JavaScriptKernelProvisionerOptions {
+                bun: Some(fake_bun),
                 ..Default::default()
             },
         );

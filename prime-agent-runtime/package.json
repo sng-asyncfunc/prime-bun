@@ -1,0 +1,13 @@
+{
+  "name": "prime-agent-runtime",
+  "version": "0.10.5",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "acorn": "^8.18.0"
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}

@@ -53,7 +53,7 @@ const DYNAMIC_ONLY_MARKERS: &[&str] = &[
     "<available_skills>",
     "Enabled generic MCP servers:",
     "# Project Context",
-    "Pre-installed Python packages:",
+    "Preloaded Bun/JavaScript globals:",
     "You are a child agent spawned by",
 ];
 
@@ -82,7 +82,7 @@ fn cached_prefix_is_stable_across_sessions() {
         messages_path: Some("/first/session.jsonl".to_string()),
         model_prompt_extras: Some("model guidance."),
         skills: sorted_bundled_skills(),
-        selected_tools: Some(vec!["python_repl"]),
+        selected_tools: Some(vec!["javascript"]),
         ..Default::default()
     };
     let first = system_prompt_breakdown(&options);
@@ -116,7 +116,7 @@ fn cached_prefix_is_stable_across_sessions() {
     assert!(first_tail.contains("Working directory: /first/cwd"));
     assert!(first_tail.contains("Recursive agent depth: 0 (root)"));
     assert!(first_tail.contains("<available_skills>"));
-    assert!(first_tail.contains("Pre-installed Python packages:"));
+    assert!(first_tail.contains("Preloaded Bun/JavaScript globals:"));
     let second_tail = &second.assembled[second.cached_prefix_len..];
     assert!(second_tail.contains("/completely/different"));
     assert!(second_tail.contains("Enabled generic MCP servers: `github`, `slack`."));
@@ -165,11 +165,28 @@ fn prompt_token_for_host_request(request: &str) -> Option<String> {
     Some(
         match request {
             "rlm.run" => "rlm.spawn",
-            "rlm.progress.note" => "rlm.progress_note",
-            "agent_observe.list" | "agent_message.list_agents" => "agent_observe.list_agents",
-            "agent_observe.get" => "agent_observe.get_agent",
-            "agent_observe.recent" => "agent_observe.recent_messages",
+            "rlm.create_session" => "rlm.createSession",
+            "rlm.find_models" => "rlm.findModels",
+            "rlm.list_subagents" => "rlm.listSubagents",
+            "rlm.delete_subagent" => "rlm.deleteSubagent",
+            "rlm.progress.note" => "rlm.progressNote",
+            "rlm.end_turn" => "rlm.endTurn",
+            "agent_message.send" => "agentMessage.send",
+            "agent_observe.list" | "agent_message.list_agents" => "agentObserve.listAgents",
+            "agent_observe.get" => "agentObserve.getAgent",
+            "agent_observe.recent" => "agentObserve.recentMessages",
             "agent_observe.session_messages" => "rlm.session.messages",
+            "rlm_heartbeat.create" => "rlmHeartbeat.create",
+            "rlm_heartbeat.list" => "rlmHeartbeat.list",
+            "rlm_heartbeat.update" => "rlmHeartbeat.update",
+            "rlm_heartbeat.delete" => "rlmHeartbeat.delete",
+            "mcp.list_plugins" => "mcp.listPlugins",
+            "mcp.search_plugins" => "mcp.searchPlugins",
+            "mcp.list_connections" => "mcp.listConnections",
+            "mcp.search_tools" => "mcp.searchTools",
+            "mcp.describe_tool" => "mcp.describeTool",
+            "mcp.list_tools" => "mcp.listTools",
+            "mcp.call_tool" => "mcp.callTool",
             other => other,
         }
         .to_string(),
@@ -177,36 +194,45 @@ fn prompt_token_for_host_request(request: &str) -> Option<String> {
 }
 
 /// Kernel-side programmatic tools implemented by the vendored `prime-agent-runtime` package
-/// (generic MCP calls). Update together with the runtime sidecar.
+/// (generic MCP calls and built-in REPL helpers). Update together with the runtime sidecar.
 const KERNEL_LOCAL_TOKENS: &[&str] = &[
-    "mcp.list_tools",
-    "mcp.call_tool",
-    "mcp.search_tools",
-    "mcp.describe_tool",
+    "bash",
+    "sh",
+    "installPackage",
+    "mcp.listTools",
+    "mcp.callTool",
+    "mcp.searchTools",
+    "mcp.describeTool",
+    "mcp.listPlugins",
+    "mcp.searchPlugins",
+    "mcp.listConnections",
 ];
 
 /// The vendored runtime's harness-state API (`rlm.harness` CRUD and
-/// `rlm.get_harness_state`) plus its sanctioned terminal turn call
-/// (`rlm.end_turn`). Update together with the runtime sidecar.
+/// `rlm.getHarnessState`) plus its sanctioned terminal turn call
+/// (`rlm.endTurn`). Update together with the runtime sidecar.
 const HARNESS_TOKENS: &[&str] = &[
-    "rlm.end_turn",
-    "rlm.harness.create_memory",
-    "rlm.harness.update_memory",
-    "rlm.harness.delete_memory",
-    "rlm.harness.create_prompt_note",
-    "rlm.harness.update_prompt_note",
-    "rlm.harness.delete_prompt_note",
-    "rlm.harness.create_skill",
-    "rlm.harness.update_skill",
-    "rlm.harness.delete_skill",
-    "rlm.harness.create_subagent",
-    "rlm.harness.update_subagent",
-    "rlm.harness.delete_subagent",
-    "rlm.harness.record_refinement",
-    "rlm.harness.plan_refinement",
+    "rlm.endTurn",
+    "rlm.harness.createMemory",
+    "rlm.harness.updateMemory",
+    "rlm.harness.deleteMemory",
+    "rlm.harness.createPromptNote",
+    "rlm.harness.updatePromptNote",
+    "rlm.harness.deletePromptNote",
+    "rlm.harness.createSkill",
+    "rlm.harness.updateSkill",
+    "rlm.harness.deleteSkill",
+    "rlm.harness.createSubagent",
+    "rlm.harness.updateSubagent",
+    "rlm.harness.deleteSubagent",
+    "rlm.harness.createFactory",
+    "rlm.harness.updateFactory",
+    "rlm.harness.deleteFactory",
+    "rlm.harness.recordRefinement",
+    "rlm.harness.planRefinement",
     "rlm.harness.overview",
     "rlm.harness.search",
-    "rlm.get_harness_state",
+    "rlm.getHarnessState",
 ];
 
 /// A host-request type literal: lowercase dotted name (`rlm.collect`).
@@ -299,60 +325,30 @@ fn all_string_literals(text: &str) -> Vec<String> {
     literals
 }
 
-/// Kernel-bound REPL names from the real bootstrap code (`rlm`, `bash`,
-/// `mcp`), derived from `build_rlm_bootstrap_code`.
+/// Kernel-bound REPL globals installed by `prime-agent-runtime` and checked
+/// alongside `build_rlm_bootstrap_code`.
 fn kernel_bound_names() -> BTreeSet<String> {
-    let code = pa_core::kernel::bootstrap::build_rlm_bootstrap_code(&[], false);
-    let mut names = BTreeSet::new();
-    for line in code.lines() {
-        let line = line.trim_start();
-        if line.starts_with("rlm = ") {
-            names.insert("rlm".to_string());
-        }
-        if line.starts_with("bash = ") {
-            names.insert("bash".to_string());
-        }
-        if let Some(rest) = line.strip_prefix("import rlm.mcp as ") {
-            names.insert(rest.trim().to_string());
-        }
-    }
-    names
-}
-
-/// One bundled Python skill's public module-level functions (column-zero
-/// `def`/`async def` only, so nested helpers stay out).
-fn python_skill_functions(package_path: &Path) -> Vec<String> {
-    let mut functions = Vec::new();
-    let mut stack = vec![package_path.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("py") {
-                continue;
-            }
-            let Ok(source) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            for line in source.lines() {
-                let after = line
-                    .strip_prefix("async def ")
-                    .or_else(|| line.strip_prefix("def "));
-                if let Some(signature) = after {
-                    if let Some(name) = signature.split(['(', ':']).next() {
-                        functions.push(name.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-    functions
+    let probe_skill = pa_core::kernel::bootstrap::PreparedJavaScriptSkill {
+        name: "edit".to_string(),
+        global_name: "edit".to_string(),
+        entry_path: std::path::PathBuf::from("/skills/edit/src/index.ts"),
+        package_path: std::path::PathBuf::from("/skills/edit"),
+        package_json_path: std::path::PathBuf::from("/skills/edit/package.json"),
+        unavailable_reason: None,
+    };
+    let code = pa_core::kernel::bootstrap::build_rlm_bootstrap_code(&[probe_skill], true);
+    assert!(
+        code.contains("__primeLoadSkills"),
+        "bootstrap code must invoke __primeLoadSkills"
+    );
+    assert!(
+        code.contains("__primeSetCompletionNoticesWired"),
+        "bootstrap code must wire completion notices"
+    );
+    ["rlm", "bash", "sh", "mcp", "installPackage"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 /// Bundled skills that are auth-gated builtin MCP integrations: they are disabled in sessions whose
@@ -374,35 +370,26 @@ fn settings_gated_bundled_skills() -> BTreeSet<String> {
     ["websearch".to_string()].into_iter().collect()
 }
 
-/// (import name, public functions) for every bundled Python skill that is
-/// always available (auth-gated integrations and the conditionally-available
-/// websearch skill excluded).
-fn bundled_python_skills() -> Vec<(String, Vec<String>)> {
+/// Global names for every bundled JavaScript skill that is always available
+/// (auth-gated integrations and the conditionally-available websearch skill excluded).
+fn bundled_javascript_skills() -> Vec<String> {
     let gated = auth_gated_bundled_skills();
     let settings_gated = settings_gated_bundled_skills();
     sorted_bundled_skills()
         .into_iter()
         .filter(|skill| {
             skill
-                .python
+                .javascript
                 .as_ref()
-                .is_none_or(|python| !gated.contains(&python.import_name))
+                .is_none_or(|js| !gated.contains(&js.global_name))
         })
         .filter(|skill| !settings_gated.contains(&skill.name))
-        .filter_map(|skill| {
-            let python = skill.python?;
-            let mut functions = python_skill_functions(&python.package_path)
-                .into_iter()
-                .filter(|name| !name.starts_with('_'))
-                .collect::<Vec<_>>();
-            functions.sort();
-            Some((python.import_name, functions))
-        })
+        .filter_map(|skill| skill.javascript.map(|js| js.global_name))
         .collect()
 }
 
 /// The surface tokens the prompt is allowed to document: kernel-bound names, registered host
-/// requests, bundled Python skills, and the runtime-package (harness + generic MCP) API.
+/// requests, bundled JavaScript skills, and the runtime-package (harness + generic MCP) API.
 fn allowed_surface_tokens() -> BTreeSet<String> {
     let mut allowed = BTreeSet::new();
     allowed.extend(kernel_bound_names());
@@ -411,11 +398,8 @@ fn allowed_surface_tokens() -> BTreeSet<String> {
             allowed.insert(token);
         }
     }
-    for (import, functions) in bundled_python_skills() {
-        allowed.insert(import.clone());
-        for function in functions {
-            allowed.insert(format!("{import}.{function}"));
-        }
+    for global in bundled_javascript_skills() {
+        allowed.insert(global);
     }
     for token in KERNEL_LOCAL_TOKENS.iter().chain(HARNESS_TOKENS) {
         allowed.insert(token.to_string());
@@ -423,8 +407,7 @@ fn allowed_surface_tokens() -> BTreeSet<String> {
     allowed
 }
 
-/// The surface tokens the prompt MUST document. Stricter than the allowed set: skill entry points
-/// (`run`/`status`) are callable through the module itself, so the module bullet suffices for them.
+/// The surface tokens the prompt MUST document.
 fn required_surface_tokens() -> BTreeSet<String> {
     let mut required = BTreeSet::new();
     for request in registered_host_requests() {
@@ -432,14 +415,8 @@ fn required_surface_tokens() -> BTreeSet<String> {
             required.insert(token);
         }
     }
-    for (import, functions) in bundled_python_skills() {
-        required.insert(import.clone());
-        for function in functions {
-            if function == "run" || function == "status" {
-                continue;
-            }
-            required.insert(format!("{import}.{function}"));
-        }
+    for global in bundled_javascript_skills() {
+        required.insert(global);
     }
     for token in KERNEL_LOCAL_TOKENS.iter().chain(HARNESS_TOKENS) {
         required.insert(token.to_string());
@@ -448,7 +425,7 @@ fn required_surface_tokens() -> BTreeSet<String> {
 }
 
 /// Surface tokens documented in the core layer: bullet entries whose first
-/// backtick token is a lowercase module path.
+/// backtick token is a lowercase-starting camelCase or dotted identifier.
 fn documented_surface_tokens() -> BTreeSet<String> {
     let mut documented = BTreeSet::new();
     for line in CORE_LAYER.lines() {
@@ -465,7 +442,7 @@ fn documented_surface_tokens() -> BTreeSet<String> {
             .is_some_and(|ch| ch.is_ascii_lowercase())
             && token
                 .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '.')
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
             && !token.is_empty();
         if valid {
             documented.insert(token.to_string());
@@ -558,12 +535,12 @@ fn every_shipped_skill_is_discoverable() {
         .find(|skill| skill.name == "mcp")
         .expect("the generic mcp skill is packaged");
     assert!(
-        mcp_skill.python.is_none(),
-        "the mcp skill is documentation for the pre-imported runtime module, not a Python package"
+        mcp_skill.javascript.is_none(),
+        "the mcp skill is documentation for the pre-loaded runtime module, not a JavaScript package"
     );
 }
 
-/// The bounded-await contract renders wherever the Python REPL does: every session kind, daemon
+/// The bounded-await contract renders wherever the JavaScript REPL does: every session kind, daemon
 /// or daemonless, registers the bash completion notice the degrade relies on.
 #[test]
 fn bounded_await_contract_renders_in_daemon_and_daemonless_sessions() {
@@ -571,30 +548,29 @@ fn bounded_await_contract_renders_in_daemon_and_daemonless_sessions() {
         cwd: "/w".to_string(),
         messages_path: Some("/log.jsonl".to_string()),
         skills: sorted_bundled_skills(),
-        selected_tools: Some(vec!["python_repl"]),
+        selected_tools: Some(vec!["javascript"]),
         ..Default::default()
     };
     for daemonless in [false, true] {
         options.daemonless = daemonless;
         let prompt = system_prompt_breakdown(&options).assembled;
         assert!(
-            prompt.contains("`r.running` is True")
-                && prompt.contains("`r.exit_code` is None"),
+            prompt.contains("`r.running` is `true`")
+                && prompt.contains("`r.exitCode` is `null`"),
             "daemonless={daemonless}: the prompt must carry the bounded-await result contract: {prompt}"
         );
     }
 }
 
 /// The generic mcp skill loads through the normal markdown discovery and renders in the
-/// `<available_skills>` inventory exactly like any other markdown skill: the `[skill name
-/// location]`-style XML the TS `formatSkillsForPrompt` emits, without a `python_import` line.
+/// `<available_skills>` inventory exactly like any other markdown skill: without a `javascript_global` line.
 #[test]
 fn generic_mcp_skill_renders_in_the_prompt_inventory() {
     let mut options = BuildSystemPromptOptions {
         cwd: "/w".to_string(),
         messages_path: Some("/log.jsonl".to_string()),
         skills: sorted_bundled_skills(),
-        selected_tools: Some(vec!["python_repl"]),
+        selected_tools: Some(vec!["javascript"]),
         ..Default::default()
     };
     let breakdown = system_prompt_breakdown(&options);
@@ -617,14 +593,12 @@ fn generic_mcp_skill_renders_in_the_prompt_inventory() {
         .map_or(inventory.len(), |end| mcp_block_start + end);
     let mcp_block = &inventory[mcp_block_start..mcp_block_end];
     assert!(
-        !mcp_block.contains("python_import"),
-        "a markdown skill never carries a python_import line"
+        !mcp_block.contains("javascript_global"),
+        "a markdown skill never carries a javascript_global line"
     );
     options.generic_mcp_servers = vec!["notion".into()];
     let second = system_prompt_breakdown(&options);
-    assert!(second
-        .assembled
-        .contains("await mcp.list_tools(\"notion\")"));
+    assert!(second.assembled.contains("await mcp.listTools(\"notion\")"));
 }
 
 // Async turn discipline

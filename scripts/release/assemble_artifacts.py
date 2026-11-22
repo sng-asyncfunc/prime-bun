@@ -101,17 +101,10 @@ def binary_name_for_target(target: str) -> str:
 
 # Shipped-content policy: what the installed tree carries beyond the binary.
 #
-# The runtime sidecar ships only what the kernel consumes. The venv
-# bootstrap installs it with `uv pip install <payload>/prime-agent-runtime`
-# (uv's pip interface builds the hatchling wheel, whose target packages
-# only `src/rlm`), and the venv cache identity hashes `src/rlm/*.py` + the
-# packaged machine library under `src/rlm/machines` + `pyproject.toml` — so
-# the pytest suite (`test/`) and the development
-# `uv.lock` (the pip interface never reads the project lockfile) are dead
-# weight in every installed tree, and dropping them changes neither the
-# built wheel nor the bootstrap-version identity. The cache names and
-# suffixes mirror package_release.py's EXCLUDED_* so a stale `.venv` or
-# `__pycache__` cannot ride the payload either.
+# The runtime sidecar ships only what the Bun kernel consumes (`package.json`,
+# `src/*.ts`, `src/machines/**`, and lockfiles if present). The test suite
+# (`test/`) and local caches (`node_modules`, `.git`, etc.) are excluded so a
+# stale install cannot ride the release payload.
 RUNTIME_EXCLUDED_NAMES = frozenset({
     "test",
     "uv.lock",
@@ -346,10 +339,10 @@ def stage_tree(staging: Path, args: argparse.Namespace, stamped_version: str | N
         "LICENSE": args.repo_root / "LICENSE",
         "README.md": args.repo_root / "README.md",
     }
-    if not runtime_dir.joinpath("pyproject.toml").is_file():
+    if not runtime_dir.joinpath("package.json").is_file() or not runtime_dir.joinpath("src/repl.ts").is_file():
         fail(
             "kernel runtime sidecar not found at "
-            f"{runtime_dir} (expected prime-agent-runtime with pyproject.toml); "
+            f"{runtime_dir} (expected prime-agent-runtime with package.json and src/repl.ts); "
             "pass --runtime-dir or merge the kernel-packaging lane"
         )
     for name, source in sources.items():

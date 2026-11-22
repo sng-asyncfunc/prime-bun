@@ -1,13 +1,13 @@
 ---
 name: factory
-description: "Run state-machine workflows of spawned child agents: store a validated machine or dag spec as a continual-harness factory entry (rlm.harness.create_factory), then run, watch, stop, and resume it through rlm.factory. For the full authoring reference and API guide, call rlm.factory.help() in the kernel."
+description: "Run state-machine workflows of spawned child agents: store a validated machine or dag spec as a continual-harness factory entry (rlm.harness.createFactory), then run, watch, stop, and resume it through rlm.factory. For the full authoring reference and API guide, call rlm.factory.help() in the kernel."
 ---
 
 # Factory
 
 The factory runs state-machine workflows of spawned child agents. A stored
 factory entry — harness kind `factory`, written with
-`rlm.harness.create_factory` — declares the machine: states, each backed by
+`rlm.harness.createFactory` — declares the machine: states, each backed by
 a subagent spec, plus guarded transitions between them. The spec validates
 at write time (machine form, or `dag` sugar that compiles to one; pass
 exactly one), and an invalid spec is never stored.
@@ -21,9 +21,8 @@ verdict approves), joins, or one child per list item.
 **For the full authoring reference and API guide — states, ports, guards,
 joins, foreach, residents, budgets and policies, and the `rlm.factory`
 run/status/stop/resume/graph/watch calls with worked examples — call
-`rlm.factory.help()` in the kernel.** The guide lands with the factory-core
-PR; on builds without it, the module docstring in
-`prime-agent-runtime/src/rlm/factory.py` is the source of truth.
+`rlm.factory.help()` in the kernel.** On builds without an inline guide,
+`prime-agent-runtime/src/factory.ts` is the source of truth.
 
 ## The opt-in gate
 
@@ -36,7 +35,7 @@ disables it again — refused while the session still has live runs, and
 on a lane-advertising client while the live-run count cannot be read, so
 an active factory never loses its stop path, `/factory status` reports
 it), which persists the
-`factory.enabled` setting in the agent dir's settings.json — the same
+`factory.enabled` setting in the agent dir's `settings.json` — the same
 setting the daemon's `factory_activity` lane advertisement reads, so the
 TUI's factory dock group and page surface only on a client started while
 the factory is enabled. If a call refuses with that message, tell the
@@ -45,11 +44,12 @@ user to run `/factory on` and restart the client.
 ## Discovering machines
 
 - The machine library: machines are `MACHINE.md` files, one directory
-  per machine — the bundled seeds ship inside the runtime package (wheel
-  package data, `rlm/machines/<name>/MACHINE.md`; `PRIME_AGENT_MACHINES_DIR`
-  redirects that level at a team directory), and the personal library
-  lives under the agent dir. `prime-agent factory list | import | export`
-  manages them. The seeds are `builder`, `pr-manager`, and `review-sweep`.
+  per machine — the bundled seeds ship inside the runtime package
+  (`prime-agent-runtime/src/machines/<name>/MACHINE.md`;
+  `PRIME_AGENT_MACHINES_DIR` redirects that level at a team directory),
+  and the personal library lives under the agent dir.
+  `prime-agent factory list | import | export` manages them. The seeds
+  are `builder`, `pr-manager`, and `review-sweep`.
 - The TUI factory page: the activity dock's `⚙ N factory` group (Enter or
   click) opens one live diagram per run, newest run first. The up/down
   arrows walk the run headers and the states that spawned a child;

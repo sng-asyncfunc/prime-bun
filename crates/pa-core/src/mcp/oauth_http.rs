@@ -175,7 +175,7 @@ mod tests {
             body: None,
         };
         let error = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_mins(1),
             ReqwestOAuthHttp::new().request(request),
         )
         .await

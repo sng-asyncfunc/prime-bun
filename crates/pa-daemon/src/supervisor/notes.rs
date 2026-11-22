@@ -4,7 +4,7 @@ use super::{paths, util, Arc, Result, Supervisor, Value};
 
 /// How long the frequent supervision events accumulate before their one
 /// `daemon event` summary.
-const DAEMON_EVENT_SUMMARY_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+const DAEMON_EVENT_SUMMARY_WINDOW: std::time::Duration = std::time::Duration::from_hours(1);
 
 /// The supervision counters of the current summary window.
 pub(crate) struct DaemonEventCounts {

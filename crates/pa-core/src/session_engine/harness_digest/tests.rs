@@ -11,7 +11,7 @@ fn empty_state_digest_renders_placeholder() {
     let context = HarnessDigestContext {
         global_dir: tmp.path().join("harness"),
         local_dir: None,
-        include_ipython: true,
+        include_javascript: true,
         include_shell_examples: false,
         include_refine: true,
     };
@@ -329,7 +329,7 @@ async fn placement_rig(
         Some(HarnessDigestContext {
             global_dir,
             local_dir: Some(local_dir),
-            include_ipython: false,
+            include_javascript: false,
             include_shell_examples: false,
             include_refine: false,
         }),

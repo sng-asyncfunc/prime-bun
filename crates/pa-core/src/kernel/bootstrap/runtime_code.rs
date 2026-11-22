@@ -1,24 +1,29 @@
-//! The runtime bootstrap code injected into each kernel right after start or
-//! restore: binds the `rlm`, `bash`, and MCP surfaces and pre-imports every
-//! Python skill.
+//! The runtime bootstrap code injected into each Bun kernel right after start
+//! or restore: configures completion-notice wiring and loads every prepared
+//! JavaScript skill into `globalThis`.
 
-use super::KernelPythonSkill;
+use serde::Serialize;
 
-/// Line the runtime bootstrap prints when one or more pre-imported Python skills failed to import.
-/// The host scans the bootstrap cell's stdout for this marker.
-pub const PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER: &str =
-    "__PRIME_AGENT_PYTHON_SKILL_IMPORT_ERRORS__";
+use super::PreparedJavaScriptSkill;
 
-/// Failed skill imports reported by a bootstrap cell: `(import name, import error)` pairs in import
-/// order (TS `UnavailablePythonSkills = Record<string, string>`).
-pub type UnavailablePythonSkills = Vec<(String, String)>;
+/// Line the runtime bootstrap prints when one or more pre-loaded JavaScript
+/// skills failed to load. The host scans the bootstrap cell's stdout for this
+/// marker.
+pub const JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER: &str =
+    "__PRIME_AGENT_JAVASCRIPT_SKILL_IMPORT_ERRORS__";
 
-/// Extract the unavailable-skill report a bootstrap cell printed, or `None` when it printed none:
-/// the marker must be followed by a JSON object with at least one non-empty string value.
+/// Failed skill loads reported by a bootstrap cell: `(global name, load error)`
+/// pairs in load order.
+pub type UnavailableJavaScriptSkills = Vec<(String, String)>;
+
+/// Extract the unavailable-skill report a bootstrap cell printed, or `None`
+/// when it printed none: the marker must be followed by a JSON object with at
+/// least one non-empty string value.
 #[must_use]
-pub fn parse_unavailable_python_skills(stdout: &str) -> Option<UnavailablePythonSkills> {
-    let at = stdout.find(PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER)?;
-    let raw = stdout[at + PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER.len()..].trim();
+pub fn parse_unavailable_javascript_skills(stdout: &str) -> Option<UnavailableJavaScriptSkills> {
+    let at = stdout.find(JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER)?;
+    let rest = &stdout[at + JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER.len()..];
+    let raw = rest.trim_start().lines().next()?.trim();
     let parsed = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw).ok()?;
     let errors = parsed
         .into_iter()
@@ -26,171 +31,63 @@ pub fn parse_unavailable_python_skills(stdout: &str) -> Option<UnavailablePython
             let error = error.as_str()?;
             (!error.is_empty()).then(|| (name, error.to_string()))
         })
-        .collect::<UnavailablePythonSkills>();
+        .collect::<UnavailableJavaScriptSkills>();
     (!errors.is_empty()).then_some(errors)
 }
 
-const RLM_BOOTSTRAP_HEADER_CODE: &str =
-    "import asyncio\nimport os as _prime_agent_os\n\n_prime_agent_os.environ[\"NO_COLOR\"] = \"1\"";
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BootstrapSkillPayload<'a> {
+    name: &'a str,
+    global_name: &'a str,
+    entry_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unavailable_reason: Option<&'a str>,
+}
 
-const RLM_BOOTSTRAP_RUNTIME_HEAD_CODE: &str = "
-try:
-    import rlm as _prime_agent_rlm_module
-    rlm = _prime_agent_rlm_module.rlm
-    bash = _prime_agent_rlm_module.bash
-    import rlm.mcp as mcp
-";
-
-/// One line inside the bootstrap's try block, emitted only when the host
-/// registered the [`crate::kernel::shared::BASH_COMPLETED_REQUEST_TYPE`]
-/// handler: turns the runtime's bounded `await bash()` on. Without
-/// the notice nothing wakes a cell that ended its turn on a degraded command,
-/// so daemonless sessions keep the unbounded await.
-const RLM_BOOTSTRAP_BASH_NOTICES_LINE_CODE: &str =
-    "    _prime_agent_rlm_module._set_completion_notices_wired(True)\n";
-
-const RLM_BOOTSTRAP_RUNTIME_TAIL_CODE: &str = r#"
-except Exception as _prime_agent_rlm_error:
-    _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
-
-    class _PrimeAgentMissingRlm:
-        def _raise_missing(self):
-            raise RuntimeError(
-                "prime-agent-runtime is not installed in this kernel. "
-                "Remove ~/.prime/agent/kernel-venv so prime-agent can rebuild it, or set "
-                "PRIME_AGENT_KERNEL_PYTHON to a kernel environment with prime-agent-runtime installed. "
-                f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
-            )
-
-        async def spawn(self, prompt, **kwargs):
-            self._raise_missing()
-
-        async def find_models(self, query="", limit=8):
-            self._raise_missing()
-
-        async def create_session(self, prompt, **kwargs):
-            self._raise_missing()
-
-        async def list_subagents(self):
-            self._raise_missing()
-
-        async def delete_subagent(self, target):
-            self._raise_missing()
-
-    rlm = _PrimeAgentMissingRlm()
-
-    def bash(command, persistent=False):
-        rlm._raise_missing()
-"#;
-
-/// The code the session injects right after kernel start/restore: binds the `rlm`, `bash`, and MCP
-/// surfaces, imports every Python skill. `bash_notices_wired` emits the bounded-await toggle only
-/// when the host registers the bash completion notice.
+/// The JavaScript bootstrap cell the session injects right after kernel
+/// start/restore: disables color output in subprocesses, wires bounded `bash()`
+/// completion notices when the host registered `bash.completed`, and loads all
+/// prepared JavaScript skills via `globalThis.__primeLoadSkills`.
 #[must_use]
 pub fn build_rlm_bootstrap_code(
-    python_skills: &[KernelPythonSkill],
+    skills: &[PreparedJavaScriptSkill],
     bash_notices_wired: bool,
 ) -> String {
-    let mut runtime_code = String::from(RLM_BOOTSTRAP_RUNTIME_HEAD_CODE);
+    let mut lines = vec![String::from("process.env.NO_COLOR = \"1\";")];
     if bash_notices_wired {
-        runtime_code.push_str(RLM_BOOTSTRAP_BASH_NOTICES_LINE_CODE);
+        lines.push(String::from(
+            "if (typeof globalThis.__primeSetCompletionNoticesWired === \"function\") { globalThis.__primeSetCompletionNoticesWired(true); }",
+        ));
     }
-    runtime_code.push_str(RLM_BOOTSTRAP_RUNTIME_TAIL_CODE);
-    let base_code = format!("{RLM_BOOTSTRAP_HEADER_CODE}\n\n{runtime_code}");
-    // TS: `[...new Set(pythonSkills.map(...))]` — first-seen order, so the pre-import loop follows
-    // the session's skill discovery order.
-    let mut import_names: Vec<&str> = Vec::new();
-    for skill in python_skills {
-        let import_name = skill.import_name.as_str();
-        if !import_names.contains(&import_name) {
-            import_names.push(import_name);
+
+    // Deduplicate by global_name in first-seen discovery order.
+    let mut seen: Vec<&str> = Vec::new();
+    let mut payload: Vec<BootstrapSkillPayload<'_>> = Vec::new();
+    for skill in skills {
+        let global = skill.global_name.as_str();
+        if !seen.contains(&global) {
+            seen.push(global);
+            payload.push(BootstrapSkillPayload {
+                name: &skill.name,
+                global_name: global,
+                entry_path: skill.entry_path.to_string_lossy().into_owned(),
+                unavailable_reason: skill.unavailable_reason.as_deref(),
+            });
         }
     }
-    if import_names.is_empty() {
-        return base_code;
+
+    if !payload.is_empty() {
+        let skills_json = serde_json::to_string(&payload).unwrap_or_else(|_| "[]".to_string());
+        lines.push(format!(
+            "const __primeSkillErrors = await globalThis.__primeLoadSkills({skills_json});"
+        ));
+        lines.push(format!(
+            "if (__primeSkillErrors && typeof __primeSkillErrors === \"object\" && Object.keys(__primeSkillErrors).length > 0) {{ console.log(\"{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}\" + JSON.stringify(__primeSkillErrors)); }}"
+        ));
     }
-    let imports_json = serde_json::to_string(&import_names).unwrap_or_else(|_| "[]".to_string());
-    format!(
-        r#"
-{base_code}
 
-import importlib as _prime_agent_importlib
-import inspect as _prime_agent_inspect
-import sys as _prime_agent_sys
-import types as _prime_agent_types
-
-class _PrimeAgentCallableSkillModule(_prime_agent_types.ModuleType):
-    async def __call__(self, *args, **kwargs):
-        result = self.run(*args, **kwargs)
-        if _prime_agent_inspect.isawaitable(result):
-            return await result
-        return result
-
-class _PrimeAgentUnavailableSkill:
-    def __init__(self, name, error):
-        self.__name__ = name
-        self._prime_agent_import_error = error
-        self.__doc__ = f"Python skill {{name}} is unavailable: {{error}}"
-
-    async def run(self, *args, **kwargs):
-        raise RuntimeError(
-            f"Python skill {{self.__name__}} is unavailable in this kernel. "
-            f"Import error: {{self._prime_agent_import_error}}"
-        )
-
-    async def __call__(self, *args, **kwargs):
-        return await self.run()
-
-    def __repr__(self):
-        return f"<unavailable Python skill {{self.__name__!r}}: {{self._prime_agent_import_error}}>"
-
-def _prime_agent_wrap_skill_module(module):
-    run = getattr(module, "run", None)
-    if not callable(run):
-        return module
-    if isinstance(module, _PrimeAgentCallableSkillModule):
-        return module
-    wrapped = _PrimeAgentCallableSkillModule(module.__name__)
-    wrapped.__dict__.update(module.__dict__)
-    try:
-        wrapped.__signature__ = _prime_agent_inspect.signature(run)
-    except Exception:
-        pass
-    doc = getattr(run, "__doc__", None)
-    if doc:
-        wrapped.__doc__ = doc
-    _prime_agent_sys.modules[module.__name__] = wrapped
-    return wrapped
-
-_PRIME_AGENT_SKILL_IMPORT_ERRORS = {{}}
-
-for _prime_agent_skill_name in {imports_json}:
-    try:
-        globals()[_prime_agent_skill_name] = _prime_agent_wrap_skill_module(
-            _prime_agent_importlib.import_module(_prime_agent_skill_name)
-        )
-    except Exception as _prime_agent_skill_error:
-        # An empty exception message would otherwise be dropped by the
-        # host-side parser; fall back to the exception type name.
-        _prime_agent_skill_error_text = (
-            str(_prime_agent_skill_error) or type(_prime_agent_skill_error).__name__
-        )
-        _PRIME_AGENT_SKILL_IMPORT_ERRORS[_prime_agent_skill_name] = _prime_agent_skill_error_text
-        globals()[_prime_agent_skill_name] = _PrimeAgentUnavailableSkill(
-            _prime_agent_skill_name,
-            _prime_agent_skill_error_text,
-        )
-
-if _PRIME_AGENT_SKILL_IMPORT_ERRORS:
-    import json as _prime_agent_json
-    print(
-        "{PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER}"
-        + _prime_agent_json.dumps(_PRIME_AGENT_SKILL_IMPORT_ERRORS)
-    )
-"#
-    )
-    .trim()
-    .to_string()
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -199,10 +96,10 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn bootstrap_code_without_skills_binds_rlm() {
+    fn bootstrap_code_without_skills_sets_no_color() {
         let code = build_rlm_bootstrap_code(&[], false);
-        assert!(code.contains("import rlm as _prime_agent_rlm_module"));
-        assert!(!code.contains("_PrimeAgentUnavailableSkill"));
+        assert!(code.contains("process.env.NO_COLOR = \"1\";"));
+        assert!(!code.contains("__primeLoadSkills"));
     }
 
     #[test]
@@ -210,50 +107,68 @@ mod tests {
         let daemonless = build_rlm_bootstrap_code(&[], false);
         let noticed = build_rlm_bootstrap_code(&[], true);
         assert!(
-            noticed.contains("_set_completion_notices_wired(True)"),
+            noticed.contains("__primeSetCompletionNoticesWired(true)"),
             "the wired bootstrap must enable the bounded bash default: {noticed}"
         );
         assert!(
-            !daemonless.contains("_set_completion_notices_wired"),
+            !daemonless.contains("__primeSetCompletionNoticesWired"),
             "the daemonless bootstrap must not emit the toggle: {daemonless}"
         );
     }
 
     #[test]
-    fn bootstrap_code_imports_skills() {
-        let skills = vec![KernelPythonSkill {
+    fn bootstrap_code_loads_skills() {
+        let skills = vec![PreparedJavaScriptSkill {
             name: "edit".into(),
-            import_name: "edit".into(),
+            global_name: "edit".into(),
+            entry_path: PathBuf::from("/pkg/edit/src/index.ts"),
             package_path: PathBuf::from("/pkg/edit"),
-            pyproject_path: PathBuf::from("/pkg/edit/pyproject.toml"),
+            package_json_path: PathBuf::from("/pkg/edit/package.json"),
+            unavailable_reason: None,
         }];
         let code = build_rlm_bootstrap_code(&skills, false);
-        assert!(code.contains(r#"for _prime_agent_skill_name in ["edit"]"#));
-        assert!(code.contains("_PrimeAgentUnavailableSkill"));
+        assert!(code.contains("__primeLoadSkills("));
+        assert!(code.contains(r#""globalName":"edit""#));
+        assert!(code.contains(JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER));
     }
 
-    /// The TS #2381 parser table: marker+JSON, noise-prefixed marker, no marker, non-JSON payload
-    /// all land where the host-side report decides notice vs silence.
     #[test]
-    fn parse_unavailable_python_skills_table() {
-        let cases: Vec<(String, Option<UnavailablePythonSkills>)> = vec![
+    fn parse_unavailable_javascript_skills_table() {
+        let cases: Vec<(String, Option<UnavailableJavaScriptSkills>)> = vec![
             (
                 format!(
-                    "{PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"websearch\":\"No module named 'websearch'\"}}\n"
+                    "{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"websearch\":\"Cannot find module 'websearch'\"}}\n"
                 ),
-                Some(vec![("websearch".into(), "No module named 'websearch'".into())]),
+                Some(vec![(
+                    "websearch".into(),
+                    "Cannot find module 'websearch'".into(),
+                )]),
             ),
             (
-                format!("noise\n{PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"edit\":\"boom\"}}"),
+                format!(
+                    "noise\n{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"edit\":\"boom\"}}"
+                ),
+                Some(vec![("edit".into(), "boom".into())]),
+            ),
+            (
+                format!(
+                    "{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"edit\":\"boom\"}}\n{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"edit\":\"boom\"}}\n"
+                ),
                 Some(vec![("edit".into(), "boom".into())]),
             ),
             ("some unrelated kernel output".to_string(), None),
-            (format!("{PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER}not json"), None),
-            (format!("{PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER}{{}}"), None),
+            (
+                format!("{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}not json"),
+                None,
+            ),
+            (
+                format!("{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}{{}}"),
+                None,
+            ),
         ];
         for (stdout, expected) in cases {
             assert_eq!(
-                parse_unavailable_python_skills(&stdout),
+                parse_unavailable_javascript_skills(&stdout),
                 expected,
                 "{stdout}"
             );
@@ -261,21 +176,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_unavailable_python_skills_drops_non_string_and_empty_values() {
-        // Non-string values and empty messages drop (TS keeps only
-        // non-empty string entries); ordering follows the marker's JSON.
+    fn parse_unavailable_javascript_skills_drops_non_string_and_empty_values() {
         let stdout = format!(
-            "{PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"edit\":\"boom\",\"null_skill\":null,\"list_skill\":[1],\"empty_skill\":\"\",\"websearch\":\"No module named 'websearch'\"}}"
+            "{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"edit\":\"boom\",\"null_skill\":null,\"list_skill\":[1],\"empty_skill\":\"\",\"websearch\":\"Cannot find module 'websearch'\"}}"
         );
         assert_eq!(
-            parse_unavailable_python_skills(&stdout),
+            parse_unavailable_javascript_skills(&stdout),
             Some(vec![
                 ("edit".into(), "boom".into()),
-                ("websearch".into(), "No module named 'websearch'".into()),
+                ("websearch".into(), "Cannot find module 'websearch'".into()),
             ])
         );
-        // A report whose every value drops stays silent.
-        let stdout = format!("{PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"empty_skill\":\"\"}}");
-        assert_eq!(parse_unavailable_python_skills(&stdout), None);
+        let stdout =
+            format!("{JAVASCRIPT_SKILL_IMPORT_ERROR_REPORT_MARKER}{{\"empty_skill\":\"\"}}");
+        assert_eq!(parse_unavailable_javascript_skills(&stdout), None);
     }
 }

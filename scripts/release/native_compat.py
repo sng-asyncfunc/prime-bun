@@ -23,7 +23,7 @@ COMPAT_ASSETS = (
 )
 REQUIRED_NATIVE_FILES = (
     "prime-agent", "package.json", "install.sh",
-    "prime-agent-runtime/pyproject.toml", "prime-agent-runtime/src/rlm/repl.py",
+    "prime-agent-runtime/package.json", "prime-agent-runtime/src/repl.ts",
     *COMPAT_ASSETS,
 )
 

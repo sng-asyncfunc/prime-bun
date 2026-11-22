@@ -15,40 +15,59 @@ use pa_core::kernel::shared::{
 };
 use pa_core::kernel::state_snapshot::{manifest_path_in, snapshot_path_in};
 
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!(
+            "prime-agent-runtime/src/repl.ts not found; skipping live capture-freshness test"
+        );
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live capture-freshness test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live capture-freshness test");
     None
 }
 
-/// Options with a snapshot dir; `None` (skip) when no kernel interpreter is available.
+/// Options with a snapshot dir; `None` (skip) when no Bun kernel runtime is available.
 fn test_options(snapshot_dir: Option<&Path>) -> Option<KernelManagerOptions> {
-    let python = kernel_python()?;
+    let bun = kernel_bun()?;
     Some(KernelManagerOptions {
-        python: Some(python),
+        bun: Some(bun),
+        worker_entry: None,
+        kernel_dir: None,
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),
         session_id: Some("capture-freshness-test".to_string()),
         host_handlers: HostRequestHandlers::new(),
-        python_skills: Vec::new(),
+        javascript_skills: Vec::new(),
         snapshot: snapshot_dir.map(|dir| KernelSnapshotConfig {
             path: snapshot_path_in(dir),
             manifest_path: manifest_path_in(dir),
@@ -91,7 +110,7 @@ async fn fresh_capture_skips_until_a_settled_cell_changes_the_namespace() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&manager, "alpha = 1\nbeta = \"x\" * 1024").await;
+    let defined = execute(&manager, "let alpha = 1;\nconst beta = 'x'.repeat(1024);").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
 
     let first = manager.snapshot_state().await.expect("first capture");
@@ -169,7 +188,11 @@ async fn prune_capture_runs_while_over_cap_survivors_live_then_skips_back_to_bac
         .expect("kernel must start");
     // `big` exceeds the 16MiB per-variable cap: the non-pruning capture
     // skips it (a live over-cap survivor).
-    let defined = execute(&manager, "big = \"x\" * (16 * 1024 * 1024 + 1)\nsmall = 1").await;
+    let defined = execute(
+        &manager,
+        "const big = 'x'.repeat(16 * 1024 * 1024 + 1);\nconst small = 1;",
+    )
+    .await;
     assert_eq!(
         defined.status,
         ExecuteStatus::Ok,
@@ -247,7 +270,7 @@ async fn dispose_flush_skips_when_fresh_and_still_restores() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&manager, "value = \"before-exit\"").await;
+    let defined = execute(&manager, "let value = \"before-exit\";").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
 
     let committed = manager.snapshot_state().await.expect("capture");
@@ -286,7 +309,7 @@ async fn dispose_flush_skips_when_fresh_and_still_restores() {
         "value cell: {:?}",
         live.stderr
     );
-    assert_eq!(live.result.as_deref(), Some("'before-exit'"));
+    assert_eq!(live.result.as_deref(), Some("\"before-exit\""));
     reader.kill();
 }
 
@@ -303,7 +326,7 @@ async fn dispose_flush_dumps_after_a_settled_cell() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&manager, "value = \"committed\"").await;
+    let defined = execute(&manager, "let value = \"committed\";").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
     let committed = manager.snapshot_state().await.expect("capture");
     assert!(committed.saved.iter().any(|name| name == "value"));
@@ -340,7 +363,7 @@ async fn dispose_flush_dumps_after_a_settled_cell() {
         "value cell: {:?}",
         live.stderr
     );
-    assert_eq!(live.result.as_deref(), Some("'final'"));
+    assert_eq!(live.result.as_deref(), Some("\"final\""));
     reader.kill();
 }
 
@@ -357,7 +380,7 @@ async fn an_externally_replaced_manifest_defeats_the_fresh_skip() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&manager, "alpha = 1").await;
+    let defined = execute(&manager, "let alpha = 1;").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
     let committed = manager.snapshot_state().await.expect("capture");
     assert!(committed.saved.iter().any(|name| name == "alpha"));
@@ -386,7 +409,7 @@ async fn an_internal_state_request_does_not_defeat_the_fresh_skip() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&manager, "alpha = 1").await;
+    let defined = execute(&manager, "let alpha = 1;").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
     let committed = manager.snapshot_state().await.expect("capture");
     assert!(committed.saved.iter().any(|name| name == "alpha"));
@@ -424,7 +447,7 @@ async fn an_internal_execute_that_writes_a_user_variable_defeats_the_memo() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&manager, "alpha = 1").await;
+    let defined = execute(&manager, "let alpha = 1;").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
     let committed = manager.snapshot_state().await.expect("capture");
     assert!(committed.saved.iter().any(|name| name == "alpha"));
@@ -434,7 +457,7 @@ async fn an_internal_execute_that_writes_a_user_variable_defeats_the_memo() {
     // internal-execute shape): the settle must end the memo's description.
     let internal = manager
         .execute(
-            "late_from_internal = 42",
+            "var late_from_internal = 42;",
             ExecuteOptions {
                 internal: true,
                 ..ExecuteOptions::default()
@@ -501,7 +524,7 @@ async fn a_restore_settle_clears_the_memo() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&manager, "value = 'committed'").await;
+    let defined = execute(&manager, "let value = 'committed';").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
     let committed = manager.snapshot_state().await.expect("capture");
     assert!(committed.saved.iter().any(|name| name == "value"));
@@ -542,7 +565,7 @@ async fn an_externally_replaced_payload_defeats_the_fresh_skip() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let defined = execute(&manager, "alpha = 1").await;
+    let defined = execute(&manager, "let alpha = 1;").await;
     assert_eq!(defined.status, ExecuteStatus::Ok);
     let committed = manager.snapshot_state().await.expect("capture");
     assert!(committed.saved.iter().any(|name| name == "alpha"));
@@ -575,7 +598,7 @@ async fn concurrent_settles_keep_the_boundary_invariant() {
         .start(KernelStartOptions::default())
         .await
         .expect("kernel must start");
-    let seeded = execute(&manager, "v = 0").await;
+    let seeded = execute(&manager, "let v = 0;").await;
     assert_eq!(seeded.status, ExecuteStatus::Ok);
     let committed = manager.snapshot_state().await.expect("capture");
     assert!(committed.saved.iter().any(|name| name == "v"));

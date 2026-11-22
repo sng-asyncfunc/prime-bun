@@ -289,11 +289,11 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         action: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-    /// One live ipython result whose collapsed card renders as bash
-    /// (event `tui ipython bash rendered`): the executed `bash()` line share
-    /// of the cell and the command count — primitives only, never command
-    /// text.
-    fn ipython_bash_rendered(
+    /// One live `javascript` result whose collapsed card renders as bash
+    /// (event `tui javascript bash rendered`): the executed `bash()`/`sh()`
+    /// line share of the cell and the command count — primitives only, never
+    /// command text.
+    fn javascript_bash_rendered(
         &self,
         bash_lines: usize,
         cell_lines: usize,

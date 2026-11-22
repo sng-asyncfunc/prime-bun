@@ -1196,7 +1196,7 @@ mod tests {
             let ready = coalescer.push_round(round, start + Duration::from_millis(offset));
             assert!(forward_rounds(ready, false, &mut sink));
         }
-        let idle = start + Duration::from_secs(60);
+        let idle = start + Duration::from_mins(1);
         assert!(forward_rounds(
             coalescer.flush_expired(idle),
             false,

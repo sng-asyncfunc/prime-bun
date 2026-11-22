@@ -132,7 +132,7 @@ async fn faux_engine_with_telemetry(
         daemonless: true,
         model_info: Some(model.clone()),
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,

@@ -25,8 +25,8 @@ Optional overrides (environment variables):
 
 ## Usage
 
-Call the prepared `websearch` import directly in the Python kernel:
+Call the prepared `websearch` global directly in the Bun REPL:
 
-```python
-print(await websearch("latest Prime Agent release"))
+```javascript
+console.log(await websearch("latest Prime Agent release"));
 ```

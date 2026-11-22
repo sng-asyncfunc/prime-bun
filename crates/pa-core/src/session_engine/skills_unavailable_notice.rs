@@ -1,13 +1,13 @@
-//! The Python-skills-unavailable notice (`python_skills_unavailable`): a broken pre-imported
-//! skill stays behind a placeholder that only raises on first call, so the bootstrap reports
-//! failed imports through the marker line and the provisioner's `on_unavailable_skills` seam
-//! hands them here — the model is told BEFORE it spends turns reading the skill's SKILL.md.
+//! The JavaScript-skills-unavailable notice (`javascript_skills_unavailable`): a broken
+//! pre-loaded skill stays behind a placeholder that throws on first call, so the bootstrap
+//! reports failed loads through the marker line and the provisioner's `on_unavailable_skills`
+//! seam hands them here — the model is told BEFORE it spends turns reading the skill's SKILL.md.
 
 use pa_types::session::CustomMessage;
 
-use crate::kernel::bootstrap::UnavailablePythonSkills;
+use crate::kernel::bootstrap::UnavailableJavaScriptSkills;
 
-pub const PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE: &str = "python_skills_unavailable";
+pub const JAVASCRIPT_SKILLS_UNAVAILABLE_CUSTOM_TYPE: &str = "javascript_skills_unavailable";
 
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
@@ -15,30 +15,30 @@ fn now_millis() -> u64 {
         .map_or(0, |duration| duration.as_millis() as u64)
 }
 
-/// The notice text: the `[python-skills-unavailable]` header, the
-/// per-skill import errors, and the fix hint.
+/// The notice text: the `[javascript-skills-unavailable]` header, the
+/// per-skill load errors, and the fix hint.
 #[must_use]
-pub fn notice_content(errors: &UnavailablePythonSkills) -> String {
-    let mut lines = vec!["[python-skills-unavailable]".to_string(), String::new()];
+pub fn notice_content(errors: &UnavailableJavaScriptSkills) -> String {
+    let mut lines = vec!["[javascript-skills-unavailable]".to_string(), String::new()];
     lines.push(
-        "These installed Python skill modules failed to import into the Python kernel, so calling them raises an error:".to_string(),
+        "These installed JavaScript skill modules failed to load into the Bun kernel, so calling them throws an error:".to_string(),
     );
     for (name, error) in errors {
         lines.push(format!("- {name}: {error}"));
     }
     lines.push(String::new());
     lines.push(
-        "Their shell command forms fail the same way. Fix the import error first (for example install the missing dependency with `uv pip install <pkg>` or reinstall the skill into the kernel venv), or use another approach.".to_string(),
+        "Fix the load error first (for example check the skill's `package.json` dependencies or entry module and restart the Bun kernel), or use another approach.".to_string(),
     );
     lines.join("\n")
 }
 
-/// The next-turn notice row: display true, `details.skills` naming the failed imports;
+/// The next-turn notice row: display true, `details.skills` naming the failed skills;
 /// the row rides the next admitted turn ahead of its prompt.
 #[must_use]
-pub fn notice_message(errors: &UnavailablePythonSkills) -> CustomMessage {
+pub fn notice_message(errors: &UnavailableJavaScriptSkills) -> CustomMessage {
     CustomMessage {
-        custom_type: PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE.to_string(),
+        custom_type: JAVASCRIPT_SKILLS_UNAVAILABLE_CUSTOM_TYPE.to_string(),
         content: pa_types::ai::UserContent::Text(notice_content(errors)),
         display: true,
         details: Some(serde_json::json!({
@@ -53,11 +53,11 @@ pub fn notice_message(errors: &UnavailablePythonSkills) -> CustomMessage {
 mod tests {
     use super::*;
 
-    fn errors() -> UnavailablePythonSkills {
+    fn errors() -> UnavailableJavaScriptSkills {
         vec![
             (
                 "websearch".to_string(),
-                "No module named 'websearch'".to_string(),
+                "Cannot find module 'websearch'".to_string(),
             ),
             ("edit".to_string(), "boom".to_string()),
         ]
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn notice_names_each_failed_skill_and_its_error() {
         let message = notice_message(&errors());
-        assert_eq!(message.custom_type, "python_skills_unavailable");
+        assert_eq!(message.custom_type, "javascript_skills_unavailable");
         assert!(message.display);
         assert_eq!(
             message.details,
@@ -77,7 +77,7 @@ mod tests {
         };
         assert_eq!(
             content,
-            "[python-skills-unavailable]\n\nThese installed Python skill modules failed to import into the Python kernel, so calling them raises an error:\n- websearch: No module named 'websearch'\n- edit: boom\n\nTheir shell command forms fail the same way. Fix the import error first (for example install the missing dependency with `uv pip install <pkg>` or reinstall the skill into the kernel venv), or use another approach."
+            "[javascript-skills-unavailable]\n\nThese installed JavaScript skill modules failed to load into the Bun kernel, so calling them throws an error:\n- websearch: Cannot find module 'websearch'\n- edit: boom\n\nFix the load error first (for example check the skill's `package.json` dependencies or entry module and restart the Bun kernel), or use another approach."
         );
     }
 }

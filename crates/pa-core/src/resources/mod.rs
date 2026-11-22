@@ -186,12 +186,12 @@ pub fn load_resources(mut options: ResourceLoaderOptions) -> Result<LoadedResour
             {
                 skill.source_info = source_info;
             }
-            if skill.source_info.scope == SourceScope::Project && skill.is_python() {
-                // Project files can supply pyproject.toml and Python modules.
+            if skill.source_info.scope == SourceScope::Project && skill.is_javascript() {
+                // Project files can supply package.json and JavaScript modules.
                 // Keep the skill's markdown text, but do not offer or prepare
                 // executable code from a repository on session startup.
                 skill.kind = SkillKind::Markdown;
-                skill.python = None;
+                skill.javascript = None;
                 demoted.push(skill.file_path.clone());
             }
             skill
@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn project_python_skills_are_markdown_only_before_kernel_bootstrap() {
+    fn project_javascript_skills_are_markdown_only_before_kernel_bootstrap() {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().join("project");
         let agent_dir = tmp.path().join("agent");
@@ -493,30 +493,29 @@ mod tests {
         let configured_skill = tmp.path().join("configured/configured-code");
         let ancestor_skill = tmp.path().join(".agents/skills/ancestor-code");
         let user_skill = agent_dir.join("skills/user-code");
-        for (dir, name) in [
-            (&project_skill, "project-code"),
-            (&configured_skill, "configured-code"),
-            (&ancestor_skill, "ancestor-code"),
-            (&user_skill, "user-code"),
+        for (dir, name, global) in [
+            (&project_skill, "project-code", "projectCode"),
+            (&configured_skill, "configured-code", "configuredCode"),
+            (&ancestor_skill, "ancestor-code", "ancestorCode"),
+            (&user_skill, "user-code", "userCode"),
         ] {
-            fs::create_dir_all(dir.join("src").join(name.replace('-', "_"))).unwrap();
+            fs::create_dir_all(dir.join("src")).unwrap();
             fs::write(
                 dir.join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: Python skill\n---\nBody"),
+                format!("---\nname: {name}\ndescription: JavaScript skill\n---\nBody"),
             )
             .unwrap();
             fs::write(
-                dir.join("pyproject.toml"),
-                "[project]\nname = \"skill\"\nversion = \"0.1.0\"\n",
+                dir.join("package.json"),
+                serde_json::json!({
+                    "name": name,
+                    "type": "module",
+                    "primeAgent": { "global": global, "entry": "src/index.ts" }
+                })
+                .to_string(),
             )
             .unwrap();
-            fs::write(
-                dir.join("src")
-                    .join(name.replace('-', "_"))
-                    .join("__init__.py"),
-                "# would execute if imported\n",
-            )
-            .unwrap();
+            fs::write(dir.join("src/index.ts"), "export default () => {};\n").unwrap();
         }
         fs::write(
             cwd.join(".prime/agent/settings.json"),
@@ -532,7 +531,7 @@ mod tests {
                 .unwrap();
             assert_eq!(project.source_info.scope, SourceScope::Project);
             assert_eq!(project.kind, SkillKind::Markdown);
-            assert!(project.python.is_none());
+            assert!(project.javascript.is_none());
         }
         let user = resources
             .skills
@@ -540,15 +539,15 @@ mod tests {
             .find(|skill| skill.name == "user-code")
             .unwrap();
         assert_eq!(user.source_info.scope, SourceScope::User);
-        assert_eq!(user.kind, SkillKind::Python);
-        let imports =
-            crate::session_engine::runtime_wiring::kernel_python_skills(&resources.skills)
+        assert_eq!(user.kind, SkillKind::JavaScript);
+        let globals =
+            crate::session_engine::runtime_wiring::kernel_javascript_skills(&resources.skills)
                 .into_iter()
-                .map(|skill| skill.import_name)
+                .map(|skill| skill.global_name)
                 .collect::<Vec<_>>();
-        assert!(imports.contains(&"user_code".to_string()));
-        for name in ["project_code", "configured_code", "ancestor_code"] {
-            assert!(!imports.contains(&name.to_string()));
+        assert!(globals.contains(&"userCode".to_string()));
+        for name in ["projectCode", "configuredCode", "ancestorCode"] {
+            assert!(!globals.contains(&name.to_string()));
         }
     }
 
@@ -599,19 +598,23 @@ mod tests {
             .any(|d| matches!(d, ResourceDiagnostic::Collision { .. })));
     }
 
-    /// A skill directory: `SKILL.md` with `frontmatter`, plus a Python
-    /// package (pyproject named `project`) when given.
-    fn write_skill_dir(dir: &Path, frontmatter: &str, project: Option<&str>) -> PathBuf {
+    /// A skill directory: `SKILL.md` with `frontmatter`, plus a JavaScript
+    /// package (`package.json` with `primeAgent`) when given.
+    fn write_skill_dir(dir: &Path, frontmatter: &str, global: Option<&str>) -> PathBuf {
         fs::create_dir_all(dir).unwrap();
         let skill_file = dir.join("SKILL.md");
         fs::write(&skill_file, format!("---\n{frontmatter}\n---\nBody")).unwrap();
-        if let Some(project) = project {
-            let import = dir.file_name().unwrap().to_string_lossy().replace('-', "_");
-            fs::create_dir_all(dir.join("src").join(&import)).unwrap();
-            fs::write(dir.join("src").join(&import).join("__init__.py"), "").unwrap();
+        if let Some(global) = global {
+            fs::create_dir_all(dir.join("src")).unwrap();
+            fs::write(dir.join("src/index.ts"), "export default () => {};\n").unwrap();
             fs::write(
-                dir.join("pyproject.toml"),
-                format!("[project]\nname = \"{project}\"\nversion = \"0.1.0\"\n"),
+                dir.join("package.json"),
+                serde_json::json!({
+                    "name": dir.file_name().unwrap().to_string_lossy(),
+                    "type": "module",
+                    "primeAgent": { "global": global, "entry": "src/index.ts" }
+                })
+                .to_string(),
             )
             .unwrap();
         }
@@ -673,8 +676,14 @@ mod tests {
 
         let yaml_error = serde_yaml::from_str::<serde_yaml::Value>(broken_yaml).unwrap_err();
         let settings_path = agent_dir.join("settings.json").display().to_string();
+        let tmp_prefix = tmp.path().to_string_lossy().into_owned();
+        let scoped_statuses: Vec<_> = resources
+            .skill_statuses
+            .into_iter()
+            .filter(|entry| entry.path.starts_with(&tmp_prefix))
+            .collect();
         assert_eq!(
-            resources.skill_statuses,
+            scoped_statuses,
             vec![
                 status(
                     "broken",
@@ -718,8 +727,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             goal.kind,
-            SkillKind::Python,
-            "the bundled code stays importable"
+            SkillKind::JavaScript,
+            "the bundled code stays loadable"
         );
         let collision_message = resources
             .skill_diagnostics
@@ -751,7 +760,7 @@ mod tests {
         let user_goal = write_skill_dir(
             &agent_dir.join("skills/goal"),
             &named("goal"),
-            Some("user-goal"),
+            Some("userGoal"),
         );
         let goal_file = || {
             load_resources(ResourceLoaderOptions {
@@ -764,12 +773,12 @@ mod tests {
             .find(|skill| skill.name == "goal")
             .map(|skill| (skill.file_path, skill.kind))
         };
-        assert_eq!(goal_file(), Some((bundled_goal, SkillKind::Python)));
+        assert_eq!(goal_file(), Some((bundled_goal, SkillKind::JavaScript)));
         fs::write(
             agent_dir.join("settings.json"),
             serde_json::json!({"skills": ["-goal"]}).to_string(),
         )
         .unwrap();
-        assert_eq!(goal_file(), Some((user_goal, SkillKind::Python)));
+        assert_eq!(goal_file(), Some((user_goal, SkillKind::JavaScript)));
     }
 }

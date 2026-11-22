@@ -417,7 +417,7 @@ impl SessionCounters {
 /// Skills present at session start (adoption counts on `agent started`).
 pub struct SkillCounts {
     pub skill_count: usize,
-    pub python_skill_count: usize,
+    pub javascript_skill_count: usize,
 }
 
 /// Install the telemetry subscriber on an agent and emit `agent started`.
@@ -478,8 +478,8 @@ pub async fn install_session_telemetry(
         if let Some(counts) = skill_counts {
             properties.set("skill_count", Value::from(counts.skill_count as u64));
             properties.set(
-                "python_skill_count",
-                Value::from(counts.python_skill_count as u64),
+                "javascript_skill_count",
+                Value::from(counts.javascript_skill_count as u64),
             );
         }
     }

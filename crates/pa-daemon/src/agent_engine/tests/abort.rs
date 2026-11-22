@@ -1,6 +1,6 @@
 //! The abort tests (the in-flight cancel, settled-turn payloads, retries, the live-kernel cancel).
 use super::*;
-use crate::test_support::{live_kernel_python, KernelEnvOverride};
+use crate::test_support::{live_kernel_bun, KernelEnvOverride};
 
 /// The eager turn abort: an abort landing mid-provider-wait cancels the
 /// in-flight fetch immediately; the aborted row carries `EMPTY_USAGE`,
@@ -466,13 +466,13 @@ fn retried_run_restarts_with_its_own_agent_frames() {
 /// (the daemon worker's `run_turn_once` awaits the admission forever).
 #[test]
 fn abort_in_flight_turn_cancels_a_running_kernel_cell() {
-    let Some(kernel_python) = live_kernel_python() else {
+    let Some(kernel_bun) = live_kernel_bun() else {
         return;
     };
     let _env = KernelEnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
+            "PRIME_AGENT_KERNEL_BUN",
+            Some(kernel_bun.display().to_string()),
         ),
         ("PRIME_AGENT_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
@@ -498,9 +498,9 @@ fn abort_in_flight_turn_cancels_a_running_kernel_cell() {
                 "responses": [
                     {"content": [
                         {"type": "text", "text": "Running the wedge cell."},
-                        {"type": "toolCall", "name": "python_repl", "id": "toolu_wedge01",
+                        {"type": "toolCall", "name": "javascript", "id": "toolu_wedge01",
                          "arguments": {"code":
-                            "import time\nopen('wedge-started', 'w').write('1')\ntime.sleep(300)\nopen('wedge-finished', 'w').write('1')\nprint('cell completed')"}}
+                            "fs.writeFileSync('wedge-started', '1');\nawait Bun.sleep(300_000);\nfs.writeFileSync('wedge-finished', '1');\nconsole.log('cell completed');"}}
                     ]},
                     {"content": [{"type": "text", "text": "The cell completed."}]}
                 ]

@@ -41,31 +41,41 @@ impl RpcChild {
         Self::spawn_seeded(args, script, None, None)
     }
 
-    /// Spawn with a live kernel Python: the background-bash lane needs a
-    /// real kernel behind the `ipython` tool.
+    /// Spawn with a live kernel Bun: the background-bash lane needs a
+    /// real kernel behind the `javascript` tool.
     fn spawn_kernel(args: &[&str], script: &Value) -> RpcChild {
-        Self::spawn_seeded(args, script, None, Some(Self::kernel_python()))
+        Self::spawn_seeded(args, script, None, Some(Self::kernel_bun()))
     }
 
-    /// The kernel Python with prime-agent-runtime installed; a missing
-    /// kernel FAILS the lane loudly (the wake lane's proof).
-    fn kernel_python() -> std::path::PathBuf {
-        if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+    /// The kernel Bun binary; a missing binary FAILS the lane loudly (the wake lane's proof).
+    fn kernel_bun() -> std::path::PathBuf {
+        if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_BUN")
+            .or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+        {
             let explicit = std::path::PathBuf::from(explicit);
             assert!(
                 explicit.exists(),
-                "PA_E2E_KERNEL_PYTHON {} not found",
+                "PA_E2E_KERNEL_BUN {} not found",
                 explicit.display()
             );
             return explicit;
         }
+        if let Ok(path_var) = std::env::var("PATH") {
+            let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join(exe);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
         let candidate = std::path::PathBuf::from(std::env::var("HOME").map_or_else(
-            |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-            |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+            |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+            |home| format!("{home}/.bun/bin/bun"),
         ));
         assert!(
             candidate.exists(),
-            "kernel python {} not found: set PA_E2E_KERNEL_PYTHON",
+            "kernel bun {} not found: install Bun or set PA_E2E_KERNEL_BUN",
             candidate.display()
         );
         candidate
@@ -77,7 +87,7 @@ impl RpcChild {
         args: &[&str],
         script: &Value,
         models: Option<Value>,
-        kernel_python: Option<std::path::PathBuf>,
+        kernel_bun: Option<std::path::PathBuf>,
     ) -> RpcChild {
         let home = tempfile::TempDir::new().unwrap();
         if let Some(models) = models {
@@ -94,8 +104,8 @@ impl RpcChild {
             .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
             .env_remove("RLM_DEPTH")
             .env_remove("RLM_MAX_DEPTH");
-        if let Some(kernel) = kernel_python {
-            command.env("PRIME_AGENT_KERNEL_PYTHON", kernel);
+        if let Some(kernel) = kernel_bun {
+            command.env("PRIME_AGENT_KERNEL_BUN", kernel);
         }
         let mut child = command
             .current_dir(home.path())
@@ -266,7 +276,7 @@ impl Drop for RpcChild {
     }
 }
 
-const TIMEOUT: Duration = Duration::from_secs(60);
+const TIMEOUT: Duration = Duration::from_mins(1);
 
 fn turn_script(steps: &Value) -> Value {
     json!({ "responses": steps })
@@ -401,7 +411,7 @@ fn rpc_steer_and_follow_up_queue_then_abort() {
     let response = client.request(&json!({ "type": "prompt", "message": "go" }));
     assert_eq!(response["success"], true);
     // The response fires at admission (TS `preflightResult`): the turn is mid-LLM-call here.
-    std::thread::sleep(Duration::from_millis(1000));
+    std::thread::sleep(Duration::from_secs(1));
     let steer = client.request(&json!({ "type": "steer", "message": "steer this" }));
     assert_eq!(steer["success"], true, "steer queues: {steer}");
     let follow_up = client.request(&json!({ "type": "follow_up", "message": "fu this" }));
@@ -925,13 +935,13 @@ fn rpc_idle_session_runs_a_turn_on_a_background_bash_completion() {
         &json!({
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
-                      "arguments": { "code": "h = bash(\"sleep 3; echo RPC_BG\")\nprint(\"STARTED\")" } },
+                    { "type": "toolCall", "name": "javascript",
+                      "arguments": { "code": "const h = bash(\"sleep 3; echo RPC_BG\");\nconsole.log(\"STARTED\");" } },
                 ] },
                 "WAITING",
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
-                      "arguments": { "code": "print(\"WOKEN\", \"RPC_BG\" in h.output())" } },
+                    { "type": "toolCall", "name": "javascript",
+                      "arguments": { "code": "console.log(\"WOKEN\", h.output().includes(\"RPC_BG\"));" } },
                 ] },
                 "RPC WOKEN",
             ],
@@ -1063,8 +1073,8 @@ fn write_corpus_fixture(path: &std::path::Path, size_mib: usize) {
                     ],
                     "toolCalls": [{
                         "id": call_id,
-                        "name": "ipython",
-                        "arguments": { "code": format!("print('corpus {turn}')") },
+                        "name": "javascript",
+                        "arguments": { "code": format!("console.log('corpus {turn}')") },
                     }],
                     "api": "openai-completions",
                     "provider": "prime-inference",

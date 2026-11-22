@@ -1,7 +1,7 @@
 use super::compact_session::CompactOutcome;
 use super::{
-    compaction, compaction_trace, ipython_state, provider_adapter, rebuilt_loop_messages, refine,
-    session_message_to_loop, standard_message, AgentMessage, AgentSession, FileEntry,
+    compaction, compaction_trace, javascript_state, provider_adapter, rebuilt_loop_messages,
+    refine, session_message_to_loop, standard_message, AgentMessage, AgentSession, FileEntry,
     SessionAgentMessage, TrailingAssistantFilter,
 };
 
@@ -222,18 +222,18 @@ impl AgentSession {
             &serde_json::json!({ "messages": rebuilt_message_count }),
         );
         // A kernel that survived the compaction gets its persistence notice —
-        // a durable `ipython_state` row that also keeps a back-to-back second
+        // a durable `javascript_state` row that also keeps a back-to-back second
         // `/compact` preparing (update mode) instead of skipping.
         let kernel_state = match self.kernel_state.as_ref() {
             Some(probe) => {
-                ipython_state::sync_after_compaction(probe.as_ref(), &self.session, &self.agent)
+                javascript_state::sync_after_compaction(probe.as_ref(), &self.session, &self.agent)
                     .await?
             }
             None => None,
         };
         let notice_landed = kernel_state.is_some();
         if let CompactOutcome::Ran(run) = &mut outcome {
-            run.ipython_state = kernel_state;
+            run.javascript_state = kernel_state;
         }
         compaction_trace::trace(
             "compact.returned",
@@ -335,7 +335,7 @@ impl AgentSession {
                         result: prepared.result,
                         entry: prepared.entry,
                         duration_ms: started_at.elapsed().as_millis() as u64,
-                        ipython_state: None,
+                        javascript_state: None,
                     },
                 )));
             }

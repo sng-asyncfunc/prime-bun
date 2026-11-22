@@ -32,22 +32,36 @@ impl Drop for Supervisor {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed (`PA_E2E_KERNEL_PYTHON`, else the
-/// product's kernel-venv layout). A missing kernel fails loudly: the shell needs a real kernel.
-fn kernel_python() -> PathBuf {
-    let python = std::env::var_os("PA_E2E_KERNEL_PYTHON").map_or_else(
-        || {
-            PathBuf::from(std::env::var("HOME").expect("HOME"))
-                .join(".prime/agent/kernel-venv/bin/python")
-        },
-        PathBuf::from,
-    );
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`, PATH, or `~/.bun/bin/bun`).
+/// A missing kernel fails loudly: the shell needs a real kernel.
+fn kernel_bun() -> PathBuf {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
+        let explicit = PathBuf::from(explicit);
+        assert!(
+            explicit.exists(),
+            "PA_E2E_KERNEL_BUN {} not found",
+            explicit.display()
+        );
+        return explicit;
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    let bun = PathBuf::from(std::env::var("HOME").expect("HOME")).join(".bun/bin/bun");
     assert!(
-        python.exists(),
-        "kernel python {} not found: set PA_E2E_KERNEL_PYTHON",
-        python.display()
+        bun.exists(),
+        "kernel bun {} not found: install Bun or set PA_E2E_KERNEL_BUN",
+        bun.display()
     );
-    python
+    bun
 }
 
 // The spawned daemon is killed and reaped by `Supervisor::drop`, which clippy cannot see.
@@ -61,7 +75,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python())
+        .env("PRIME_AGENT_KERNEL_BUN", kernel_bun())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -103,7 +117,7 @@ fn ask(socket: &Path, command: &Value) -> Option<Value> {
     writer.write_all(line.as_bytes()).ok()?;
     reader
         .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(60)))
+        .set_read_timeout(Some(Duration::from_mins(1)))
         .ok()?;
     loop {
         let mut response = String::new();
@@ -133,7 +147,7 @@ fn session_running(socket: &Path, dir: &Path, cell: &str) -> String {
         &script,
         json!({ "engine": "faux", "responses": [
             { "text": "ready" },
-            { "content": [{ "type": "toolCall", "name": "python_repl",
+            { "content": [{ "type": "toolCall", "name": "javascript",
                             "arguments": { "code": cell } }] },
             { "text": "started" },
         ] })
@@ -225,7 +239,11 @@ async fn stopping_the_attached_session_clears_its_shells_from_the_dock() {
     let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
         .expect("temp dir");
     let supervisor = spawn_supervisor(dir.path());
-    let active = session_running(&supervisor.socket, dir.path(), "h = bash('sleep 300')");
+    let active = session_running(
+        &supervisor.socket,
+        dir.path(),
+        "const h = bash('sleep 300');",
+    );
 
     let (rendered_tx, rendered_rx) = std::sync::mpsc::channel();
     let kill_thread = {
@@ -233,7 +251,7 @@ async fn stopping_the_attached_session_clears_its_shells_from_the_dock() {
         let active = active.clone();
         std::thread::spawn(move || {
             rendered_rx
-                .recv_timeout(Duration::from_secs(60))
+                .recv_timeout(Duration::from_mins(1))
                 .expect("the chat rendered the shell");
             ask_ok(
                 &socket,

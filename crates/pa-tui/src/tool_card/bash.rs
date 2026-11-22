@@ -90,7 +90,7 @@ fn format_bash_call(card: &ToolCallCard, theme: &Theme) -> Line {
         } else {
             match preview.language {
                 CodePreviewLanguage::Bash => preview.text,
-                CodePreviewLanguage::Python => format!("python: {}", preview.text),
+                CodePreviewLanguage::JavaScript => format!("js: {}", preview.text),
             }
         };
         row.push(Span::styled(display, dim));

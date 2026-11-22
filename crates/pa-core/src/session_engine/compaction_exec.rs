@@ -641,7 +641,7 @@ mod tests {
         assert!(text.ends_with("Be concise. Focus on what's needed to understand the kept suffix."));
         assert!(!text.contains("Create a structured context checkpoint summary"));
         assert!(!text.contains("<previous-summary>"));
-        assert!(!text.contains("the Python kernel keeps running"));
+        assert!(!text.contains("the Bun JavaScript kernel keeps running"));
     }
 
     #[test]

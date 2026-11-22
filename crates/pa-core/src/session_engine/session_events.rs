@@ -403,7 +403,7 @@ mod tests {
                     content_index: 0,
                     tool_call: ToolCall {
                         id: "call-1".to_string(),
-                        name: "ipython".to_string(),
+                        name: "javascript".to_string(),
                         arguments: serde_json::json!({"code": "1 + 1"}),
                         thought_signature: None,
                     },
@@ -415,7 +415,7 @@ mod tests {
                     "toolCall": {
                         "type": "toolCall",
                         "id": "call-1",
-                        "name": "ipython",
+                        "name": "javascript",
                         "arguments": {"code": "1 + 1"},
                     },
                 }),

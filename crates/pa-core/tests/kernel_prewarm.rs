@@ -27,30 +27,44 @@ use pa_types::session::FileEntry;
 /// the std lock serializes them (the only contenders).
 static FAUX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// The kernel Python with prime-agent-runtime installed (the interpreter the session-path
-/// provisioner resolves). Skipped (with a note) on machines without a live install; set
-/// `PA_CORE_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available. Skipped (with a note) on machines
+/// without a live runtime; set `PA_CORE_KERNEL_BUN` to point at an explicit executable instead.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live prewarm test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live prewarm test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live prewarm test");
     None
 }
 
@@ -124,7 +138,7 @@ async fn wait_for_kernel_boot(engine: &pa_core::session_engine::engine::SessionE
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
-    let Some(_kernel_python) = kernel_python() else {
+    let Some(_kernel_bun) = kernel_bun() else {
         return;
     };
     let _guard = FAUX_LOCK
@@ -168,7 +182,7 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
             now: None,
             telemetry_enabled: None,
         }),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_javascript_kernel: Some(true),
         ..Default::default()
     })
     .await
@@ -196,26 +210,25 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
         CompactOutcome::Skipped(reason) => panic!("compaction must run, skipped: {reason}"),
     };
     let notice = run
-        .ipython_state
-        .expect("the prewarmed kernel must land the ipython_state notice");
-    assert_eq!(notice.custom_type, "ipython_state");
+        .javascript_state
+        .expect("the prewarmed kernel must land the javascript_state notice");
+    assert_eq!(notice.custom_type, "javascript_state");
     assert!(!notice.display, "the notice is never rendered");
     let pa_types::ai::UserContent::Text(content) = &notice.content else {
         panic!("the notice content is text");
     };
-    assert!(content.contains("[python-state]"), "{content}");
+    assert!(content.contains("[javascript-state]"), "{content}");
     assert!(
-        content.contains("Your Python kernel persisted through compaction"),
+        content.contains("Your Bun JavaScript kernel persisted through compaction"),
         "{content}"
     );
-    // The live-names detail arm is environment-dependent (the bootstrap pre-imports the installed
-    // Python skills as live names), so only the persistence sentence is pinned here — same scoping
-    // as the battery's kernel-notice differential.
+    // The live-names detail arm is environment-dependent (the bootstrap pre-loads the installed
+    // JavaScript skills as live names), so only the persistence sentence is pinned here.
     let entries = engine.session.entries().await;
     assert!(
         entries.iter().any(|entry| match entry {
             FileEntry::CustomMessage { payload, .. } => {
-                payload.custom_type == "ipython_state"
+                payload.custom_type == "javascript_state"
             }
             _ => false,
         }),
@@ -229,7 +242,7 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn subagent_sessions_stay_lazy_despite_the_prewarm_flag() {
-    let Some(_kernel_python) = kernel_python() else {
+    let Some(_kernel_bun) = kernel_bun() else {
         return;
     };
     let _guard = FAUX_LOCK
@@ -260,7 +273,7 @@ async fn subagent_sessions_stay_lazy_despite_the_prewarm_flag() {
             telemetry_enabled: None,
         }),
         rlm_depth: Some(1),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_javascript_kernel: Some(true),
         ..Default::default()
     })
     .await
@@ -278,8 +291,8 @@ async fn subagent_sessions_stay_lazy_despite_the_prewarm_flag() {
         .map(|tool| tool.name().to_string())
         .collect();
     assert!(
-        tool_names.iter().any(|name| name == "python_repl"),
-        "the subagent keeps the lazy python_repl tool: {tool_names:?}"
+        tool_names.iter().any(|name| name == "javascript"),
+        "the subagent keeps the lazy javascript tool: {tool_names:?}"
     );
 
     // Long enough for a wrongly-fired prewarm to boot and report; the lazy session reports nothing.
@@ -351,7 +364,7 @@ impl Drop for CleanTelemetryEnv {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn an_off_switch_at_creation_keeps_the_prewarm_window_uncounted() {
-    let Some(_kernel_python) = kernel_python() else {
+    let Some(_kernel_bun) = kernel_bun() else {
         return;
     };
     let _env = CleanTelemetryEnv::default();
@@ -389,7 +402,7 @@ async fn an_off_switch_at_creation_keeps_the_prewarm_window_uncounted() {
                 pa_core::session_engine::telemetry::telemetry_enabled_switch(&cwd, &agent_dir),
             ),
         }),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_javascript_kernel: Some(true),
         ..Default::default()
     })
     .await

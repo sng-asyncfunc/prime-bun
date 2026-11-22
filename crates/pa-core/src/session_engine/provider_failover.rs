@@ -856,7 +856,7 @@ mod tests {
         let script = vec![error_message(
             Some("invalid_request"),
             Some(404),
-            "404 No endpoints found that support tool use. Try disabling \"ipython\".",
+            "404 No endpoints found that support tool use. Try disabling \"javascript\".",
         )];
         let harness = drive(&fast_failover(), &candidates, script).await;
         assert_eq!(harness.attempts, 1);
@@ -868,7 +868,7 @@ mod tests {
                 success: false,
                 attempt: 0,
                 final_error: Some(
-                    "404 No endpoints found that support tool use. Try disabling \"ipython\"."
+                    "404 No endpoints found that support tool use. Try disabling \"javascript\"."
                         .to_string(),
                 ),
                 restored_model: None,

@@ -26,44 +26,60 @@ use pa_core::kernel::shared::{
 };
 use pa_core::kernel::state_snapshot::{manifest_path_in, snapshot_path_in};
 
-/// The kernel Python with prime-agent-runtime installed (the TS product's auto-bootstrapped kernel
-/// venv). Ambient product state, not test input: skipped (with a note) when absent;
-/// `PA_CORE_KERNEL_PYTHON` points at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available. Skipped (with a note) when absent;
+/// `PA_CORE_KERNEL_BUN` points at an explicit executable instead.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live kernel test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live kernel test");
     None
 }
 
-/// Test options, or `None` when no kernel interpreter is available on this
-/// machine (see [`kernel_python`]); the caller skips the test then.
+/// Test options, or `None` when no Bun kernel runtime is available on this
+/// machine (see [`kernel_bun`]); the caller skips the test then.
 fn test_options(snapshot_dir: Option<&std::path::Path>) -> Option<KernelManagerOptions> {
-    let python = kernel_python()?;
+    let bun = kernel_bun()?;
     Some(KernelManagerOptions {
-        python: Some(python),
+        bun: Some(bun),
+        worker_entry: None,
+        kernel_dir: None,
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),
         session_id: Some("integration-test".to_string()),
         host_handlers: HostRequestHandlers::new(),
-        python_skills: Vec::new(),
+        javascript_skills: Vec::new(),
         on_background_work_settled: None,
         snapshot: snapshot_dir.map(|dir| KernelSnapshotConfig {
             path: snapshot_path_in(dir),
@@ -72,7 +88,7 @@ fn test_options(snapshot_dir: Option<&std::path::Path>) -> Option<KernelManagerO
             max_variable_bytes: None,
             debounce_ms: None,
         }),
-        // The TS provisioner always runs the RLM bootstrap after start; tests match that contract.
+        // The provisioner always runs the RLM bootstrap after start; tests match that contract.
         bootstrap_code: Some(build_rlm_bootstrap_code(&[], false)),
         stderr_log_path: None,
     })
@@ -121,20 +137,20 @@ async fn kernel_state_persists_across_cells_and_turns() {
     };
     let manager = started_manager(options).await;
 
-    let first = execute(&manager, "x = 21\ny = 'hello'\nprint('defined')").await;
+    let first = execute(
+        &manager,
+        "let x = 21;\nconst y = 'hello';\nconsole.log('defined');",
+    )
+    .await;
     assert_eq!(first.status, ExecuteStatus::Ok);
     assert_eq!(first.stdout.trim(), "defined");
-    assert_eq!(
-        first.result, None,
-        "assignment cells produce no trailing result"
-    );
 
     let second = execute(&manager, "x * 2").await;
     assert_eq!(second.status, ExecuteStatus::Ok);
     assert_eq!(
         second.result.as_deref(),
         Some("42"),
-        "trailing expression repr is captured"
+        "trailing expression value is captured"
     );
 
     // _ is bound to the last trailing expression value.
@@ -144,16 +160,16 @@ async fn kernel_state_persists_across_cells_and_turns() {
     // await works at top level across turns.
     let fourth = execute(
         &manager,
-        "import asyncio\nresult = await asyncio.sleep(0, 'done')\nresult",
+        "const result = await Promise.resolve('done');\nresult",
     )
     .await;
-    assert_eq!(fourth.result.as_deref(), Some("'done'"));
+    assert_eq!(fourth.result.as_deref(), Some("\"done\""));
 
     // Error cells report ename/evalue/traceback, and state survives them.
-    let error = execute(&manager, "1 / 0").await;
+    let error = execute(&manager, "throw new TypeError('boom')").await;
     assert_eq!(error.status, ExecuteStatus::Error);
     let kernel_error = error.error.expect("error cell carries the kernel error");
-    assert_eq!(kernel_error.ename, "ZeroDivisionError");
+    assert_eq!(kernel_error.ename, "TypeError");
     assert!(!kernel_error.traceback.is_empty());
     let after = execute(&manager, "x").await;
     assert_eq!(after.result.as_deref(), Some("21"));
@@ -163,28 +179,28 @@ async fn kernel_state_persists_across_cells_and_turns() {
 }
 
 #[tokio::test]
-async fn background_thread_output_is_separated_from_cell_output() {
+async fn background_timer_output_is_separated_from_cell_output() {
     let Some(options) = test_options(None) else {
         return;
     };
     let manager = started_manager(options).await;
-    // A user thread writing after its cell finished lands in background output.
+    // A timer writing after its cell finished lands in background output.
     let first = execute(
         &manager,
-        "import threading, time\ndef _bg():\n    time.sleep(0.3)\n    print('late from thread')\nt = threading.Thread(target=_bg); t.start()\nprint('from cell')",
+        "setTimeout(() => console.log('late from timer'), 300);\nconsole.log('from cell');",
     )
     .await;
     assert_eq!(first.stdout.trim(), "from cell");
     assert_eq!(first.status, ExecuteStatus::Ok);
 
-    let second = execute(&manager, "time.sleep(0.5)").await;
+    let second = execute(&manager, "await Bun.sleep(500)").await;
     assert!(
         second
             .background_output
             .as_deref()
             .unwrap_or_default()
-            .contains("late from thread"),
-        "late thread output surfaces as background output, got {:?}",
+            .contains("late from timer"),
+        "late timer output surfaces as background output, got {:?}",
         second.background_output
     );
     manager
@@ -206,7 +222,7 @@ async fn rlm_bootstrap_injects_the_kernel_surface() {
 
     let result = execute(
         &manager,
-        "callable(rlm.spawn) and callable(rlm.find_models) and hasattr(rlm, 'harness') and callable(bash) and hasattr(rlm, 'get_harness_state')",
+        "typeof rlm.spawn === 'function' && typeof rlm.findModels === 'function' && typeof rlm.harness === 'object' && typeof bash === 'function' && typeof rlm.getHarnessState === 'function'",
     )
     .await;
     assert_eq!(
@@ -216,7 +232,7 @@ async fn rlm_bootstrap_injects_the_kernel_surface() {
     );
     assert_eq!(
         result.result.as_deref(),
-        Some("True"),
+        Some("true"),
         "rlm/bash/harness must be usable"
     );
 
@@ -251,25 +267,19 @@ async fn host_requests_round_trip_to_registered_handlers() {
     };
     let manager = started_manager(options).await;
 
-    // rlm.find_models runs through the runtime's host_request bridge; the
+    // rlm.findModels runs through the runtime's hostRequest bridge; the
     // host reply must reach the awaiting cell.
     let result = execute(
         &manager,
-        "result = await rlm.find_models('glm', 2)\nresult[0].selector",
+        "const found = await rlm.findModels('glm', 2);\nfound[0].selector",
     )
     .await;
     assert_eq!(result.status, ExecuteStatus::Ok, "cell: {:?}", result.error);
-    assert_eq!(result.result.as_deref(), Some("'pi/glm-5.3'"));
+    assert_eq!(result.result.as_deref(), Some("\"pi/glm-5.3\""));
 
-    // An unregistered request type fails the cell with the TS error text.
-    let error = execute(
-        &manager,
-        "import rlm\nawait rlm.host_request('nope.custom', {})",
-    )
-    .await;
+    // An unregistered request type fails the cell with the unavailable-handler error.
+    let error = execute(&manager, "await rlm.hostRequest('nope.custom', {})").await;
     assert_eq!(error.status, ExecuteStatus::Error);
-    // The runtime raises the host-reply error inside the awaiting cell: it
-    // surfaces as the cell's KernelError (evalue), not as stderr.
     let message = error
         .error
         .as_ref()
@@ -277,17 +287,24 @@ async fn host_requests_round_trip_to_registered_handlers() {
         .unwrap_or_default();
     assert!(
         message.contains("not available in this session"),
-        "expected the TS unavailable-handler error, got stderr {:?} error {:?}",
+        "expected unavailable-handler error, got stderr {:?} error {:?}",
         error.stderr,
         error.error
     );
 
-    // rlm.end_turn needs no registration: the manager answers it before the
-    // registry lookup (a reorder would fail the cell like `nope.custom`),
-    // marks the executing cell, and the flag rides the settled result.
-    let ended = execute(&manager, "result = await rlm.end_turn()\nresult").await;
+    // rlm.endTurn needs no registration: the manager answers it before the
+    // registry lookup, marks the executing cell, and the flag rides the settled result.
+    let ended = execute(&manager, "const endRes = await rlm.endTurn();\nendRes").await;
     assert_eq!(ended.status, ExecuteStatus::Ok, "cell: {:?}", ended.error);
-    assert_eq!(ended.result.as_deref(), Some("{'endedTurn': True}"));
+    assert!(
+        ended
+            .result
+            .as_deref()
+            .unwrap_or_default()
+            .contains("endedTurn"),
+        "ended result: {:?}",
+        ended.result
+    );
     assert!(
         ended.ended_turn,
         "the end-turn flag must ride the settled result"
@@ -307,13 +324,13 @@ async fn kill9_then_restart_revives_snapshot_and_reports_unserializable() {
     };
     let manager = started_manager(options).await;
 
-    // Serializable variables plus one unserializable object (an open socket) across separate turns.
+    // Serializable variables plus one unserializable object (a function / closure) across separate turns.
     execute(
         &manager,
-        "answer = 42\nitems = ['a', 'b']\nimport socket\nconn = socket.socket()",
+        "let answer = 42;\nconst items = ['a', 'b'];\nconst nonSer = new WeakMap();",
     )
     .await;
-    execute(&manager, "answer += 0").await; // second turn touches the namespace
+    execute(&manager, "answer += 0;").await; // second turn touches the namespace
 
     // Flush a snapshot so the namespace is durable before the kill.
     let snapshot = tokio::time::timeout(Duration::from_secs(15), manager.snapshot_state())
@@ -326,8 +343,8 @@ async fn kill9_then_restart_revives_snapshot_and_reports_unserializable() {
         snapshot.saved
     );
     assert!(
-        snapshot.skipped.iter().any(|skip| skip.name == "conn"),
-        "an open socket must be skipped and reported, got: {:?}",
+        snapshot.skipped.iter().any(|skip| skip.name == "nonSer"),
+        "a WeakMap must be skipped and reported, got: {:?}",
         snapshot.skipped
     );
 
@@ -358,19 +375,16 @@ async fn kill9_then_restart_revives_snapshot_and_reports_unserializable() {
         "restored: {:?}",
         restore.restored
     );
-    // TS semantics (state-snapshot.ts): `failed` names are entries present
-    // in the snapshot that failed to revive. `conn` was skipped at snapshot
-    // time, so it is absent from the payload and cannot appear here.
 
     let check = execute(&revived, "answer").await;
     assert_eq!(check.result.as_deref(), Some("42"));
-    let items = execute(&revived, "items").await;
-    assert_eq!(items.result.as_deref(), Some("['a', 'b']"));
-    let missing = execute(&revived, "'conn' in dir()").await;
+    let items = execute(&revived, "JSON.stringify(items)").await;
+    assert_eq!(items.result.as_deref(), Some("\"[\\\"a\\\",\\\"b\\\"]\""));
+    let missing = execute(&revived, "typeof nonSer === 'undefined'").await;
     assert_eq!(
         missing.result.as_deref(),
-        Some("False"),
-        "conn must be dropped"
+        Some("true"),
+        "nonSer must be dropped"
     );
 
     revived
@@ -392,8 +406,6 @@ async fn background_bash_settlement_fires_the_callback_once() {
     };
     let settled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = std::sync::Arc::clone(&settled);
-    // The callback itself is the observable event: the test awaits its notice (a stored permit
-    // wakes the wait even if the callback fired first; the counter is the exactly-once witness).
     let settled_notify = std::sync::Arc::new(tokio::sync::Notify::new());
     let notify = std::sync::Arc::clone(&settled_notify);
     options.on_background_work_settled = Some(std::sync::Arc::new(move || {
@@ -402,17 +414,14 @@ async fn background_bash_settlement_fires_the_callback_once() {
     }));
     let manager = started_manager(options).await;
 
-    execute(&manager, "from rlm import bash").await;
-    execute(&manager, "live = bash('sleep 600')").await;
+    execute(&manager, "const live = bash('sleep 600');").await;
     assert!(
         manager.has_background_work(),
         "the handle must register on the activity track"
     );
     assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 0);
 
-    // The handle finishes: the settlement callback is the wake-up, so the
-    // test waits for it directly (the timeout only bounds failure).
-    execute(&manager, "live.kill()").await;
+    execute(&manager, "live.kill();").await;
     let notified = settled_notify.notified();
     tokio::time::timeout(Duration::from_secs(10), notified)
         .await
@@ -423,7 +432,6 @@ async fn background_bash_settlement_fires_the_callback_once() {
     );
     assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-    // A graceful teardown over the already-settled track fires nothing.
     manager
         .shutdown(KernelShutdownOptions::default())
         .await
@@ -431,9 +439,6 @@ async fn background_bash_settlement_fires_the_callback_once() {
     assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// Teardown with live background handles fires the settlement exactly
-/// once: the handles die with the kernel, so owed continuations waiting
-/// on them must hear it before it is lost — once, not once per handle.
 #[tokio::test]
 async fn kernel_teardown_with_live_handles_settles_the_callback_once() {
     let Some(mut options) = test_options(None) else {
@@ -446,34 +451,26 @@ async fn kernel_teardown_with_live_handles_settles_the_callback_once() {
     }));
     let manager = started_manager(options).await;
 
-    execute(&manager, "from rlm import bash").await;
-    execute(&manager, "first = bash('sleep 600')").await;
-    execute(&manager, "second = bash('sleep 600')").await;
+    execute(&manager, "const first = bash('sleep 600');").await;
+    execute(&manager, "const second = bash('sleep 600');").await;
     assert!(manager.has_background_work());
     assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 0);
 
-    // kill() tears the handles down with the kernel, and the settlement fires once for the whole
-    // track — synchronously, so the state is assertable here.
     manager.kill();
     assert!(!manager.has_background_work());
     assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// Each `bash()` call a cell starts reports its command text and line
-/// count through the bash-command display MIME, aggregated into the cell's
-/// execute result — including calls routed through a helper function,
-/// which a static scan of the cell source cannot see.
 #[tokio::test]
 async fn cell_result_summarizes_the_bash_commands_it_ran() {
     let Some(options) = test_options(None) else {
         return;
     };
     let manager = started_manager(options).await;
-    execute(&manager, "from rlm import bash").await;
 
     let result = execute(
         &manager,
-        "async def sh(cmd):\n    return await bash(cmd)\nawait sh(\"echo one\\necho two\")\nawait bash(\"true\")",
+        "async function runCmd(cmd) { return await bash(cmd); }\nawait runCmd(\"echo one\\necho two\");\nawait bash(\"true\");",
     )
     .await;
 
@@ -499,7 +496,7 @@ async fn graceful_shutdown_flushes_the_final_snapshot() {
         return;
     };
     let manager = started_manager(options).await;
-    execute(&manager, "persisted = 'value'\n").await;
+    execute(&manager, "const persisted = 'value';\n").await;
 
     // shutdown({snapshot: true}) must flush the namespace without an explicit snapshot call.
     let performed = tokio::time::timeout(

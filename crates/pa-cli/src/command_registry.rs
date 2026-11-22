@@ -305,7 +305,7 @@ and prints the per-layer breakdown (cached static layers, then the dynamic tail)
         "Resolves skills the way a fresh root session does and prints each discovered \
 skill with its state: active, hidden (callable via /skill:<name>), shadowed by another skill, \
 ignored because a bundled skill has the same name, disabled, invalid, or active as markdown \
-without its project Python code.",
+without its project JavaScript code.",
     )
     .options(&[
         "--cwd <dir>  Resolve for this working directory (default: current)",
@@ -559,7 +559,7 @@ pub fn format_top_level_help() -> String {
         })
         .collect();
     format!(
-        "{APP_NAME} - AI coding assistant with a Python REPL tool\n\
+        "{APP_NAME} - AI coding assistant with a Bun JavaScript REPL tool\n\
          \n\
          Usage:\n\
          \x20 {APP_NAME} [options] [@files...] [message...]\n\

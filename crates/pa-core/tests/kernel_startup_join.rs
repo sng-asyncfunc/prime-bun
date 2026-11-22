@@ -5,29 +5,31 @@
 mod script;
 
 use pa_core::kernel::cancellation::AbortSignal;
-use pa_core::kernel::provisioner::{IpythonKernelProvisioner, IpythonKernelProvisionerOptions};
+use pa_core::kernel::provisioner::{
+    JavaScriptKernelProvisioner, JavaScriptKernelProvisionerOptions,
+};
 use script::write_executable;
 use std::time::Duration;
 
 fn failing_kernel() -> (
     tempfile::TempDir,
-    IpythonKernelProvisioner,
+    JavaScriptKernelProvisioner,
     std::path::PathBuf,
 ) {
     let dir = tempfile::TempDir::new().unwrap();
     let count = dir.path().join("starts");
-    let python = dir.path().join("slow-python");
+    let bun = dir.path().join("slow-bun");
     write_executable(
-        &python,
+        &bun,
         &format!(
             "#!/bin/sh\nprintf x >> '{}'\nsleep 0.3\nexit 37\n",
             count.display()
         ),
     );
-    let provisioner = IpythonKernelProvisioner::new(
+    let provisioner = JavaScriptKernelProvisioner::new(
         dir.path(),
-        IpythonKernelProvisionerOptions {
-            python: Some(python),
+        JavaScriptKernelProvisionerOptions {
+            bun: Some(bun),
             ..Default::default()
         },
     );

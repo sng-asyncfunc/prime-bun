@@ -205,8 +205,8 @@ async fn goal_turn_end_loop_runs_to_completion() {
                 "first pursuit turn",
                 "second pursuit turn",
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl",
-                      "arguments": { "code": "import goal; await goal.complete()" } },
+                    { "type": "toolCall", "name": "javascript",
+                      "arguments": { "code": "await goal.complete()" } },
                 ] },
                 "wrap-up after the completion",
                 "after the loop settled",
@@ -251,8 +251,8 @@ async fn goal_turn_end_loop_runs_to_completion() {
     });
     if let Some(failure) = kernel_failure {
         panic!(
-            "the completing ipython cell failed — this test needs the kernel \
-                 environment (the bootstrapped kernel venv, or uv on PATH to build it): {failure:?}"
+            "the completing javascript cell failed — this test needs the Bun kernel \
+                 environment (Bun >= 1.3.14 on PATH or PRIME_AGENT_KERNEL_BUN): {failure:?}"
         );
     }
     let goal_rows: Vec<&Value> = events

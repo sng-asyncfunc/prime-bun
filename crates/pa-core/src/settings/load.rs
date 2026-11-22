@@ -64,7 +64,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "warnings",
     "sessionDir",
     "requestTiming",
-    "pythonCellTimeoutMs",
+    "javascriptCellTimeoutMs",
 ];
 
 /// Extract each known field independently; ignore fields whose JSON type does not match the Rust
@@ -131,22 +131,22 @@ mod tests {
     }
 
     #[test]
-    fn wrong_typed_python_cell_timeout_loads_as_unset() {
+    fn wrong_typed_javascript_cell_timeout_loads_as_unset() {
         // A known field: a wrong-typed value must behave as unset (the
         // getter's default), not survive raw in `extra` where a save
         // would persist the bad key.
         let value: Value = serde_json::json!({
-            "pythonCellTimeoutMs": "sixty seconds",
-            "pythonCellTimeoutValid": 30_000
+            "javascriptCellTimeoutMs": "sixty seconds",
+            "javascriptCellTimeoutValid": 30_000
         });
         let settings = from_value_lenient(&value);
-        assert_eq!(settings.python_cell_timeout_ms, None);
+        assert_eq!(settings.javascript_cell_timeout_ms, None);
         assert!(
-            !settings.extra.contains_key("pythonCellTimeoutMs"),
+            !settings.extra.contains_key("javascriptCellTimeoutMs"),
             "a wrong-typed known field never rides extra into a save"
         );
         assert_eq!(
-            settings.extra.get("pythonCellTimeoutValid"),
+            settings.extra.get("javascriptCellTimeoutValid"),
             Some(&serde_json::json!(30_000)),
             "genuine unknown keys keep flowing through extra"
         );

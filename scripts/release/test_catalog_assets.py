@@ -163,16 +163,15 @@ class SyntheticRepo:
         (root / "README.md").write_text("readme\n")
         runtime = root / "runtime"
         runtime.mkdir()
-        (runtime / "pyproject.toml").write_text("[project]\nname='rlm'\n")
-        (runtime / "src" / "rlm").mkdir(parents=True)
-        (runtime / "src" / "rlm" / "repl.py").write_text("# fixture REPL\n")
+        (runtime / "package.json").write_text('{"name":"prime-agent-runtime"}\n')
+        (runtime / "src").mkdir(parents=True)
+        (runtime / "src" / "repl.ts").write_text("// fixture REPL\n")
         # The exe-adjacent kernel runtime tree package_release.py stages.
         kernel = root / "prime-agent-runtime"
-        (kernel / "src" / "rlm").mkdir(parents=True)
-        (kernel / "pyproject.toml").write_text("[project]\nname='rlm'\n")
-        (kernel / "src" / "rlm" / "repl.py").write_text("# repl\n")
+        (kernel / "src").mkdir(parents=True)
+        (kernel / "package.json").write_text('{"name":"prime-agent-runtime"}\n')
+        (kernel / "src" / "repl.ts").write_text("// repl\n")
         printed = version if sha is None else f"{version}-continuous.{sha}"
-        (runtime / "src" / "repl.py").write_text("# repl\n")
         source = root / "prime-agent.c"
         source.write_text(f'#include <stdio.h>\nint main(void) {{ puts("{printed}"); return 0; }}\n')
         self.raw_binary = root / "bin" / "cargo-prime-agent"

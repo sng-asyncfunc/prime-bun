@@ -279,7 +279,7 @@ impl TimedClient {
 
     fn read_line(&mut self) -> Value {
         let mut line = String::new();
-        let deadline = Instant::now() + Duration::from_secs(600);
+        let deadline = Instant::now() + Duration::from_mins(10);
         self.reader
             .get_mut()
             .set_read_timeout(Some(Duration::from_millis(100)))
@@ -300,7 +300,7 @@ impl TimedClient {
     }
 
     fn read_response(&mut self, id: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(600);
+        let deadline = Instant::now() + Duration::from_mins(10);
         loop {
             assert!(Instant::now() < deadline, "no response for id {id}");
             let line = self.read_line();
@@ -495,7 +495,7 @@ fn mega_session_threshold_compaction_phase_measurement() {
                 loader_window = Some(end_at.duration_since(*at));
                 if let Some((_, notice_at)) = client.events[index..].iter().find(|(event, _)| {
                     event.get("type").and_then(Value::as_str) == Some("message_end")
-                        && event["message"]["customType"] == "ipython_state"
+                        && event["message"]["customType"] == "javascript_state"
                 }) {
                     notice_gap = Some(notice_at.duration_since(*at));
                 }
@@ -507,7 +507,7 @@ fn mega_session_threshold_compaction_phase_measurement() {
     println!("crossing prompt_and_wait total: {crossing_total:?}");
     println!("loader window (compaction_start -> compaction_end): {loader_window:?}");
     if let Some(notice_gap) = notice_gap {
-        println!("[python-state] notice gap from compaction_start: {notice_gap:?}");
+        println!("[javascript-state] notice gap from compaction_start: {notice_gap:?}");
     }
     let session_file = session_dir
         .read_dir()

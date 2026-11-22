@@ -50,7 +50,7 @@ impl Drop for Daemon {
 
 // The timeout panic path cannot wait on the child; the test exits and reaps it.
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_bun: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)
         .arg("supervisor")
@@ -58,7 +58,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+        .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
         // Hermetic agent dir: the ambient environment exports a real
         // agent dir; point every fallback at the test sandbox instead.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
@@ -79,26 +79,38 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
     }
 }
 
-/// The kernel Python; `PA_E2E_KERNEL_PYTHON` points at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`).
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live RLM parent-death e2e",
+        "kernel bun {} not found; skipping live RLM parent-death e2e",
         candidate.display()
     );
     None
@@ -275,17 +287,17 @@ fn await_receipt(receipt: &Path) -> String {
 /// product `rlm.spawn` surface and record its child id.
 fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import json, traceback\ntry:\n    handle = await rlm.spawn(\"run the lane task\", name=\"kid\")\n    open({receipt:?}, \"w\").write(json.dumps({{\"rlm_child_id\": handle.rlm_child_id}}))\n    print(handle.rlm_child_id)\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        "try {{\n  const handle = await rlm.spawn(\"run the lane task\", {{ name: \"kid\" }});\n  fs.writeFileSync({receipt:?}, JSON.stringify({{ rlm_child_id: handle.rlmChildId }}));\n  console.log(handle.rlmChildId);\n}} catch (err) {{\n  fs.writeFileSync({error_receipt:?}, String(err?.stack ?? err));\n  throw err;\n}}",
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
 }
 
 /// The kernel cell that creates one depth-0 resident root session through
-/// the product `rlm.create_session` surface.
+/// the product `rlm.createSession` surface.
 fn create_session_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import json, traceback\ntry:\n    handle = await rlm.create_session(\"root session task\", name=\"rootkid\")\n    open({receipt:?}, \"w\").write(json.dumps({{\"name\": handle.name}}))\n    print(handle.name)\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        "try {{\n  const handle = await rlm.createSession(\"root session task\", {{ name: \"rootkid\" }});\n  fs.writeFileSync({receipt:?}, JSON.stringify({{ name: handle.name }}));\n  console.log(handle.name);\n}} catch (err) {{\n  fs.writeFileSync({error_receipt:?}, String(err?.stack ?? err));\n  throw err;\n}}",
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
@@ -312,7 +324,7 @@ fn write_parent_script(dir: &Path, first_cell: &str) -> PathBuf {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": { "code": first_cell } },
+                    { "type": "toolCall", "name": "javascript", "arguments": { "code": first_cell } },
                 ] },
                 { "text": "spawn turn done" },
             ],
@@ -395,7 +407,7 @@ fn sigkill(pid: u32) {
 #[cfg(target_os = "linux")]
 #[test]
 fn sigkill_closes_the_spawned_child_and_passivates_the_row() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -409,7 +421,7 @@ fn sigkill_closes_the_spawned_child_and_passivates_the_row() {
 
     let child_script = write_child_script(dir.path());
     let parent_script = write_parent_script(dir.path(), &spawn_cell(&spawn_receipt, &spawn_error));
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -537,7 +549,7 @@ fn sigkill_closes_the_spawned_child_and_passivates_the_row() {
 #[cfg(target_os = "linux")]
 #[test]
 fn sigkill_keeps_a_created_root_session_running() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -554,7 +566,7 @@ fn sigkill_keeps_a_created_root_session_running() {
         dir.path(),
         &create_session_cell(&create_receipt, &create_error),
     );
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -621,7 +633,7 @@ fn sigkill_keeps_a_created_root_session_running() {
 /// RLM child through the product surface and record its id + session dir.
 fn semantic_spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import json, traceback\ntry:\n    handle = await rlm.spawn(\"child task text\", name=\"kid\")\n    open({receipt:?}, \"w\").write(json.dumps({{\"rlm_child_id\": handle.rlm_child_id, \"session_dir\": str(handle.session_dir)}}))\n    print(handle.rlm_child_id)\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        "try {{\n  const handle = await rlm.spawn(\"child task text\", {{ name: \"kid\" }});\n  fs.writeFileSync({receipt:?}, JSON.stringify({{ rlm_child_id: handle.rlmChildId, session_dir: String(handle.sessionDir) }}));\n  console.log(handle.rlmChildId);\n}} catch (err) {{\n  fs.writeFileSync({error_receipt:?}, String(err?.stack ?? err));\n  throw err;\n}}",
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
@@ -649,7 +661,7 @@ fn semantic_ledger(path: &Path) -> Vec<LedgerEvent> {
 /// provider).
 #[test]
 fn a_spawned_child_ledger_names_its_spawning_request_and_the_parent_records_the_return() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -678,7 +690,7 @@ fn a_spawned_child_ledger_names_its_spawning_request_and_the_parent_records_the_
         dir.path(),
         &semantic_spawn_cell(&spawn_receipt, &spawn_error),
     );
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

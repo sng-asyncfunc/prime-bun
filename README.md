@@ -56,12 +56,12 @@ The Windows installer downloads the latest stable Windows x64 build and verifies
 
 ## Why Prime Agent
 
-Prime Agent combines a persistent Python control environment with durable harness state, so useful working context and reusable operating patterns can outlive a single chat window.
+Prime Agent combines a persistent Bun JavaScript control environment with durable harness state, so useful working context and reusable operating patterns can outlive a single chat window.
 
-- **Everything is programmatic:** a persistent Python REPL is the built-in model tool; file operations, shell commands, tool use, subagents, and context management happen through code.
+- **Everything is programmatic:** a persistent Bun JavaScript REPL (`javascript` tool) is the built-in model tool; file operations, shell commands, tool use, subagents, and context management happen through code.
 - **Subagents are built in:** `rlm.spawn(...)` spawns real child agents for parallel or background work and returns their results programmatically.
 - **The harness can improve:** `/refine` reviews the current trajectory and can apply small, evidence-backed updates to supplemental harness state. It never rewrites the immutable base system prompt, and recorded snapshots support rollback.
-- **Skills can be executable:** Python skills in your user configuration are imported into the kernel; repository skills provide Markdown instructions without automatic code execution.
+- **Skills can be executable:** JavaScript/TypeScript skills in your user configuration are loaded into the Bun kernel; repository skills provide Markdown instructions without automatic code execution.
 - **Sessions run in the background:** daemon-backed agents keep running when the terminal disconnects and can be reattached later.
 - **Agents communicate directly:** running agents can exchange messages and orchestrate one another without routing everything through the user.
 - **Long tasks keep moving:** automatic compaction, persistent goals, heartbeats, schedules, autonomous mode, and retained subagents preserve progress across turns and terminal sessions.
@@ -78,7 +78,7 @@ prime-agent
 On first launch, run `/login` to choose a subscription or API-key provider. Prime Agent works in the current directory and can run commands and modify files there. Use a disposable clone, clean worktree, or another checkpoint you can inspect and restore.
 
 > [!WARNING]
-> Prime Agent executes model-generated Python and project commands with your user permissions. Its worker and kernel processes improve lifecycle isolation and recovery; they are **not** a security sandbox. Review changes and use trusted repositories, instructions, and skills only. Run untrusted code or instructions in an external sandbox or restricted environment.
+> Prime Agent executes model-generated JavaScript and project commands with your user permissions. Its worker and kernel processes improve lifecycle isolation and recovery; they are **not** a security sandbox. Review changes and use trusted repositories, instructions, and skills only. Run untrusted code or instructions in an external sandbox or restricted environment.
 
 Useful commands:
 
@@ -97,8 +97,8 @@ Prime Agent is built for long-running work, especially for evaluations in resear
 
 - **Continual Harness:** `/refine` can persist focused, reviewable lessons as supplemental prompts, memories, reusable skill descriptions, or subagent specifications, with recorded refinement history. It does not replace packaging and reviewing new executable skills.
 - **Direct agent-to-agent communication:** running agents and retained subagents can discover one another, exchange messages, and steer active work.
-- **Daemon-backed continuity:** active sessions, Python REPL state, schedules, and subagents keep running when the terminal detaches and can be reattached later.
-- **Heartbeats and schedules:** `/heartbeat`, `rlm_heartbeat`, and `prime-agent schedule` can re-enter a session periodically or at a specific time.
+- **Daemon-backed continuity:** active sessions, Bun JavaScript REPL state, schedules, and subagents keep running when the terminal detaches and can be reattached later.
+- **Heartbeats and schedules:** `/heartbeat`, `rlmHeartbeat`, and `prime-agent schedule` can re-enter a session periodically or at a specific time.
 - **Persistent goals:** `/goal` keeps an objective and its progress active across turns until it is completed, paused, or cleared.
 - **Bounded autonomous mode:** `/autonomous` continues within configured turn, token, and time budgets and can run user-defined quality gates. A passed gate checks only what that gate verifies; reaching a limit does not imply task success.
 

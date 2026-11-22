@@ -45,7 +45,7 @@ impl Drop for Daemon {
     }
 }
 
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_bun: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let log_file = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let log_err = log_file.try_clone().expect("clone log file");
@@ -55,7 +55,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+        .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
         .stdout(Stdio::null())
         .stderr(Stdio::from(log_err))
         .env(
@@ -115,7 +115,7 @@ impl Client {
     }
 
     fn read_response(&mut self, id: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         loop {
             let line = self.read_line();
             if line.get("id").and_then(Value::as_str) == Some(id) {
@@ -126,27 +126,38 @@ impl Client {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`).
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live passivation e2e",
+        "kernel bun {} not found; skipping live passivation e2e",
         candidate.display()
     );
     None
@@ -210,7 +221,7 @@ fn write_faux_script(dir: &Path, name: &str, responses: &Value) -> PathBuf {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -240,7 +251,7 @@ async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message(
         &json!([{ "text": "child done" }, { "text": "revived: the child answered again" }]),
     );
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -351,7 +362,7 @@ async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message(
 
     // The child worker's PROCESS is GONE (TS's whole-worker eviction semantics:
     // worker AND its kernel leave; the session file stays).
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     loop {
         if !child_alive() {
             break;
@@ -536,7 +547,7 @@ fn root_worker_ids(agent_dir: &Path) -> Vec<String> {
 /// worker over the child's session file and the rename lands there.
 #[tokio::test]
 async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_child() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -560,7 +571,7 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
         &json!([{ "text": "child done" }]),
     );
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -728,7 +739,7 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
         passivated["success"], true,
         "the second idle passivation must succeed: {passivated}"
     );
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     while std::path::Path::new(&format!("/proc/{revived_pid}")).exists() {
         assert!(
             Instant::now() < deadline,
@@ -793,7 +804,7 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_idle_root_passivates_and_resumes_by_its_durable_id_with_its_transcript() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -808,7 +819,7 @@ async fn an_idle_root_passivates_and_resumes_by_its_durable_id_with_its_transcri
     .expect("write settings");
     let root_script = write_faux_script(dir.path(), "root", &json!([{ "text": "root turn done" }]));
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -871,7 +882,7 @@ async fn an_idle_root_passivates_and_resumes_by_its_durable_id_with_its_transcri
     );
 
     // The root worker's process is gone (the whole-worker stop).
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     while std::path::Path::new(&format!("/proc/{root_pid}")).exists() {
         assert!(
             Instant::now() < deadline,

@@ -95,17 +95,17 @@ impl AcpChild {
     }
 
     /// The daemon-attached lane whose worker's kernel runs the given
-    /// interpreter (the env flows ACP -> supervisor -> worker).
+    /// Bun runtime (the env flows ACP -> supervisor -> worker).
     fn spawn_with_kernel(
         args: &[&str],
         script: &serde_json::Value,
-        kernel_python: &std::path::Path,
+        kernel_bun: &std::path::Path,
     ) -> AcpChild {
         let home = tempfile::TempDir::new().unwrap();
         let socket = home.path().join("daemon.sock");
         std::fs::write(home.path().join("worker-script.json"), script.to_string()).unwrap();
         let child = daemon_attached_command(home.path(), &socket, args)
-            .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+            .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
             .spawn()
             .expect("binary present");
         Self::wrap(child, Some(home), socket)
@@ -114,13 +114,13 @@ impl AcpChild {
     /// The daemon-attached lane whose `rlm.spawn` children are scripted:
     /// `<home>/child-script.json` rides the `PRIME_AGENT_FAUX_CHILD_SCRIPT`
     /// create-config seam (the worker already consumes the key), and the
-    /// parent worker's kernel runs the given interpreter (the env flows
+    /// parent worker's kernel runs the given Bun binary (the env flows
     /// ACP -> supervisor -> worker).
     fn spawn_with_child_script(
         args: &[&str],
         script: &serde_json::Value,
         child_script: &serde_json::Value,
-        kernel_python: &std::path::Path,
+        kernel_bun: &std::path::Path,
     ) -> AcpChild {
         let home = tempfile::TempDir::new().unwrap();
         let socket = home.path().join("daemon.sock");
@@ -129,7 +129,7 @@ impl AcpChild {
         std::fs::write(&child_script_path, child_script.to_string()).unwrap();
         let child = daemon_attached_command(home.path(), &socket, args)
             .env("PRIME_AGENT_FAUX_CHILD_SCRIPT", &child_script_path)
-            .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+            .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
             .spawn()
             .expect("binary present");
         Self::wrap(child, Some(home), socket)
@@ -2566,28 +2566,38 @@ fn acp_overflow_recovery_recovers_from_the_live_413_body() {
     assert_eq!(metas[0]["summary"], "the summary");
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-/// Without one, the live RLM quiescence lanes below skip (with a note).
-fn kernel_python() -> Option<std::path::PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary; set `PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`
+/// to point at an explicit binary instead.
+fn kernel_bun() -> Option<std::path::PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = std::path::PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = std::path::PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live RLM quiescence e2e",
+        "kernel bun {} not found; skipping live RLM quiescence e2e",
         candidate.display()
     );
     None
@@ -2602,7 +2612,7 @@ fn update_meta(frame: &Value) -> &Value {
 /// `rlm_quiescence_barrier_e2e` lane): spawn one RLM child through the
 /// product `rlm.spawn` surface and record its child id.
 fn spawn_cell() -> &'static str {
-    "handle = await rlm.spawn(\"run the lane task\", name=\"kid\")\nprint(handle.rlm_child_id)"
+    "const handle = await rlm.spawn(\"run the lane task\", { name: \"kid\" });\nconsole.log(handle.rlmChildId);"
 }
 
 /// The parent faux script whose turns run the spawn cell; the third
@@ -2613,7 +2623,7 @@ fn spawn_parent_script(spawn_cell: &str) -> Value {
         "engine": "faux",
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "python_repl", "arguments": { "code": spawn_cell } },
+                { "type": "toolCall", "name": "javascript", "arguments": { "code": spawn_cell } },
             ] },
             { "text": "spawn turn done" },
             { "text": "notice seen" },
@@ -2629,11 +2639,11 @@ fn spawn_parent_script(spawn_cell: &str) -> Value {
 fn spawn_lane(
     args: &[&str],
     child_hold_ms: u64,
-    kernel_python: &std::path::Path,
+    kernel_bun: &std::path::Path,
 ) -> (AcpChild, String, String) {
     let parent = spawn_parent_script(spawn_cell());
     let child_script = json!({ "responses": [ { "text": "kid done", "delayMs": child_hold_ms } ] });
-    let mut client = AcpChild::spawn_with_child_script(args, &parent, &child_script, kernel_python);
+    let mut client = AcpChild::spawn_with_child_script(args, &parent, &child_script, kernel_bun);
     let init = client.request("initialize", &initialize_params());
     let _ = client.wait_response(init, TIMEOUT);
     let session_id = new_session(&mut client);
@@ -2651,10 +2661,10 @@ fn spawn_lane(
 /// seen") drains inside the barrier, between the two.
 #[test]
 fn acp_prompt_settles_after_rlm_quiescence() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
-    let (mut client, session_id, _) = spawn_lane(&["--mode", "acp"], 5_000, &kernel_python);
+    let (mut client, session_id, _) = spawn_lane(&["--mode", "acp"], 5_000, &kernel_bun);
     let prompt = client.request(
         "session/prompt",
         &json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": "spawn the kid" }] }),
@@ -2711,22 +2721,22 @@ fn acp_prompt_settles_after_rlm_quiescence() {
 /// `[bash-done]` wake is consumed, a quiet turn reports zero.
 #[test]
 fn acp_prompt_reports_outstanding_background_bash_jobs() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let script = json!({
         "engine": "faux",
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "python_repl", "arguments": { "code":
-                    "from rlm import bash\nhandle = bash('sleep 5; echo QUIESCENT_JOB_DONE')\nprint('job launched', handle.running)" } },
+                { "type": "toolCall", "name": "javascript", "arguments": { "code":
+                    "const handle = bash('sleep 5; echo QUIESCENT_JOB_DONE');\nconsole.log('job launched', handle.running);" } },
             ] },
             { "text": "bash lane turn done" },
             { "text": "notice seen" },
             { "text": "quiet turn" },
         ],
     });
-    let mut client = AcpChild::spawn_with_kernel(&["--mode", "acp"], &script, &kernel_python);
+    let mut client = AcpChild::spawn_with_kernel(&["--mode", "acp"], &script, &kernel_bun);
     let init = client.request("initialize", &initialize_params());
     let _ = client.wait_response(init, TIMEOUT);
     let session_id = new_session(&mut client);
@@ -2818,11 +2828,11 @@ fn acp_prompt_reports_outstanding_background_bash_jobs() {
 /// stop sequence, so it is not retested here.
 #[test]
 fn acp_cancel_during_settle_cancels_the_subagents() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let (mut client, session_id, active_session_id) =
-        spawn_lane(&["--mode", "acp"], 120_000, &kernel_python);
+        spawn_lane(&["--mode", "acp"], 120_000, &kernel_bun);
     let socket = client.socket.clone();
     let prompt = client.request(
         "session/prompt",
@@ -2864,11 +2874,11 @@ fn acp_cancel_during_settle_cancels_the_subagents() {
 /// cancel a resident session's children.
 #[test]
 fn acp_eof_during_settle_exits_and_leaves_resident_subagents() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let (mut client, session_id, active_session_id) =
-        spawn_lane(&["--mode", "acp"], 120_000, &kernel_python);
+        spawn_lane(&["--mode", "acp"], 120_000, &kernel_bun);
     let socket = client.socket.clone();
     client.request(
         "session/prompt",

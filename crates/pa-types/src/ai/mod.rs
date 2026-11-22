@@ -250,11 +250,11 @@ pub struct ImageContent {
     pub rest: JsonMap,
 }
 
-pub const PYTHON_TOOL_NAME: &str = "python_repl";
+pub const JAVASCRIPT_TOOL_NAME: &str = "javascript";
 
 #[must_use]
-pub fn is_python_tool_name(name: &str) -> bool {
-    matches!(name, PYTHON_TOOL_NAME | "python" | "ipython")
+pub fn is_javascript_tool_name(name: &str) -> bool {
+    name == JAVASCRIPT_TOOL_NAME
 }
 
 /// Tool call content block (`type: "toolCall"`).

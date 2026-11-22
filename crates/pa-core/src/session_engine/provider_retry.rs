@@ -554,7 +554,7 @@ mod tests {
     fn tool_call() -> AssistantContent {
         AssistantContent::ToolCall(pa_agent::types::ToolCall {
             id: "c".to_string(),
-            name: "python_repl".to_string(),
+            name: "javascript".to_string(),
             arguments: serde_json::json!({}),
             thought_signature: None,
         })
@@ -1069,7 +1069,8 @@ mod tests {
     fn unsupported_tool_rejections_are_terminal() {
         let mut unsupported = error_message(Some("invalid_request"), Some(404), None);
         unsupported.error_message = Some(
-            "404 No endpoints found that support tool use. Try disabling \"ipython\".".to_string(),
+            "404 No endpoints found that support tool use. Try disabling \"javascript\"."
+                .to_string(),
         );
         assert!(is_unsupported_tool_failure(&unsupported));
         let mut upper = unsupported;

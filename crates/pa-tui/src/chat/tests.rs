@@ -408,11 +408,11 @@ fn code_block_indent_rides_the_render_calls() {
 }
 
 #[test]
-fn ipython_card_done_line() {
+fn javascript_card_done_line() {
     let card = ToolCallCard {
         id: "toolu_1".into(),
-        name: "ipython".into(),
-        args: serde_json::json!({ "code": "print('visual parity ok')" }),
+        name: "javascript".into(),
+        args: serde_json::json!({ "code": "console.log('visual parity ok')" }),
         started: true,
         result: Some(ToolResultView {
             content: vec![serde_json::json!({ "type": "text", "text": "visual parity ok" })],
@@ -436,7 +436,9 @@ fn ipython_card_done_line() {
         .map(|s| s.content.as_str())
         .collect::<String>();
     assert!(
-        text.contains("\u{2713} python \u{00b7} print('visual parity ok') \u{00b7} \u{2191} 1 \u{2193} 1 lines"),
+        text.contains(
+            "\u{2713} js \u{00b7} 'visual parity ok' \u{00b7} \u{2191} 1 \u{2193} 1 lines"
+        ),
         "got: {text}"
     );
 }
@@ -822,7 +824,7 @@ fn loader_gap_between_spinner_and_label_is_unstyled() {
 fn loader_working_message_replaces_the_activity_label() {
     let working = WorkingState {
         activity: "Executing",
-        message: Some("\u{203a} setting up python kernel (one-time, ~30s)\u{2026}".into()),
+        message: Some("\u{203a} setting up Bun worker\u{2026}".into()),
         download: true,
         tokens: 72,
         elapsed_secs: 3,
@@ -833,7 +835,7 @@ fn loader_working_message_replaces_the_activity_label() {
         .map(|s| s.content.as_str())
         .collect::<String>();
     assert!(
-        text.contains("\u{283c} \u{203a} setting up python kernel (one-time, ~30s)\u{2026} 3s"),
+        text.contains("\u{283c} \u{203a} setting up Bun worker\u{2026} 3s"),
         "got: {text}"
     );
     assert!(!text.contains("Executing"));

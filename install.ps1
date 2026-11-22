@@ -1,4 +1,4 @@
-# install.ps1 — the Windows-native installer for Prime Agent (Rust build).
+﻿# install.ps1 — the Windows-native installer for Prime Agent (Rust build).
 #
 # THE ONE-LINER (the production endpoint serves the stable installer):
 #
@@ -766,10 +766,10 @@ if (-not $uvOnPath -and $uvAtTarget -and -not (Test-PathEntry $env:PATH $uvInsta
     $env:PATH = "$uvInstallDir;$env:PATH"
 }
 if ($uvKnown) {
-    Write-Host 'kernel pre-warm: provisioning the Python kernel runtime'
+    Write-Host 'kernel pre-warm: provisioning the Bun JavaScript kernel runtime'
     & $launcher --prime-agent-bootstrap
     if ($LASTEXITCODE -ne 0) {
-        Step-Fail 'preparing the Python kernel' 'the first session retries it online'
+        Step-Fail 'preparing the Bun kernel' 'the first session retries it online'
     } else {
         Step-Ok 'kernel ready'
     }
@@ -882,13 +882,13 @@ try {
             # re-running cannot fix it).
             Write-Warning "the installed launcher failed --version with exit code -1073741515 (0xC0000135: the launcher could not start - a runtime DLL it needs is missing; the shipped build links the static runtime and should not need one - please report this install)"
         } else {
-            Write-Warning "the installed launcher failed --version (exit code $LASTEXITCODE; the first run bootstraps the kernel venv - re-run it)"
+            Write-Warning "the installed launcher failed --version (exit code $LASTEXITCODE; the first run bootstraps the Bun kernel - re-run it)"
         }
     } else {
         Write-Host "installed: $versionOut"
     }
 } catch {
-    Write-Warning "the first --version run failed (the first run bootstraps the kernel venv - re-run it): $($_.Exception.Message)"
+    Write-Warning "the first --version run failed (the first run bootstraps the Bun kernel - re-run it): $($_.Exception.Message)"
 }
 Write-Host "launcher:  $launcher"
 Write-Host "payload:   $share"

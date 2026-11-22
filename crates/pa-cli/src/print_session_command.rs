@@ -120,7 +120,7 @@ pub(crate) async fn execute_prompt_session_command(
         if let Some(message) = execution
             .compaction
             .as_ref()
-            .and_then(|compaction| compaction.ipython_state.as_ref())
+            .and_then(|compaction| compaction.javascript_state.as_ref())
         {
             goal.emit_row_pair(message);
         }
@@ -332,7 +332,7 @@ mod tests {
                     rlm_depth: None,
                     model_info: Some(model.clone()),
                     kernel_ready_gate: None,
-                    prewarm_ipython_kernel: None,
+                    prewarm_javascript_kernel: None,
                     on_background_work_settled: None,
                     bash_notice_wake: None,
                     queued_goal_context_purge: None,

@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 const DEBOUNCE: Duration = Duration::from_secs(1);
-const MIN_INTERVAL: Duration = Duration::from_secs(60);
+const MIN_INTERVAL: Duration = Duration::from_mins(1);
 const MAX_CONTROLLERS: usize = 256;
 
 #[derive(Default, Debug)]

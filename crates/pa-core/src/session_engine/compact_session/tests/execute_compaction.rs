@@ -150,7 +150,7 @@ async fn rebuilt_live_context_prevents_repeat_auto_compaction_until_new_usage() 
     )));
     for (custom_type, text) in [
         ("agent_message", "message from agent"),
-        ("ipython_state", "kernel survived compaction"),
+        ("javascript_state", "kernel survived compaction"),
     ] {
         live.push(AgentMessage::Custom(pa_types::session::CustomMessage {
             custom_type: custom_type.to_string(),
@@ -365,7 +365,7 @@ async fn execute_compaction_attaches_harness_digest_snapshot() {
         context: super::super::harness_digest::HarnessDigestContext {
             global_dir: global_dir.clone(),
             local_dir: Some(local_dir.clone()),
-            include_ipython: true,
+            include_javascript: true,
             include_shell_examples: true,
             include_refine: true,
         },
@@ -452,7 +452,7 @@ async fn execute_compaction_attaches_harness_digest_snapshot() {
         context: super::super::harness_digest::HarnessDigestContext {
             global_dir,
             local_dir: Some(local_dir.clone()),
-            include_ipython: true,
+            include_javascript: true,
             include_shell_examples: true,
             include_refine: true,
         },

@@ -1,4 +1,4 @@
-//! Cross-process bootstrap lock for the kernel venv: a `link(2)`-published
+//! Cross-process bootstrap lock for the kernel Bun runtime dir: a `link(2)`-published
 //! lock file whose owner is a live pid; stale locks are renamed aside,
 //! verified, then reclaimed.
 
@@ -6,14 +6,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::venv::{
+use super::bun::{
     BOOTSTRAP_LOCK_NAME, BOOTSTRAP_LOCK_RETRY_MS, BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS,
 };
 
 // A PID-only lock cannot distinguish its original owner from an unrelated
 // process that later receives the same PID. Never evict a possibly live
 // bootstrap: bound the caller's wait instead, including for legacy locks.
-const BOOTSTRAP_LOCK_WAIT: Duration = Duration::from_secs(120);
+const BOOTSTRAP_LOCK_WAIT: Duration = Duration::from_mins(2);
 
 fn is_process_alive(pid: u32) -> bool {
     crate::platform::process::pid_exists(pid)
@@ -150,7 +150,7 @@ pub(crate) async fn acquire_bootstrap_lock(venv: &Path) -> anyhow::Result<impl D
             DirLockAttempt::Held | DirLockAttempt::Reclaimed => {
                 if tokio::time::Instant::now() >= deadline {
                     anyhow::bail!(
-                        "Timed out after {} seconds waiting for the Python kernel bootstrap lock at {}. \
+                        "Timed out after {} seconds waiting for the Bun kernel bootstrap lock at {}. \
                          Another Prime Agent process may still be setting up this runtime. \
                          Retry after it finishes. If setup was interrupted, verify that no process \
                          is setting up this runtime before removing this lock and retrying.",

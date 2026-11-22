@@ -790,7 +790,7 @@ mod tests {
         coordinator.begin(id("u1"), now_ms(), &budget);
         assert_eq!(woken(), 1);
         assert!(wait.as_mut().poll(&mut cx).is_pending());
-        tokio::time::advance(Duration::from_secs(600)).await;
+        tokio::time::advance(Duration::from_mins(10)).await;
         assert_eq!(woken(), 1);
 
         // Only a budget move wakes: the ack swaps the deadline for the marker expiry.

@@ -109,8 +109,8 @@ impl CompactionManager {
             );
             // The post-compaction kernel notice's `message_start`/`message_end` pair precedes
             // `compaction_end` on the wire (TS `_performCompaction` order).
-            if let Some(message) = &run.ipython_state {
-                self.persist_and_emit_ipython_state(message);
+            if let Some(message) = &run.javascript_state {
+                self.persist_and_emit_javascript_state(message);
             }
         }
         let end = compaction_end_event(&outcome, custom_instructions.as_deref());
@@ -250,9 +250,9 @@ impl CompactionManager {
         let _ = store.persist_entry("compaction", fields);
     }
 
-    /// Persist the post-compaction `ipython_state` row and broadcast its `message_start`/
+    /// Persist the post-compaction `javascript_state` row and broadcast its `message_start`/
     /// `message_end` pair (TS `appendCustomMessageEntry`).
-    fn persist_and_emit_ipython_state(&self, message: &Value) {
+    fn persist_and_emit_javascript_state(&self, message: &Value) {
         let mut core = self.core.lock().unwrap();
         crate::worker::persist_custom_row(&mut core, message);
         crate::worker::broadcast_custom_row_locked(&mut core, &self.events, message);
@@ -570,7 +570,7 @@ mod tests {
             }),
             usage: None,
             entry: Value::Null,
-            ipython_state: None,
+            javascript_state: None,
         };
         assert_eq!(
             compaction_start_event("manual", Some("focus on the goal")),

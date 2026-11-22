@@ -107,7 +107,7 @@ fn a_slow_drain_flushes_the_whole_transcript_without_forcing_the_exit() {
 
     // Pace the drain: the deadline lands mid-flush, and the guard must hold
     // its fire on the writer's per-chunk progress.
-    let drained = harness.pump_until_exit(READ_RATE_BYTES_PER_S, Duration::from_secs(120));
+    let drained = harness.pump_until_exit(READ_RATE_BYTES_PER_S, Duration::from_mins(2));
     let exit_wall = keys_sent.elapsed();
     assert_eq!(
         harness.wait_child_exit(Duration::from_secs(5)),
@@ -185,7 +185,7 @@ fn a_stalled_drain_still_fires_the_force_quit() {
     // Resume the drain: the watchdog has fired, and its forced restore is
     // queued behind the blocked chunk write — the process dies with the
     // guard's exit code, the flush truncated at the stall point.
-    let _ = harness.pump_until_exit(READ_RATE_BYTES_PER_S, Duration::from_secs(60));
+    let _ = harness.pump_until_exit(READ_RATE_BYTES_PER_S, Duration::from_mins(1));
     let exit_wall = keys_sent.elapsed();
     assert_eq!(
         harness.wait_child_exit(Duration::from_secs(5)),

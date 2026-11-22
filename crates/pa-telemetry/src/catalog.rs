@@ -206,7 +206,17 @@ pub const ERROR_SUBTYPES: &[&str] = &[
 
 /// The #2117 tool categories.
 pub const TOOL_CATEGORIES: &[&str] = &[
-    "read", "write", "edit", "bash", "grep", "find", "ls", "ipython", "mcp", "custom", "unknown",
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+    "javascript",
+    "mcp",
+    "custom",
+    "unknown",
 ];
 
 pub const TERMINAL_OUTCOMES: &[&str] = &[
@@ -540,7 +550,7 @@ const AGENT_STARTED: EventRule = EventRule {
     properties: &[
         ("session_id", required(uuid())),
         ("skill_count", optional(count())),
-        ("python_skill_count", optional(count())),
+        ("javascript_skill_count", optional(count())),
     ],
 };
 
@@ -639,10 +649,10 @@ const AGENT_RUN_COMPLETED: EventRule = EventRule {
         ("tool_ls_error_count", optional(count())),
         ("tool_ls_duration_ms", optional(duration())),
         ("tool_ls_max_duration_ms", optional(duration())),
-        ("tool_ipython_call_count", optional(count())),
-        ("tool_ipython_error_count", optional(count())),
-        ("tool_ipython_duration_ms", optional(duration())),
-        ("tool_ipython_max_duration_ms", optional(duration())),
+        ("tool_javascript_call_count", optional(count())),
+        ("tool_javascript_error_count", optional(count())),
+        ("tool_javascript_duration_ms", optional(duration())),
+        ("tool_javascript_max_duration_ms", optional(duration())),
         ("mcp_tool_call_count", optional(count())),
         ("mcp_tool_error_count", optional(count())),
         ("mcp_tool_duration_ms", optional(duration())),
@@ -979,13 +989,13 @@ const SESSION_ARCHIVED: EventRule = EventRule {
     ],
 };
 
-/// A settled ipython cell that rendered as bash (v2): its executed
+/// A settled javascript cell that rendered as bash (v2): its executed
 /// `bash()` line share and command count, never command text. One of the
 /// standalone TUI events (with `agent command used`),
 /// tracked per render by the upstream #3307
 /// addition and kept intact.
-const TUI_IPYTHON_BASH_RENDERED: EventRule = EventRule {
-    name: "tui ipython bash rendered",
+const TUI_JAVASCRIPT_BASH_RENDERED: EventRule = EventRule {
+    name: "tui javascript bash rendered",
     since: 2,
     properties: &[
         ("bash_lines", required(count())),
@@ -1271,7 +1281,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &MODEL_REFUSED,
         &SESSION_ARCHIVED,
         &TUI_EXIT,
-        &TUI_IPYTHON_BASH_RENDERED,
+        &TUI_JAVASCRIPT_BASH_RENDERED,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

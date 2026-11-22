@@ -38,7 +38,7 @@ const TOOL_RESULT_TAIL_CHARS: usize = 500;
 pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut FileOperations) {
     match message {
         AgentMessage::ToolResult(result) => {
-            if !pa_types::ai::is_python_tool_name(&result.tool_name) {
+            if !pa_types::ai::is_javascript_tool_name(&result.tool_name) {
                 return;
             }
             let Some(details) = result.details.as_ref().and_then(|d| d.as_object()) else {
@@ -367,7 +367,7 @@ mod tests {
         ops.read.insert("/tmp/other.rs".to_string());
         let result = AgentMessage::ToolResult(pa_types::ai::ToolResultMessage {
             tool_call_id: "c".to_string(),
-            tool_name: "python_repl".to_string(),
+            tool_name: "javascript".to_string(),
             content: vec![],
             details: Some(serde_json::json!({
                 "diffs": [{ "path": "/pkg/lib.rs", "oldStr": "a", "newStr": "b" }]
@@ -470,14 +470,14 @@ mod tests {
     #[test]
     fn repeated_same_tool_calls_pair_by_index() {
         let messages = vec![
-            assistant_with_tool_calls(&[("c1", "ipython", "a"), ("c2", "ipython", "b")]),
-            tool_result("first output", "ipython", false, "c1"),
-            tool_result("second output", "ipython", true, "c2"),
+            assistant_with_tool_calls(&[("c1", "javascript", "a"), ("c2", "javascript", "b")]),
+            tool_result("first output", "javascript", false, "c1"),
+            tool_result("second output", "javascript", true, "c2"),
         ];
         let expected = [
-            "[Assistant tool calls]: #1 ipython(code=\"a\"); #2 ipython(code=\"b\")",
-            "[Tool result (ipython) #1]: first output",
-            "[Tool result (ipython, error) #2]: second output",
+            "[Assistant tool calls]: #1 javascript(code=\"a\"); #2 javascript(code=\"b\")",
+            "[Tool result (javascript) #1]: first output",
+            "[Tool result (javascript, error) #2]: second output",
         ]
         .join("\n\n");
         assert_eq!(serialize_conversation(&messages), expected);
@@ -487,11 +487,11 @@ mod tests {
     fn orphan_tool_result_falls_back_to_the_name_only_label() {
         let messages = vec![
             assistant_with_tool_calls(&[("c1", "bash", "ls")]),
-            tool_result("orphan output", "ipython", false, "tc-orphan"),
+            tool_result("orphan output", "javascript", false, "tc-orphan"),
         ];
         let expected = [
             "[Assistant tool calls]: #1 bash(code=\"ls\")",
-            "[Tool result (ipython)]: orphan output",
+            "[Tool result (javascript)]: orphan output",
         ]
         .join("\n\n");
         assert_eq!(serialize_conversation(&messages), expected);

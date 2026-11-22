@@ -47,28 +47,38 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python (the same resolution the MCP product-path e2e
-/// uses): an explicit `PA_E2E_KERNEL_PYTHON`, else the machine's live
-/// install. Skipped (with a note) on machines without one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`). Skipped (with a note) on machines without Bun.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping the herdr pane e2e",
+        "kernel bun {} not found; skipping the herdr pane e2e",
         candidate.display()
     );
     None
@@ -81,7 +91,7 @@ fn kernel_python() -> Option<PathBuf> {
 fn spawn_supervisor(
     socket: &Path,
     agent_dir: &Path,
-    kernel_python: &Path,
+    kernel_bun: &Path,
     herdr_socket: &Path,
 ) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
@@ -93,7 +103,7 @@ fn spawn_supervisor(
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+        .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env_remove("PRIME_API_KEY")
         // THE HOSTILE BOOT CONTEXT: a Herdr pane identity in the daemon's
@@ -222,7 +232,7 @@ impl Client {
     }
 
     fn read_response(&mut self, id: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         loop {
             let line = self.read_line();
             if line.get("id").and_then(Value::as_str) == Some(id) {
@@ -267,7 +277,7 @@ fn pane_env(herdr_socket: &Path, pane_id: &str) -> Value {
 /// settle, and the release as the kill's last write, with silence after.
 #[test]
 fn the_session_reports_its_payload_pane_across_the_lifecycle() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -279,7 +289,7 @@ fn the_session_reports_its_payload_pane_across_the_lifecycle() {
     let responses = json!([{ "text": "turn done" }, { "text": "turn done" }]);
     let script = write_faux_script(dir.path(), &responses);
     let requests = fake_herdr(&herdr_socket);
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, &herdr_socket);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun, &herdr_socket);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -398,7 +408,7 @@ fn the_session_reports_its_payload_pane_across_the_lifecycle() {
 /// (adopt-if-absent), reports for, and releases at its stop.
 #[test]
 fn an_envless_session_stays_silent_until_its_attach_adopts_the_pane() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -410,7 +420,7 @@ fn an_envless_session_stays_silent_until_its_attach_adopts_the_pane() {
     let responses = json!([{ "text": "turn done" }, { "text": "turn done" }]);
     let script = write_faux_script(dir.path(), &responses);
     let requests = fake_herdr(&herdr_socket);
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, &herdr_socket);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun, &herdr_socket);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

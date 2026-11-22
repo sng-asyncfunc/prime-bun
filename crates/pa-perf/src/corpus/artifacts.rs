@@ -39,9 +39,9 @@ const WORKER_NAMES: [&str; 12] = [
     "optimizer",
 ];
 
-/// A valid empty-dict pickle payload (protocol 4): the kernel-state sidecar
-/// stub unpickles cleanly to zero restored names.
-const EMPTY_PICKLE: &[u8] = b"\x80\x04}\x94.";
+/// A valid empty Bun v3 snapshot payload (4-byte big-endian header length +
+/// JSON header `{"version":3,"entries":[]}`): restores cleanly to zero names.
+const EMPTY_BUN_SNAPSHOT: &[u8] = b"\x00\x00\x00\x1a{\"version\":3,\"entries\":[]}";
 
 /// Write one session's artifact partition: the kernel-state manifest and
 /// payload, plus (per `rng`) a local harness store and a retired heartbeat.
@@ -58,9 +58,9 @@ pub(crate) fn write_artifact_dir(
     std::fs::create_dir_all(dir)?;
     std::fs::write(
         dir.join("kernel-state.json"),
-        json!({ "version": 1, "savedNames": [], "skipped": [] }).to_string(),
+        json!({ "version": 3, "savedNames": [], "skipped": [] }).to_string(),
     )?;
-    std::fs::write(dir.join("kernel-state.dill"), EMPTY_PICKLE)?;
+    std::fs::write(dir.join("kernel-state.bin"), EMPTY_BUN_SNAPSHOT)?;
 
     if rng.chance(30) {
         let harness_dir = dir.join("harness");
@@ -239,7 +239,7 @@ pub(crate) fn spawn_child(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn generated_kernel_snapshot_unpickles_to_an_empty_dictionary() {
+    fn generated_kernel_snapshot_decodes_as_empty_v3_header() {
         let directory = tempfile::tempdir().expect("artifact directory");
         super::write_artifact_dir(
             directory.path(),
@@ -248,16 +248,13 @@ mod tests {
             &mut crate::rng::Rng::new(7),
         )
         .expect("write real artifact partition");
-        let output = std::process::Command::new("python3")
-            .arg("-c")
-            .arg("import pickle,sys; value=pickle.load(open(sys.argv[1],'rb')); assert type(value) is dict and not value")
-            .arg(directory.path().join("kernel-state.dill"))
-            .output()
-            .expect("run hosted Python pickle reader");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let bytes =
+            std::fs::read(directory.path().join("kernel-state.bin")).expect("read snapshot");
+        assert!(bytes.len() >= 4);
+        let header_len = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        assert_eq!(bytes.len(), 4 + header_len);
+        let header: serde_json::Value =
+            serde_json::from_slice(&bytes[4..]).expect("parse snapshot header JSON");
+        assert_eq!(header, serde_json::json!({ "version": 3, "entries": [] }));
     }
 }

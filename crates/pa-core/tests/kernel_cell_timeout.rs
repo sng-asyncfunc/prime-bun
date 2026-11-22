@@ -20,30 +20,44 @@ use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use serde_json::{json, Value};
 
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available. Skipped (with a note)
+/// on machines without a live runtime; `PA_CORE_KERNEL_BUN` points at an explicit one.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live kernel test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live kernel test");
     None
 }
 
@@ -114,7 +128,7 @@ fn tool_result(entries: &Value, call_id: &str) -> (String, String) {
 
 #[tokio::test]
 async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::tempdir().expect("temp dir");
@@ -126,8 +140,8 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
 
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
+            "PRIME_AGENT_KERNEL_BUN",
+            Some(kernel_bun.display().to_string()),
         ),
         ("PRIME_AGENT_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
@@ -138,21 +152,20 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
 
     let model = scripted_model();
     let provider = std::sync::Arc::new(ScriptedProvider::new(model.clone()));
-    let swallow_interrupt =
-        "import time\nwhile True:\n    try:\n        time.sleep(30)\n    except KeyboardInterrupt:\n        pass";
+    let swallow_interrupt = "while (true) {}";
     for (call_id, args) in [
-        ("call-1", json!({ "code": "x = 41" })),
+        ("call-1", json!({ "code": "const x = 41;" })),
         (
             "call-2",
-            json!({ "code": "import time\nprint('before')\ntime.sleep(30)", "timeout": 2 }),
+            json!({ "code": "console.log('before');\nawait Bun.sleep(30_000);", "timeout": 2 }),
         ),
-        ("call-3", json!({ "code": "print(x + 1)" })),
+        ("call-3", json!({ "code": "console.log(x + 1);" })),
         ("call-4", json!({ "code": swallow_interrupt, "timeout": 2 })),
     ] {
         provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
             &model,
             None,
-            vec![(call_id, "python_repl", args)],
+            vec![(call_id, "javascript", args)],
         )));
     }
     provider.push_text_turn("done");
@@ -189,7 +202,7 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
         model_info: None,
         mcp_manager: None,
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,
@@ -201,7 +214,7 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
     .expect("create_session");
 
     tokio::time::timeout(
-        std::time::Duration::from_secs(240),
+        std::time::Duration::from_mins(4),
         engine.session.prompt(
             "run the cells",
             pa_core::session_engine::PromptOptions::default(),
@@ -218,7 +231,7 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
     assert_eq!(status, "error", "{text}");
     assert!(text.contains("before"), "{text}");
     assert!(text.contains("interrupted after 2s"), "{text}");
-    assert!(!text.contains("<ipython_kernel_reset>"), "{text}");
+    assert!(!text.contains("<javascript_kernel_reset>"), "{text}");
 
     // The turn continued and the namespace is intact.
     let (status, text) = tool_result(&entries, "call-3");
@@ -228,6 +241,6 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
     // A cell that swallows the interrupt gets the kernel restarted.
     let (status, text) = tool_result(&entries, "call-4");
     assert_eq!(status, "error", "{text}");
-    assert!(text.starts_with("<ipython_kernel_reset>"), "{text}");
+    assert!(text.starts_with("<javascript_kernel_reset>"), "{text}");
     assert!(text.contains("interrupted after 2s"), "{text}");
 }

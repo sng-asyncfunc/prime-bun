@@ -357,7 +357,7 @@ async fn recovery_reschedules_rate_limits_without_holding_an_upload_permit() {
     let permit = permits.acquire().await.unwrap();
     drop(permit);
     let (_body, second) = observed.recv().await.unwrap();
-    assert!(Instant::now() - started >= Duration::from_secs(120));
+    assert!(Instant::now() - started >= Duration::from_mins(2));
     second.send(response(200, "{}")).unwrap();
     assert!(task.await.unwrap());
     assert_eq!(
@@ -805,7 +805,7 @@ async fn mixed_consent_rescan_preserves_exhausted_rate_limit_deadline() {
     let (complete, not_before) = task.await.unwrap();
     assert!(!complete);
     let began = Instant::now();
-    assert_eq!(not_before, Some(began + Duration::from_secs(120)));
+    assert_eq!(not_before, Some(began + Duration::from_mins(2)));
     let state = Arc::new(std::sync::atomic::AtomicU8::new(1));
     let task_state = state.clone();
     let task = tokio::spawn(async move {
@@ -821,7 +821,7 @@ async fn mixed_consent_rescan_preserves_exhausted_rate_limit_deadline() {
     tokio::time::advance(MIN_INTERVAL).await;
     task.await.unwrap();
     assert_eq!(state.load(Ordering::Acquire), 0);
-    assert_eq!(Instant::now(), began + Duration::from_secs(120));
+    assert_eq!(Instant::now(), began + Duration::from_mins(2));
 }
 
 #[test]
@@ -1454,7 +1454,7 @@ async fn retirement_racing_completion_survives_and_preserves_the_retry_deadline(
     run.state.store(1, Ordering::Release);
     let complete = !run.replay_needed.load(Ordering::Acquire);
     run.replay_needed.store(true, Ordering::Release);
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_mins(2);
     *run.not_before.lock().unwrap() = Some(deadline);
     settle_recovery_run(&run.state, complete, Some(deadline), &run.cancel).await;
     assert_eq!(run.state.load(Ordering::Acquire), 2);

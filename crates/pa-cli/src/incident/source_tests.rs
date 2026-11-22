@@ -130,7 +130,7 @@ fn falls_back_to_the_newest_per_daemon_log_when_agent_jsonl_is_absent() {
         let decoy_dir = agent_dir.join("logs/daemon.sock.deadbeef.log");
         std::fs::create_dir(&decoy_dir).expect("decoy dir");
         let decoy = std::fs::File::open(&decoy_dir).expect("open decoy");
-        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let future = std::time::SystemTime::now() + std::time::Duration::from_mins(1);
         decoy
             .set_times(std::fs::FileTimes::new().set_modified(future))
             .expect("future mtime");

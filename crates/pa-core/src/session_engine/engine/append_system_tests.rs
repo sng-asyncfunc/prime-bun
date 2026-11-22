@@ -50,7 +50,7 @@ async fn assert_prompt_case(case: PromptCase) {
             stream_fn: Some(provider.stream_fn()),
             prompt_guidelines: case.explicit.clone(),
             daemonless,
-            prewarm_ipython_kernel: Some(false),
+            prewarm_javascript_kernel: Some(false),
             ..Default::default()
         })
         .await

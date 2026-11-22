@@ -449,7 +449,7 @@ pub fn event_to_update(event: &Value) -> Option<TurnUpdate> {
 }
 
 /// The loader note from a `tool_execution_update` partial result, if any:
-/// the python-kernel bootstrap reports startup stages with
+/// the Bun worker bootstrap reports startup stages with
 /// `details.status = "starting"`. `None` leaves the current note
 /// untouched (streamed `ok` is not a note change).
 pub fn working_message_from_update(partial: &Value) -> Option<String> {

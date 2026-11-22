@@ -31,18 +31,38 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// The kernel Python with prime-agent-runtime installed. Skipped (with a
-/// note) on machines without a live install.
-fn kernel_python() -> Option<PathBuf> {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`). Skipped (with a note) on machines without Bun.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
+        let explicit = PathBuf::from(explicit);
+        assert!(
+            explicit.exists(),
+            "PA_E2E_KERNEL_BUN {} not found",
+            explicit.display()
+        );
+        return Some(explicit);
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live kernel test",
+        "kernel bun {} not found; skipping live kernel test",
         candidate.display()
     );
     None
@@ -67,9 +87,9 @@ fn faux_script(dir: &Path) -> PathBuf {
             "responses": [
                 {"content": [
                     {"type": "text", "text": "Running the first sleep cell."},
-                    {"type": "toolCall", "name": "python_repl", "id": "toolu_sleep01",
+                    {"type": "toolCall", "name": "javascript", "id": "toolu_sleep01",
                      "arguments": {"code":
-                        "import time\nopen('sleep-one-started','w').write('1')\ntime.sleep(4)\nprint('slept one')"}}
+                        "fs.writeFileSync('sleep-one-started', '1');\nawait Bun.sleep(4000);\nconsole.log('slept one');"}}
                 ]},
                 {"content": [{"type": "text", "text": "batch reply for all three steers"}]},
                 {"content": [{"type": "text", "text": "queued reply"}]},
@@ -112,10 +132,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, script: &Path) -> Superviso
         .env_remove("PRIME_API_KEY")
         .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
         .env(pa_daemon::worker::WORKER_SCRIPT_ENV, script)
-        .env(
-            "PRIME_AGENT_KERNEL_PYTHON",
-            kernel_python().expect("kernel python"),
-        )
+        .env("PRIME_AGENT_KERNEL_BUN", kernel_bun().expect("kernel bun"))
         .env(
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",
@@ -244,7 +261,7 @@ impl Client {
 
 #[test]
 fn multi_steer_parked_mid_run_co_delivers_as_one_batched_turn() {
-    let Some(_kernel) = kernel_python() else {
+    let Some(_kernel) = kernel_bun() else {
         return;
     };
     let dir = tempfile::TempDir::new().expect("temp dir");

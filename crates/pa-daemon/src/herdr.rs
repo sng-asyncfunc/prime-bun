@@ -327,7 +327,7 @@ impl HerdrReporter {
         let Some(tx) = &self.tx else { return };
         let (done, ack) = tokio::sync::oneshot::channel();
         if tx.send(Signal::Release { done }).is_ok() {
-            let _ = tokio::time::timeout(Duration::from_millis(2000), ack).await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), ack).await;
         }
     }
 

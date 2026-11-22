@@ -573,7 +573,7 @@ impl Worker {
                             &late_core,
                             &late_events,
                             serde_json::json!({
-                                "type": "ipython_sent_agent_message",
+                                "type": "javascript_sent_agent_message",
                                 "toolCallId": tool_call_id,
                                 "message": wire,
                             }),

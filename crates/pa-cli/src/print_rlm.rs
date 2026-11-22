@@ -1310,20 +1310,20 @@ mod tests {
         assert_eq!(admitted, 0);
     }
 
-    /// The fake python tool of the landing test: records one late receipt
+    /// The fake javascript tool of the landing test: records one late receipt
     /// through the print path (the factored async fn) while its cell's
     /// result row has not landed.
-    struct LateReceiptPythonTool {
+    struct LateReceiptJavaScriptTool {
         node: Arc<InlineSessionNode>,
     }
 
-    impl pa_agent::types::AgentTool for LateReceiptPythonTool {
+    impl pa_agent::types::AgentTool for LateReceiptJavaScriptTool {
         fn name(&self) -> &'static str {
-            "python_repl"
+            "javascript"
         }
 
         fn description(&self) -> &'static str {
-            "Runs a python cell."
+            "Runs a JavaScript cell."
         }
 
         fn parameters(&self) -> &serde_json::Value {
@@ -1477,7 +1477,7 @@ mod tests {
         let script = json!({
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "id": "call-1", "name": "python_repl", "arguments": {} }
+                    { "type": "toolCall", "id": "call-1", "name": "javascript", "arguments": {} }
                 ] },
                 "all done",
             ],
@@ -1496,13 +1496,13 @@ mod tests {
         .unwrap();
         let engine = Arc::new(headless.engine);
         adopt_built_engine(&node, &engine, &headless.model).await;
-        // The scripted turn runs a fake python tool in place of the
+        // The scripted turn runs a fake javascript tool in place of the
         // kernel-backed one: the tool records the receipt while its cell's
         // result row has not landed.
         engine
             .session
             .agent()
-            .set_tools(vec![Arc::new(LateReceiptPythonTool {
+            .set_tools(vec![Arc::new(LateReceiptJavaScriptTool {
                 node: Arc::clone(&node),
             })])
             .await;
@@ -1540,7 +1540,7 @@ mod tests {
             entries.iter().any(|entry| matches!(
                 entry,
                 pa_types::session::FileEntry::Custom { payload, .. }
-                    if payload.custom_type == "ipython_sent_agent_message"
+                    if payload.custom_type == "javascript_sent_agent_message"
             )),
             "the receipt persists as a custom entry"
         );

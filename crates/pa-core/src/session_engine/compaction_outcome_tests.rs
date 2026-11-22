@@ -409,7 +409,7 @@ async fn refine_test_session_with(
         Some(super::harness_digest::HarnessDigestContext {
             global_dir: tmp.path().join("harness"),
             local_dir: local_harness_dir,
-            include_ipython: false,
+            include_javascript: false,
             include_shell_examples: false,
             include_refine: false,
         }),
@@ -455,7 +455,7 @@ async fn daemon_shaped_local_refinement_writes_the_sessions_own_harness_store() 
     let harness_digest = super::harness_digest::HarnessDigestContext {
         global_dir: crate::refinement::get_global_harness_state_dir(&agent_dir),
         local_dir: super::harness_digest::local_harness_dir_for_log(&conversation_log),
-        include_ipython: false,
+        include_javascript: false,
         include_shell_examples: false,
         include_refine: false,
     };
@@ -1370,7 +1370,7 @@ async fn refinement_preserves_provider_prefix_and_completed_state_across_resume(
     let harness = super::harness_digest::HarnessDigestContext {
         global_dir: global_dir.clone(),
         local_dir: None,
-        include_ipython: false,
+        include_javascript: false,
         include_shell_examples: false,
         include_refine: false,
     };

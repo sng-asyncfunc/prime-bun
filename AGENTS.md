@@ -165,8 +165,8 @@ EXPLICIT EXCEPTION: wire-protocol identifiers (e.g. the PI_PACKAGE_DIR env var, 
 
 ## Surface contract (must not change)
 
-- Tools exposed to the model: `bash`, `edit`, `python_repl` (internal helpers: `rename`, `stdout`).
-- RLM kernel API in the persistent Python REPL: `rlm.spawn/find_models/collect/list_subagents/delete_subagent/create_session/progress_note`, `rlm.harness` CRUD, `agent_message.send`, `agent_observe`, `compact`, `goal`, `refine`, `attach_image`, skills (markdown + Python) per the skill contract in the base system prompt.
+- Tools exposed to the model: `javascript` (persistent Bun REPL; programmatic tools `bash`, `edit`, etc. inside it).
+- RLM kernel API in the persistent Bun JavaScript REPL: `rlm.spawn/findModels/collect/listSubagents/deleteSubagent/createSession/progressNote/rename/endTurn`, `rlm.session`, `rlm.factory`, `rlm.harness` CRUD, `mcp`, `agentMessage.send`, `agentObserve`, `compact`, `goal`, `refine`, `attachImage`, skills (markdown + JavaScript) per the skill contract in the base system prompt.
 - System prompt structure: layered — cache-stable static layer files (core harness description with the full API surface, mandatory usage rules, opinionated guidelines, per-model additions from the model-prompts TOML rule map) followed by one dynamic tail (packages, project context, skills inventory, MCP servers, environment, session role); the harness digest stays a separate `[harness-digest]` user message. `prime-agent prompt` dumps the assembled prompt with its layer breakdown.
 - CLI shape: `prime-agent` keeps its existing commands and flags; headless modes (RPC/daemon/session-worker) keep their behavior.
 

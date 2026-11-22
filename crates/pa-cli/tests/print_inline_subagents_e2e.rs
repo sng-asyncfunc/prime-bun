@@ -11,16 +11,14 @@
 )]
 
 //! End-to-end inline (daemonless) RLM subagents in print mode: the real
-//! binary, a scripted faux provider, and a real Python kernel drive the
+//! binary, a scripted faux provider, and a real Bun JavaScript kernel drive the
 //! full in-process tree — spawn, child reply turns, the #2270 quiescence
 //! wait, the depth gate, and the exit disposal.
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// One isolated print run: a hermetic HOME + agent dir, the faux script
-/// as the environment seam, and the kernel Python for the ipython lanes.
+/// as the environment seam, and the kernel Bun binary for the javascript lanes.
 struct PrintLane {
     home: tempfile::TempDir,
     agent_dir: PathBuf,
@@ -34,29 +32,39 @@ fn lane() -> PrintLane {
 }
 
 impl PrintLane {
-    /// The kernel Python with prime-agent-runtime installed; set
-    /// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter. A
-    /// missing kernel FAILS the lane loudly (these e2es are the
-    /// subagent surface's proof — a skip would read green while
-    /// proving nothing).
-    fn kernel_python() -> PathBuf {
-        if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+    /// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+    /// PATH, or `~/.bun/bin/bun`). A missing kernel FAILS the lane loudly
+    /// (these e2es are the subagent surface's proof — a skip would read green
+    /// while proving nothing).
+    fn kernel_bun() -> PathBuf {
+        if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_BUN")
+            .or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+        {
             let explicit = PathBuf::from(explicit);
             assert!(
                 explicit.exists(),
-                "PA_E2E_KERNEL_PYTHON {} not found",
+                "PA_E2E_KERNEL_BUN {} not found",
                 explicit.display()
             );
             return explicit;
         }
+        if let Ok(path_var) = std::env::var("PATH") {
+            let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join(exe);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
         let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-            |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-            |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+            |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+            |home| format!("{home}/.bun/bin/bun"),
         ));
         assert!(
             candidate.exists(),
-            "kernel python {} not found: set PA_E2E_KERNEL_PYTHON (the kernel-venv layout the \
-             product's own bootstrap creates) — the inline-subagent e2es cannot run without one",
+            "kernel bun {} not found: install Bun or set PA_E2E_KERNEL_BUN — the \
+             inline-subagent e2es cannot run without one",
             candidate.display()
         );
         candidate
@@ -66,52 +74,17 @@ impl PrintLane {
         &self,
         args: &[&str],
         script: &serde_json::Value,
-        kernel_python: &Path,
+        kernel_bun: &Path,
         env_extra: &[(&str, &str)],
     ) -> (String, String, i32) {
         let bin = env!("CARGO_BIN_EXE_prime-agent");
-        // This test explicitly selects its interpreter, which supplies the
-        // checkout's skills without relying on the product's inherited env.
-        let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
-        let python_paths = [skills.join("agent-message/src"), skills.join("goal/src")];
-        let python_path = std::env::join_paths(python_paths).expect("skill import paths");
-        #[cfg(unix)]
-        let wrapper = {
-            let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
-            let wrapper = self.home.path().join("kernel-python-with-skills");
-            std::fs::write(
-                &wrapper,
-                format!(
-                    "#!/bin/sh\nexport PYTHONPATH={}\nexec {} \"$@\"\n",
-                    quote(&python_path.to_string_lossy()),
-                    quote(&kernel_python.to_string_lossy())
-                ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
-            wrapper
-        };
-        #[cfg(windows)]
-        let wrapper = {
-            let wrapper = self.home.path().join("kernel-python-with-skills.cmd");
-            std::fs::write(
-                &wrapper,
-                format!(
-                    "@echo off\r\nset \"PYTHONPATH={}\"\r\n\"{}\" %*\r\n",
-                    python_path.to_string_lossy().replace('%', "%%"),
-                    kernel_python.to_string_lossy().replace('%', "%%")
-                ),
-            )
-            .unwrap();
-            wrapper
-        };
         let mut command = std::process::Command::new(bin);
         command
             .args(args)
             .env("HOME", self.home.path())
             .env("PRIME_AGENT_CODING_AGENT_DIR", &self.agent_dir)
             .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
-            .env("PRIME_AGENT_KERNEL_PYTHON", &wrapper)
+            .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
             .env_remove("RLM_DEPTH")
             .env_remove("RLM_MAX_DEPTH")
             .env_remove("PRIME_AGENT_SESSION_DIR")
@@ -139,7 +112,7 @@ impl PrintLane {
                 .expect("binary present");
             let pid = child.id().expect("running child") as i32;
             if let Ok(status) =
-                tokio::time::timeout(std::time::Duration::from_secs(120), child.wait()).await
+                tokio::time::timeout(std::time::Duration::from_mins(2), child.wait()).await
             {
                 Some(status.expect("print run exits"))
             } else {
@@ -195,17 +168,17 @@ impl PrintLane {
 /// The parent's spawn cell (turn 1): two named children, then the turn
 /// ends while both still run — the #2270 scenario.
 fn spawn_cell() -> String {
-    "a = await rlm.spawn(\"run the alpha task\", name=\"alpha\")\n\
-     b = await rlm.spawn(\"run the beta task\", name=\"beta\")\n\
-     print(\"SPAWNED\", a.rlm_child_id, b.rlm_child_id)"
+    "const a = await rlm.spawn(\"run the alpha task\", { name: \"alpha\" });\n\
+     const b = await rlm.spawn(\"run the beta task\", { name: \"beta\" });\n\
+     console.log(\"SPAWNED\", a.rlmChildId, b.rlmChildId);"
         .to_string()
 }
 
-/// One child's reply cell: the ipython lane sends the parent a message
+/// One child's reply cell: the javascript lane sends the parent a message
 /// (the reply that must survive the print run staying open).
 fn reply_cell(child: &str) -> String {
     format!(
-        "await agent_message.send(\"{child}-RESULT\", receiver_role=\"parent\")\nprint(\"{child} REPLIED\")"
+        "await agentMessage.send(\"{child}-RESULT\", {{ receiverRole: \"parent\" }});\nconsole.log(\"{child} REPLIED\");"
     )
 }
 
@@ -220,7 +193,7 @@ fn combined_parent_script() -> serde_json::Value {
         // so the printed answer proves the parent turned AFTER them.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "javascript",
                   "arguments": { "code": spawn_cell() } },
             ] },
             "WAITING",
@@ -230,14 +203,14 @@ fn combined_parent_script() -> serde_json::Value {
         "children": {
             "alpha": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": reply_cell("ALPHA") } },
                 ] },
                 "alpha finished",
             ] },
             "beta": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": reply_cell("BETA") } },
                 ] },
                 "beta finished",
@@ -253,7 +226,7 @@ fn combined_parent_script() -> serde_json::Value {
 #[test]
 fn print_inline_subagents_wait_for_replies_and_combine_them() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
+    let kernel = PrintLane::kernel_bun();
     let (stdout, stderr, code) = lane.run(
         &["-p", "delegate the work"],
         &combined_parent_script(),
@@ -383,7 +356,7 @@ fn print_inline_subagents_wait_for_replies_and_combine_them() {
         let snapshot = artifacts
             .join("session-artifacts")
             .join(&child_id)
-            .join("kernel-state.dill");
+            .join("kernel-state.bin");
         assert!(
             snapshot.exists(),
             "the disposed kernel's final snapshot landed at {}",
@@ -398,13 +371,13 @@ fn print_inline_subagents_wait_for_replies_and_combine_them() {
 #[test]
 fn print_inline_subagents_enforce_the_depth_limit() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let spawn_attempt = "try:\n    g = await rlm.spawn(\"run the grandkid task\", name=\"grandkid\")\n    print(\"SPAWN_OK\", g.rlm_child_id)\nexcept Exception as error:\n    print(\"SPAWN_FAILED:\", error)".to_string();
+    let kernel = PrintLane::kernel_bun();
+    let spawn_attempt = "try {\n  const g = await rlm.spawn(\"run the grandkid task\", { name: \"grandkid\" });\n  console.log(\"SPAWN_OK\", g.rlmChildId);\n} catch (error) {\n  console.log(\"SPAWN_FAILED:\", error?.message ?? String(error));\n}".to_string();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "const kid = await rlm.spawn(\"run the kid task\", { name: \"kid\" });\nconsole.log(\"KID\", kid.rlmChildId);" } },
             ] },
             "PARENT DONE",
         ],
@@ -412,7 +385,7 @@ fn print_inline_subagents_enforce_the_depth_limit() {
         "children": {
             "kid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": spawn_attempt } },
                 ] },
                 "kid finished",
@@ -477,16 +450,16 @@ fn print_inline_subagents_enforce_the_depth_limit() {
 #[test]
 fn print_inline_subagents_wait_for_a_retasked_child() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let follow_up_cell = "collected = await rlm.collect([\"kid\"], timeout_ms=60000)\nprint(\"FIRST-TASK\", collected[0].status, collected[0].settled, collected[0].answer_text)\nawait agent_message.send(\"SECOND-RESULT\", receiver_role=\"child\", receiver_name=\"kid\")\nretasked = await rlm.collect([\"kid\"], timeout_ms=60000)\nprint(\"SECOND-TASK\", retasked[0].status, retasked[0].settled, retasked[0].answer_text)".to_string();
+    let kernel = PrintLane::kernel_bun();
+    let follow_up_cell = "const collected = await rlm.collect([\"kid\"], { timeoutMs: 60000 });\nconsole.log(\"FIRST-TASK\", collected[0].status, collected[0].settled, collected[0].answerText);\nawait agentMessage.send(\"SECOND-RESULT\", { receiverRole: \"child\", receiverName: \"kid\" });\nconst retasked = await rlm.collect([\"kid\"], { timeoutMs: 60000 });\nconsole.log(\"SECOND-TASK\", retasked[0].status, retasked[0].settled, retasked[0].answerText);".to_string();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "const kid = await rlm.spawn(\"run the kid task\", { name: \"kid\" });\nconsole.log(\"KID\", kid.rlmChildId);" } },
             ] },
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "javascript",
                   "arguments": { "code": follow_up_cell } },
             ] },
             "WAITING",
@@ -496,12 +469,12 @@ fn print_inline_subagents_wait_for_a_retasked_child() {
         "children": {
             "kid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": reply_cell("FIRST") } },
                 ] },
                 "kid finished the first task",
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": reply_cell("SECOND") } },
                 ] },
                 "kid finished the second task",
@@ -538,11 +511,11 @@ fn print_inline_subagents_wait_for_a_retasked_child() {
     // settled child's stale first answer.
     let parent_text = serde_json::to_string(&parent_entries).unwrap();
     assert!(
-        parent_text.contains("FIRST-TASK done True kid finished the first task"),
+        parent_text.contains("FIRST-TASK done true kid finished the first task"),
         "the collect before the follow-up read the first task's settled answer: {parent_text}"
     );
     assert!(
-        parent_text.contains("SECOND-TASK done True kid finished the second task"),
+        parent_text.contains("SECOND-TASK done true kid finished the second task"),
         "the collect after the follow-up returned the second task's answer: {parent_text}"
     );
 }
@@ -556,30 +529,30 @@ fn print_inline_subagents_wait_for_a_retasked_child() {
 #[test]
 fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
+    let kernel = PrintLane::kernel_bun();
     // The turn over the failure row: read the failed verdict, then
     // re-task the child from the parent.
-    let retask_cell = "collected = await rlm.collect([\"flaky\"], timeout_ms=60000)\nprint(\"FIRST-COLLECT\", collected[0].status, collected[0].error)\nawait agent_message.send(\"retry the task\", receiver_role=\"child\", receiver_name=\"flaky\")".to_string();
+    let retask_cell = "const collected = await rlm.collect([\"flaky\"], { timeoutMs: 60000 });\nconsole.log(\"FIRST-COLLECT\", collected[0].status, collected[0].error);\nawait agentMessage.send(\"retry the task\", { receiverRole: \"child\", receiverName: \"flaky\" });".to_string();
     // The turn over the second reply: collect the clean retry.
     let second_collect_cell =
-        "collected = await rlm.collect([\"flaky\"], timeout_ms=60000)\nprint(\"SECOND-COLLECT\", collected[0].status, collected[0].error)".to_string();
+        "const collected = await rlm.collect([\"flaky\"], { timeoutMs: 60000 });\nconsole.log(\"SECOND-COLLECT\", collected[0].status, collected[0].error);".to_string();
     let script = serde_json::json!({
         // Turn 1 spawns and ends ("WAITING"); the failed task's failure
         // row drains as turn 2 (the re-task), the second reply drains as
         // turn 3, and its collect reads the clean retry.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"flaky\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "const kid = await rlm.spawn(\"run the kid task\", { name: \"flaky\" });\nconsole.log(\"KID\", kid.rlmChildId);" } },
             ] },
             "WAITING",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "javascript",
                   "arguments": { "code": retask_cell } },
             ] },
             "RETASKED",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "javascript",
                   "arguments": { "code": second_collect_cell } },
             ] },
             "RETRY CLEAN",
@@ -593,7 +566,7 @@ fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
                 { "text": "the provider exploded mid-task", "stopReason": "error",
                   "errorMessage": "faux provider exploded", "delayMs": 3000 },
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": reply_cell("SECOND") } },
                 ] },
                 "kid finished the retry",
@@ -642,7 +615,7 @@ fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
         "the failure row (row {failure_at}) landed before the second reply (row {reply_at})"
     );
     assert!(
-        parent_text.contains("SECOND-COLLECT done None"),
+        parent_text.contains("SECOND-COLLECT done null"),
         "the retry collected done with no stale error: {parent_text}"
     );
 }
@@ -705,21 +678,22 @@ fn autonomous_continuation_row_at(entries: &[serde_json::Value]) -> Option<usize
 #[test]
 fn print_inline_goal_continuation_waits_for_the_child_reply() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let complete_cell = "done = await goal.complete()\nprint(\"GOAL COMPLETED\")".to_string();
+    let kernel = PrintLane::kernel_bun();
+    let complete_cell =
+        "const done = await goal.complete();\nconsole.log(\"GOAL COMPLETED\");".to_string();
     let script = serde_json::json!({
         // Turn 1 spawns and ends ("WAITING"); the reply drains as turn 2;
         // the owed goal continuation runs as the post-reply turn, calls
         // `goal.complete()`, and ends deterministically.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "const kid = await rlm.spawn(\"run the kid task\", { name: \"kid\" });\nconsole.log(\"KID\", kid.rlmChildId);" } },
             ] },
             "WAITING",
             "READ THE REPLY",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "javascript",
                   "arguments": { "code": complete_cell } },
             ] },
             "GOAL DONE AFTER REPLY",
@@ -730,7 +704,7 @@ fn print_inline_goal_continuation_waits_for_the_child_reply() {
                 // The delayed reply holds the child open: the parent's
                 // goal gate sees it unsettled at the spawn turn's end.
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": reply_cell("KID") } },
                 ], "delayMs": 3000 },
                 "kid done",
@@ -784,21 +758,22 @@ fn print_inline_goal_continuation_waits_for_the_child_reply() {
 #[test]
 fn print_inline_autonomous_continuation_waits_for_the_child_reply() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let marker_cell = "open(\"gate-marker\", \"w\").write(\"done\")\nprint(\"MARKED\")".to_string();
+    let kernel = PrintLane::kernel_bun();
+    let marker_cell =
+        "fs.writeFileSync(\"gate-marker\", \"done\");\nconsole.log(\"MARKED\");".to_string();
     let script = serde_json::json!({
         // Turn 1 spawns and ends ("WAITING"); the reply drains as turn 2;
         // the held continuation runs as the post-reply turn, writes the
         // gate marker, and the now-passing gate stops the run.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "const kid = await rlm.spawn(\"run the kid task\", { name: \"kid\" });\nconsole.log(\"KID\", kid.rlmChildId);" } },
             ] },
             "WAITING",
             "READ THE REPLY",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "javascript",
                   "arguments": { "code": marker_cell } },
             ] },
             "AUTONOMOUS CONTINUES",
@@ -807,7 +782,7 @@ fn print_inline_autonomous_continuation_waits_for_the_child_reply() {
         "children": {
             "kid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": reply_cell("KID") } },
                 ], "delayMs": 3000 },
                 "kid done",
@@ -859,21 +834,22 @@ fn print_inline_autonomous_continuation_waits_for_the_child_reply() {
 #[test]
 fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
     let warm_lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let complete_cell = "done = await goal.complete()\nprint(\"GOAL COMPLETED\")".to_string();
+    let kernel = PrintLane::kernel_bun();
+    let complete_cell =
+        "const done = await goal.complete();\nconsole.log(\"GOAL COMPLETED\");".to_string();
     let script = serde_json::json!({
         // Turn 1 spawns and ends; the reply drains as turn 2 (crossing
         // the budget); the wrap-up steer runs as turn 3 and completes the
         // goal, so the run ends deterministically.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "const kid = await rlm.spawn(\"run the kid task\", { name: \"kid\" });\nconsole.log(\"KID\", kid.rlmChildId);" } },
             ] },
             "WAITING",
             "READ THE REPLY",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "javascript",
                   "arguments": { "code": complete_cell } },
             ] },
             "GOAL WRAPPED UP",
@@ -882,7 +858,7 @@ fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
         "children": {
             "kid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "javascript",
                       "arguments": { "code": reply_cell("KID") } },
                 ], "delayMs": 3000 },
                 "kid done",
@@ -988,40 +964,64 @@ fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
 #[test]
 fn print_inline_rename_rejects_sibling_collisions_and_preserves_routing() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
+    let kernel = PrintLane::kernel_bun();
     let parent_cell = r#"
-alpha = await rlm.spawn("answer alpha", name="alpha")
-beta = await rlm.spawn("check self rename", name="beta")
-first = await rlm.collect([beta], timeout_ms=60000)
-assert first[0].settled and first[0].answer_text == "beta checked"
-try:
-    await rlm.rename("alpha", session_id=beta)
-except Exception as error:
-    assert "unavailable" in str(error), str(error)
-else:
-    raise AssertionError("parent rename accepted a duplicate sibling name")
-rows = await rlm.list_subagents()
-assert {row.rlm_child_id: row.session_name for row in rows} == {alpha.rlm_child_id: "alpha", beta.rlm_child_id: "beta"}
-results = await rlm.collect(["alpha", "beta"], timeout_ms=60000)
-assert [(result.session_name, result.answer_text) for result in results] == [("alpha", "alpha answered"), ("beta", "beta checked")]
-assert await rlm.rename("beta", session_id=beta) == "beta"
-assert await rlm.rename("gamma", session_id=beta) == "gamma"
-renamed = await rlm.collect(["gamma"], timeout_ms=60000)
-assert renamed[0].rlm_child_id == beta.rlm_child_id
-print("RENAME ROUTING VERIFIED")
+const alpha = await rlm.spawn("answer alpha", { name: "alpha" });
+const beta = await rlm.spawn("check self rename", { name: "beta" });
+const first = await rlm.collect([beta], { timeoutMs: 60000 });
+if (!first[0].settled || first[0].answerText !== "beta checked") {
+  throw new Error(`unexpected first collect: ${JSON.stringify(first)}`);
+}
+let parentRenameRejected = false;
+try {
+  await rlm.rename("alpha", { sessionId: beta });
+} catch (error) {
+  const msg = String(error);
+  if (!msg.includes("unavailable")) throw new Error(`unexpected error: ${msg}`);
+  parentRenameRejected = true;
+}
+if (!parentRenameRejected) {
+  throw new Error("parent rename accepted a duplicate sibling name");
+}
+const rows = await rlm.listSubagents();
+const byId = Object.fromEntries(rows.map((row) => [row.rlmChildId, row.sessionName]));
+if (byId[alpha.rlmChildId] !== "alpha" || byId[beta.rlmChildId] !== "beta" || rows.length !== 2) {
+  throw new Error(`unexpected subagent rows: ${JSON.stringify(byId)}`);
+}
+const results = await rlm.collect(["alpha", "beta"], { timeoutMs: 60000 });
+const pairs = results.map((r) => [r.sessionName, r.answerText]);
+if (JSON.stringify(pairs) !== JSON.stringify([["alpha", "alpha answered"], ["beta", "beta checked"]])) {
+  throw new Error(`unexpected collect pairs: ${JSON.stringify(pairs)}`);
+}
+if (await rlm.rename("beta", { sessionId: beta }) !== "beta") {
+  throw new Error("no-op rename did not return beta");
+}
+if (await rlm.rename("gamma", { sessionId: beta }) !== "gamma") {
+  throw new Error("rename to gamma did not return gamma");
+}
+const renamed = await rlm.collect(["gamma"], { timeoutMs: 60000 });
+if (renamed[0].rlmChildId !== beta.rlmChildId) {
+  throw new Error(`renamed collect mismatch: ${JSON.stringify(renamed)}`);
+}
+console.log("RENAME ROUTING VERIFIED");
 "#;
     let child_cell = r#"
-try:
-    await rlm.rename("alpha")
-except Exception as error:
-    assert "unavailable" in str(error), str(error)
-else:
-    raise AssertionError("self rename accepted a duplicate sibling name")
-print("SELF RENAME REJECTED")
+let rejected = false;
+try {
+  await rlm.rename("alpha");
+} catch (error) {
+  const msg = String(error);
+  if (!msg.includes("unavailable")) throw new Error(`unexpected error: ${msg}`);
+  rejected = true;
+}
+if (!rejected) {
+  throw new Error("self rename accepted a duplicate sibling name");
+}
+console.log("SELF RENAME REJECTED");
 "#;
     let script = serde_json::json!({
         "responses": [
-            { "content": [{ "type": "toolCall", "name": "ipython",
+            { "content": [{ "type": "toolCall", "name": "javascript",
                 "arguments": { "code": parent_cell } }] },
             "RENAMES CHECKED",
         ],
@@ -1029,7 +1029,7 @@ print("SELF RENAME REJECTED")
         "children": {
             "alpha": { "responses": ["alpha answered"] },
             "beta": { "responses": [
-                { "content": [{ "type": "toolCall", "name": "ipython",
+                { "content": [{ "type": "toolCall", "name": "javascript",
                     "arguments": { "code": child_cell } }] },
                 "beta checked",
             ] },
@@ -1057,59 +1057,86 @@ print("SELF RENAME REJECTED")
 #[test]
 fn print_inline_delete_cancels_an_executing_child_and_removes_it() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
+    let kernel = PrintLane::kernel_bun();
     let parent_cell = r#"
-import asyncio
-from pathlib import Path
-ready = asyncio.get_running_loop().create_future()
-async def accept_ready(reader, writer):
-    try:
-        assert await reader.readline() == b"ready\n"
-        ready.set_result(None)
-    finally:
-        writer.close()
-        await writer.wait_closed()
-server = await asyncio.start_server(accept_ready, "127.0.0.1", 0)
-try:
-    Path("cancel-port").write_text(str(server.sockets[0].getsockname()[1]))
-    child = await rlm.spawn("wait until cancelled", name="waiting")
-    await asyncio.wait_for(ready, timeout=30)
-    deleted = await rlm.delete_subagent(child)
-    assert deleted.status == "cancelled", deleted
-    assert await rlm.list_subagents() == []
-    try:
-        await rlm.collect([child], timeout_ms=0)
-    except Exception as error:
-        assert "No direct RLM child matches" in str(error), str(error)
-    else:
-        raise AssertionError("deleted child remained collectable")
-    Path("cancel-verified").write_text("done")
-finally:
-    server.close()
-    await server.wait_closed()
+const net = require("node:net");
+let resolveReady;
+let rejectReady;
+const ready = new Promise((resolve, reject) => {
+  resolveReady = resolve;
+  rejectReady = reject;
+});
+const server = net.createServer((socket) => {
+  let buf = "";
+  socket.on("data", (chunk) => {
+    buf += chunk.toString("utf8");
+    if (buf.includes("\n")) {
+      if (buf !== "ready\n") {
+        rejectReady(new Error(`unexpected handshake: ${JSON.stringify(buf)}`));
+      } else {
+        resolveReady();
+      }
+      socket.end();
+    }
+  });
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+try {
+  fs.writeFileSync("cancel-port", String(server.address().port));
+  const child = await rlm.spawn("wait until cancelled", { name: "waiting" });
+  await Promise.race([
+    ready,
+    Bun.sleep(30_000).then(() => { throw new Error("timed out waiting for child ready"); }),
+  ]);
+  const deleted = await rlm.deleteSubagent(child);
+  if (deleted.status !== "cancelled") {
+    throw new Error(`expected cancelled, got ${JSON.stringify(deleted)}`);
+  }
+  const remaining = await rlm.listSubagents();
+  if (remaining.length !== 0) {
+    throw new Error(`expected empty subagents, got ${JSON.stringify(remaining)}`);
+  }
+  let collectRejected = false;
+  try {
+    await rlm.collect([child], { timeoutMs: 0 });
+  } catch (error) {
+    const msg = String(error);
+    if (!msg.includes("No direct RLM child matches")) {
+      throw new Error(`unexpected collect error: ${msg}`);
+    }
+    collectRejected = true;
+  }
+  if (!collectRejected) {
+    throw new Error("deleted child remained collectable");
+  }
+  fs.writeFileSync("cancel-verified", "done");
+} finally {
+  await new Promise((resolve) => server.close(resolve));
+}
 "#;
     let child_cell = r#"
-import asyncio, os
-from pathlib import Path
-Path("cancel-child-pid").write_text(str(os.getpid()))
-reader, writer = await asyncio.open_connection("127.0.0.1", int(Path("cancel-port").read_text()))
-writer.write(b"ready\n")
-await writer.drain()
-writer.close()
-await writer.wait_closed()
-await asyncio.Event().wait()
-Path("cancel-child-finished").write_text("unexpected")
+const net = require("node:net");
+fs.writeFileSync("cancel-child-pid", String(process.pid));
+const port = Number(fs.readFileSync("cancel-port", "utf8").trim());
+await new Promise((resolve, reject) => {
+  const sock = net.createConnection({ host: "127.0.0.1", port }, () => {
+    sock.end("ready\n", resolve);
+  });
+  sock.on("error", reject);
+});
+await new Promise(() => {});
+fs.writeFileSync("cancel-child-finished", "unexpected");
 "#;
     let script = serde_json::json!({
         "responses": [
-            { "content": [{ "type": "toolCall", "name": "ipython",
+            { "content": [{ "type": "toolCall", "name": "javascript",
                 "arguments": { "code": parent_cell } }] },
             "CHILD CANCELLED",
         ],
         "repeatLastResponse": true,
         "children": {
             "waiting": { "responses": [
-                { "content": [{ "type": "toolCall", "name": "ipython",
+                { "content": [{ "type": "toolCall", "name": "javascript",
                     "arguments": { "code": child_cell } }] },
                 "unexpected completion",
             ] },
@@ -1128,7 +1155,7 @@ Path("cancel-child-finished").write_text("unexpected")
         .unwrap();
     assert!(
         !pa_core::platform::pid_exists(child_pid),
-        "cancelled child's Python process {child_pid} outlived the print run"
+        "cancelled child's Bun process {child_pid} outlived the print run"
     );
 }
 
@@ -1153,17 +1180,17 @@ fn bash_done_row(entries: &[serde_json::Value]) -> serde_json::Value {
 #[test]
 fn print_root_wakes_on_a_background_bash_completion() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
+    let kernel = PrintLane::kernel_bun();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "h = bash(\"sleep 3; echo BG_DONE\")\nprint(\"STARTED\", h.pid)" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "const h = bash(\"sleep 3; echo BG_DONE\");\nconsole.log(\"STARTED\", h.pid);" } },
             ] },
             "WAITING",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "print(\"WOKEN\", \"BG_DONE\" in h.output())" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "console.log(\"WOKEN\", h.output().includes(\"BG_DONE\"));" } },
             ] },
             "COMPLETED WOKEN",
         ],
@@ -1200,12 +1227,12 @@ fn print_root_wakes_on_a_background_bash_completion() {
 #[test]
 fn print_inline_child_wakes_on_a_background_bash_completion() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
+    let kernel = PrintLane::kernel_bun();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the background task\", name=\"bgkid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "javascript",
+                  "arguments": { "code": "const kid = await rlm.spawn(\"run the background task\", { name: \"bgkid\" });\nconsole.log(\"KID\", kid.rlmChildId);" } },
             ] },
             "WAITING",
             "COMBINED KID-BG-RESULT",
@@ -1214,13 +1241,13 @@ fn print_inline_child_wakes_on_a_background_bash_completion() {
         "children": {
             "bgkid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
-                      "arguments": { "code": "h = bash(\"sleep 3; echo KID_BG\")\nprint(\"KID STARTED\")" } },
+                    { "type": "toolCall", "name": "javascript",
+                      "arguments": { "code": "const h = bash(\"sleep 3; echo KID_BG\");\nconsole.log(\"KID STARTED\");" } },
                 ] },
                 "kid waiting",
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
-                      "arguments": { "code": "await agent_message.send(\"KID-BG-RESULT\", receiver_role=\"parent\")\nprint(\"KID WOKEN\", \"KID_BG\" in h.output())" } },
+                    { "type": "toolCall", "name": "javascript",
+                      "arguments": { "code": "await agentMessage.send(\"KID-BG-RESULT\", { receiverRole: \"parent\" });\nconsole.log(\"KID WOKEN\", h.output().includes(\"KID_BG\"));" } },
                 ] },
                 "kid finished",
             ] },

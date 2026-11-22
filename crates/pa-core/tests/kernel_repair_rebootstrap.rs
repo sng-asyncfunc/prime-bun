@@ -15,14 +15,16 @@ use pa_core::kernel::shared::{
 
 fn fake_kernel(dir: &Path, env: HashMap<String, String>) -> ReplKernelManager {
     ReplKernelManager::new(KernelManagerOptions {
-        python: Some(
+        bun: Some(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rebootstrap_kernel.py"),
         ),
+        worker_entry: None,
+        kernel_dir: None,
         cwd: Some(dir.to_path_buf()),
         env,
         session_id: Some("rebootstrap-test".to_string()),
         host_handlers: HostRequestHandlers::new(),
-        python_skills: Vec::new(),
+        javascript_skills: Vec::new(),
         snapshot: None,
         bootstrap_code: Some("BOOT".to_string()),
         stderr_log_path: None,

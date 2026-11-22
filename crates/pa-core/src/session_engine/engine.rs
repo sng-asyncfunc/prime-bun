@@ -8,7 +8,7 @@ use std::sync::Arc;
 use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
 use pa_agent::stream::StreamFn;
 use pa_agent::types::{Model, ThinkingLevel};
-use pa_types::ai::PYTHON_TOOL_NAME;
+use pa_types::ai::JAVASCRIPT_TOOL_NAME;
 
 use crate::resources::{load_resources, ResourceLoaderOptions};
 use crate::session::manager::SessionManager;
@@ -83,7 +83,7 @@ pub struct SessionEngineConfig {
     pub follow_up_mode: Option<pa_agent::agent::QueueMode>,
     /// Boot the kernel in the background at creation, depth-0 gated; boot
     /// failures surface on the next `ensure()`.
-    pub prewarm_ipython_kernel: Option<bool>,
+    pub prewarm_javascript_kernel: Option<bool>,
     /// The kernel restores its snapshot only after this resolves: a replaced engine
     /// sharing the session's artifact dir flushes its final snapshot first.
     pub kernel_ready_gate: Option<crate::kernel::provisioner::KernelReadyGate>,
@@ -111,7 +111,7 @@ pub struct SessionEngineConfig {
     /// spawn provenance. `None` keeps the session off the ledger (no
     /// request ids on the wire).
     pub semantic_edges: Option<super::semantic_edges::SemanticEdgeIdentity>,
-    pub on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
+    pub on_late_sent_agent_message: Option<crate::tools::javascript::LateSentAgentMessageHandler>,
 }
 
 pub struct SessionEngine {
@@ -147,13 +147,13 @@ pub struct SessionEngine {
     /// into; the embedding mirrors the Arc for sync reads.
     pub rlm_progress_notes: std::sync::Arc<super::rlm_host::RlmProgressNotes>,
     /// The session's kernel provisioner. The engine is the STRONG owner on
-    /// purpose: the `ipython` tool on the agent and the compaction
+    /// purpose: the `javascript` tool on the agent and the compaction
     /// kernel-state probe on the session hold weak references, because the
     /// kernel's host handlers reach back into the session (goal state,
     /// turn-boundary requests) — a strong edge anywhere on that return path
     /// loops the graph and keeps a dropped session's kernel process alive
     /// until the process exits.
-    pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
+    pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::JavaScriptKernelProvisioner>,
 }
 
 /// Skill overrides for built-in integrations the user is not logged into,
@@ -260,7 +260,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let factory_allowed_models = settings.get_allowed_models();
     // Captured before `settings` moves into the resource loader: the
     // default cell time limit (default 60s, `0` disables).
-    let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
+    let javascript_cell_timeout_ms = settings.get_javascript_cell_timeout_ms();
     let web_search_provider = settings.get_web_search_provider();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
@@ -433,7 +433,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let on_unavailable_skills = {
         let boot_notice_rows = std::sync::Arc::clone(&boot_notice_rows);
         Some(std::sync::Arc::new(
-            move |errors: &crate::kernel::bootstrap::UnavailablePythonSkills| {
+            move |errors: &crate::kernel::bootstrap::UnavailableJavaScriptSkills| {
                 // The broken skills and their import errors ride the next
                 // admitted turn, so the model learns before its first call.
                 let row = super::skills_unavailable_notice::notice_message(errors);
@@ -464,7 +464,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // `_modelVisibleSkills`).
     let model_visible_skills =
         super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
-    let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
+    let javascript_skills = super::runtime_wiring::kernel_javascript_skills(&model_visible_skills);
     // TS resolves the web-search credential on the host: `!command` key refs
     // cannot run in-kernel (the websearch skill's auth.json fallback reads
     // literals and env-var names, not commands). The selected provider's
@@ -487,11 +487,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // (60s, `0` disables); daemonless sessions keep `await bash()`
     // unbounded by design (#3523), so their cells are never interrupted.
     let cell_timeout_ms =
-        super::runtime_wiring::arm_cell_timeout_ms(config.daemonless, python_cell_timeout_ms);
+        super::runtime_wiring::arm_cell_timeout_ms(config.daemonless, javascript_cell_timeout_ms);
     let provisioner = super::runtime_wiring::kernel_provisioner(
         session_id.clone(),
         handlers,
-        python_skills.clone(),
+        javascript_skills.clone(),
         cwd.clone(),
         &config.agent_dir,
         kernel_shell_path,
@@ -506,10 +506,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         config.kernel_ready_gate.clone(),
     );
     let mut tools = config.tools.clone();
-    if !tools.iter().any(|tool| tool.name() == PYTHON_TOOL_NAME) {
-        let definition = crate::tools::ipython::create_ipython_tool_definition(
+    if !tools.iter().any(|tool| tool.name() == JAVASCRIPT_TOOL_NAME) {
+        let definition = crate::tools::javascript::create_javascript_tool_definition(
             &cwd.to_string_lossy(),
-            super::runtime_wiring::ipython_tool_options(
+            super::runtime_wiring::javascript_tool_options(
                 provisioner.clone(),
                 config.on_late_sent_agent_message.clone(),
             ),
@@ -523,11 +523,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // The snapshot arm is not depth-gated: a resumed session prewarms even
     // when the config flag is off, so its namespace revives before the first turn.
     let prewarm_configured =
-        config.prewarm_ipython_kernel.unwrap_or(false) && config.rlm_depth.unwrap_or(0) == 0;
+        config.prewarm_javascript_kernel.unwrap_or(false) && config.rlm_depth.unwrap_or(0) == 0;
     if (prewarm_configured || has_snapshot)
         && active_tool_names
             .iter()
-            .any(|name| name == PYTHON_TOOL_NAME)
+            .any(|name| name == JAVASCRIPT_TOOL_NAME)
     {
         provisioner.prewarm();
         // The MCP settle rides the same background posture (the
@@ -610,9 +610,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let digest_context = super::harness_digest::HarnessDigestContext {
         global_dir: crate::refinement::get_global_harness_state_dir(&config.agent_dir),
         local_dir: local_harness_dir,
-        include_ipython: active_tool_names
+        include_javascript: active_tool_names
             .iter()
-            .any(|name| name == PYTHON_TOOL_NAME),
+            .any(|name| name == JAVASCRIPT_TOOL_NAME),
         include_shell_examples: active_tool_names.iter().any(|name| name == "bash"),
         include_refine: model_visible_skills.iter().any(|skill| {
             !skill.disable_model_invocation
@@ -840,10 +840,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // The probe holds a WEAK reference: the engine owns the provisioner,
     // and a strong edge here would loop the graph.
     let kernel_state_probe: std::sync::Arc<
-        dyn crate::session_engine::ipython_state::CompactionKernelProbe,
-    > = std::sync::Arc::new(crate::session_engine::ipython_state::EngineOwnedProbe::new(
-        std::sync::Arc::downgrade(&provisioner),
-    ));
+        dyn crate::session_engine::javascript_state::CompactionKernelProbe,
+    > = std::sync::Arc::new(
+        crate::session_engine::javascript_state::EngineOwnedProbe::new(std::sync::Arc::downgrade(
+            &provisioner,
+        )),
+    );
     session.set_kernel_state_probe(Some(kernel_state_probe));
     // The admission path's `/skill:` expansion reads the FULL loader
     // inventory (TS `_expandSkillCommand` expands from the loader); the
@@ -903,7 +905,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         (Some(wiring), 0) => {
             let skill_counts = super::telemetry::SkillCounts {
                 skill_count: model_visible_skills.len(),
-                python_skill_count: python_skills.len(),
+                javascript_skill_count: javascript_skills.len(),
             };
             let installed = super::telemetry::install_session_telemetry(
                 &telemetry_agent,
@@ -995,7 +997,7 @@ impl SessionEngine {
     /// joining the strong ownership graph.
     pub fn kernel_provisioner_weak(
         &self,
-    ) -> std::sync::Weak<crate::kernel::provisioner::IpythonKernelProvisioner> {
+    ) -> std::sync::Weak<crate::kernel::provisioner::JavaScriptKernelProvisioner> {
         std::sync::Arc::downgrade(&self.provisioner)
     }
 
@@ -1020,9 +1022,8 @@ impl SessionEngine {
         crate::skills::expand_skill_command(text, &self.skills).0
     }
 
-    /// Record one late (fire-and-forget) `agent_message.send` receipt (TS
-    /// `_recordLateIpythonSentAgentMessage`): the receipt persists as a
-    /// custom entry and the newest matching `python_repl` tool result
+    /// Record one late (fire-and-forget) `agentMessage.send` receipt: the receipt
+    /// persists as a custom entry and the newest matching `javascript` tool result
     /// carries it in its `sentAgentMessages` details.
     ///
     /// # Errors

@@ -114,11 +114,13 @@ class ContinuousFixture:
         (root / "README.md").write_text("readme\n")
         runtime = root / "runtime"
         runtime.mkdir()
-        (runtime / "pyproject.toml").write_text("[project]\nname='rlm'\n")
-        (runtime / "src" / "rlm").mkdir(parents=True)
-        (runtime / "src" / "rlm" / "repl.py").write_text("# fixture REPL\n")
+        (runtime / "package.json").write_text('{"name":"prime-agent-runtime"}\n')
+        (runtime / "src").mkdir(parents=True)
+        (runtime / "src" / "repl.ts").write_text("// fixture REPL\n")
         (root / "prime-agent-runtime").mkdir()
-        (root / "prime-agent-runtime" / "pyproject.toml").write_text("[project]\nname='rlm'\n")
+        (root / "prime-agent-runtime" / "package.json").write_text('{"name":"prime-agent-runtime"}\n')
+        (root / "prime-agent-runtime" / "src").mkdir(parents=True)
+        (root / "prime-agent-runtime" / "src" / "repl.ts").write_text("// fixture REPL\n")
 
         source = root / "resolver.c"
         source.write_text(VERSION_RESOLVER_C % version)

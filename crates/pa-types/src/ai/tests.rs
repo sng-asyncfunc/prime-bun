@@ -132,7 +132,7 @@ fn stream_event_roundtrip() {
 #[test]
 fn tool_result_message_roundtrip() {
     assert_roundtrip::<Message>(
-        r#"{"role":"toolResult","toolCallId":"c1","toolName":"ipython","content":[{"type":"text","text":"out"}],"details":{"durationMs":3},"isError":false,"timestamp":4}"#,
+        r#"{"role":"toolResult","toolCallId":"c1","toolName":"javascript","content":[{"type":"text","text":"out"}],"details":{"durationMs":3},"isError":false,"timestamp":4}"#,
     );
 }
 

@@ -41,7 +41,7 @@ pub(crate) fn reserved_intake_error() -> String {
 
 /// A mint whose admission never arrived ages out after this window; the notice's own
 /// socket round-trip is milliseconds, so the sweep only reclaims dead mints.
-const MINT_TTL: Duration = Duration::from_secs(60);
+const MINT_TTL: Duration = Duration::from_mins(1);
 
 fn pending() -> &'static Mutex<HashMap<String, Instant>> {
     static REGISTRY: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();

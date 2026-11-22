@@ -317,10 +317,10 @@ jobs:
           # ref, and PR-ref entries are the eviction pressure on the
           # release-build caches.
           save-if: ${{ github.event_name == 'push' }}
-      - name: Install uv (the kernel venv bootstrap below uses it)
+      - name: Install Bun (>= 1.3.14, the kernel runtime uses it)
         run: |
-          python3 -m pip install --user uv
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
       # The wave's selection, resolved once per leg before anything builds:
       # the narrowed selection's unit list decides whether the bins build
       # below has any work to do (an empty selection runs no units and needs
@@ -348,7 +348,7 @@ jobs:
       # bootstrap lazily, the first session prewarm starts it mid-shard and
       # the next kernel unit fails against the half-built venv (run
       # 36764911023). The installer's bootstrap handoff readies it first.
-      - name: Bootstrap the kernel venv (ready before the kernel e2e units)
+      - name: Bootstrap the Bun kernel runtime (ready before the kernel e2e units)
         if: steps.selection.outputs.units != '0'
         run: ./target/debug/prime-agent --prime-agent-bootstrap
       # The real-binary lifecycle checks drive the debug binary through owned
@@ -360,9 +360,8 @@ jobs:
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/lifecycle-check-receipts"
           export PA_RUST_BINARY="${GITHUB_WORKSPACE}/target/debug/prime-agent"
-          export PRIME_AGENT_KERNEL_PYTHON="${HOME}/.prime/agent/kernel-venv/bin/python"
-          export PA_E2E_KERNEL_PYTHON="${PRIME_AGENT_KERNEL_PYTHON}"
-          test -x "${PRIME_AGENT_KERNEL_PYTHON}"
+          export PRIME_AGENT_KERNEL_BUN="$(command -v bun)"
+          test -x "${PRIME_AGENT_KERNEL_BUN}"
           check_status=0
           python3 scripts/test_lifecycle_lib.py || check_status=1
           # Discover independently added checks so feature PRs do not
@@ -422,12 +421,11 @@ jobs:
           python3 scripts/test_ci_test_shard_summary.py
           python3 scripts/ci_test_shard_summary.py --total ${{ env.SHARD_COUNT }} --dir manifests
 
-  # The vendored runtime suite (prime-agent-runtime): the kernel-side Python
-  # (`bash()`, the repl protocol, the bounded-await contract) has no Rust test,
-  # so this is its only CI gate — CPython 3.11, the minimum the runtime
-  # supports and the version the kernel venv pins.
+  # The vendored runtime suite (prime-agent-runtime): the kernel-side Bun
+  # runtime (`bash()`, the repl protocol, the bounded-await contract, factory,
+  # harness, mcp) runs its own `bun test` suite.
   runtime:
-    name: runtime suite (python 3.11)
+    name: runtime suite (bun)
     needs: trust
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -436,14 +434,15 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Install uv
+      - name: Install Bun
         run: |
-          python3 -m pip install --user uv
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Run the runtime suite (CPython 3.11)
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - name: Run the runtime suite (Bun)
         run: |
           cd prime-agent-runtime
-          uv run --python 3.11 python -m unittest discover -s test
+          bun install --frozen-lockfile || bun install
+          bun test
 
   # The Windows job set + the supply-chain deny gate:
   #

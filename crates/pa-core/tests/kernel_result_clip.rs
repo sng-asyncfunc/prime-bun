@@ -30,15 +30,17 @@ for line in sys.stdin:
 #[tokio::test]
 async fn result_clipping_counts_characters_and_preserves_follow_up_cells() {
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let python = dir.path().join("fake-kernel");
-    write_executable(&python, FAKE_RUNTIME);
+    let bun = dir.path().join("fake-kernel");
+    write_executable(&bun, FAKE_RUNTIME);
     let manager = ReplKernelManager::new(KernelManagerOptions {
-        python: Some(python),
+        bun: Some(bun),
+        worker_entry: None,
+        kernel_dir: None,
         cwd: Some(dir.path().to_path_buf()),
         env: HashMap::new(),
         session_id: Some("result-clip-test".to_string()),
         host_handlers: HostRequestHandlers::new(),
-        python_skills: Vec::new(),
+        javascript_skills: Vec::new(),
         snapshot: None,
         bootstrap_code: None,
         stderr_log_path: None,

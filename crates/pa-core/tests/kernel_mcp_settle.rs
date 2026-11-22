@@ -41,31 +41,44 @@ use serde_json::json;
 /// process-global), so they serialize through this lock.
 static LIVE_KERNEL_LOCK: Mutex<()> = Mutex::new(());
 
-/// The kernel Python with prime-agent-runtime installed (the interpreter
-/// the session-path provisioner resolves). Skipped (with a note) on
-/// machines without a live install; set `PA_CORE_KERNEL_PYTHON` to point
-/// at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available. Skipped (with a note) on
+/// machines without a live runtime; set `PA_CORE_KERNEL_BUN` to point at an explicit executable.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live kernel test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live kernel test");
     None
 }
 
@@ -115,9 +128,9 @@ fn scripted_model() -> pa_agent::types::Model {
 
 /// Wait for the eager boot to land (a background task).
 async fn wait_for_kernel_boot(
-    provisioner: &Arc<pa_core::kernel::provisioner::IpythonKernelProvisioner>,
+    provisioner: &Arc<pa_core::kernel::provisioner::JavaScriptKernelProvisioner>,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_mins(2);
     loop {
         if provisioner.has_running_kernel() {
             return;
@@ -139,7 +152,7 @@ async fn wait_for_kernel_boot(
 // the tests serialize their whole kernel lifetimes, not just their setup.
 #[allow(clippy::await_holding_lock)]
 async fn a_kernel_needing_op_mid_boot_joins_the_in_flight_build_and_succeeds() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let _lock = LIVE_KERNEL_LOCK
@@ -155,8 +168,8 @@ async fn a_kernel_needing_op_mid_boot_joins_the_in_flight_build_and_succeeds() {
     // ambient agent state leaks in.
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
+            "PRIME_AGENT_KERNEL_BUN",
+            Some(kernel_bun.display().to_string()),
         ),
         ("PRIME_AGENT_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
@@ -170,8 +183,8 @@ async fn a_kernel_needing_op_mid_boot_joins_the_in_flight_build_and_succeeds() {
         Some("calling the kernel"),
         vec![(
             "cell-1",
-            "python_repl",
-            json!({ "code": "print('JOINED_BOOT_OK')" }),
+            "javascript",
+            json!({ "code": "console.log('JOINED_BOOT_OK')" }),
         )],
     )));
     provider.push_text_turn("the turn settles");
@@ -182,7 +195,7 @@ async fn a_kernel_needing_op_mid_boot_joins_the_in_flight_build_and_succeeds() {
         model: Some(model),
         stream_fn: Some(provider.stream_fn()),
         tools: Vec::new(),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_javascript_kernel: Some(true),
         ..Default::default()
     })
     .await
@@ -244,25 +257,47 @@ const HANGING_SERVER_OPEN_DELAY_MS: u64 = 8_000;
 const CELL_COMPLETION_BOUND_MS: u64 = 4_000;
 
 fn slow_echo_server_code(handshake_delay_ms: u64) -> String {
-    r#"import sys
-import time
-from pathlib import Path
+    r#"import fs from "node:fs";
+import readline from "node:readline";
 
-Path(sys.argv[1]).write_text("started", encoding="utf-8")
-time.sleep({HANDSHAKE_DELAY_MS} / 1000)
+fs.writeFileSync(process.argv[2], "started", "utf8");
+await Bun.sleep({HANDSHAKE_DELAY_MS});
 
-from mcp.server.mcpserver import MCPServer
-
-server = MCPServer("settle-fixture")
-
-
-@server.tool()
-def echo(text: str) -> str:
-    """Echo the text back."""
-    return text
-
-
-server.run()
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+for await (const line of rl) {
+  if (!line.trim()) continue;
+  const req = JSON.parse(line);
+  if (req.method === "initialize") {
+    console.log(JSON.stringify({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "settle-fixture", version: "1.0.0" },
+      },
+    }));
+  } else if (req.method === "tools/list") {
+    console.log(JSON.stringify({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: {
+        tools: [{
+          name: "echo",
+          description: "Echo the text back.",
+          inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+        }],
+      },
+    }));
+  } else if (req.method === "tools/call") {
+    const text = req.params?.arguments?.text ?? "";
+    console.log(JSON.stringify({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { content: [{ type: "text", text }] },
+    }));
+  }
+}
 "#
     .replace("{HANDSHAKE_DELAY_MS}", &handshake_delay_ms.to_string())
 }
@@ -279,7 +314,7 @@ server.run()
 // their whole kernel lifetimes.
 #[allow(clippy::await_holding_lock)]
 async fn generic_mcp_servers_settle_in_the_background_and_first_use_joins_the_open() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let _lock = LIVE_KERNEL_LOCK
@@ -291,7 +326,7 @@ async fn generic_mcp_servers_settle_in_the_background_and_first_use_joins_the_op
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     std::fs::create_dir_all(&cwd).expect("cwd");
     let marker = dir.path().join("settle-server-started");
-    let server_script = dir.path().join("slow_echo_server.py");
+    let server_script = dir.path().join("slow_echo_server.ts");
     std::fs::write(
         &server_script,
         slow_echo_server_code(SETTLE_SERVER_OPEN_DELAY_MS),
@@ -306,8 +341,9 @@ async fn generic_mcp_servers_settle_in_the_background_and_first_use_joins_the_op
             "mcpServers": {
                 "settle-fixture": {
                     "type": "stdio",
-                    "command": kernel_python.display().to_string(),
+                    "command": kernel_bun.display().to_string(),
                     "args": [
+                        "run",
                         server_script.display().to_string(),
                         marker.display().to_string(),
                     ],
@@ -320,8 +356,8 @@ async fn generic_mcp_servers_settle_in_the_background_and_first_use_joins_the_op
 
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
+            "PRIME_AGENT_KERNEL_BUN",
+            Some(kernel_bun.display().to_string()),
         ),
         ("PRIME_AGENT_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
@@ -335,7 +371,7 @@ async fn generic_mcp_servers_settle_in_the_background_and_first_use_joins_the_op
         model: Some(model),
         stream_fn: Some(provider.stream_fn()),
         tools: Vec::new(),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_javascript_kernel: Some(true),
         ..Default::default()
     })
     .await
@@ -365,7 +401,7 @@ async fn generic_mcp_servers_settle_in_the_background_and_first_use_joins_the_op
     let manager = provisioner.manager().expect("the booted kernel's manager");
     let result = manager
         .execute(
-            "result = await mcp.call_tool('settle-fixture', 'echo', {'text': 'probe'})\nresult",
+            "const res = await mcp.callTool('settle-fixture', 'echo', { text: 'probe' });\nJSON.stringify(res)",
             ExecuteOptions::default(),
         )
         .await
@@ -401,8 +437,8 @@ async fn generic_mcp_servers_settle_in_the_background_and_first_use_joins_the_op
 // above): the kernel-python env is process-global, so the tests serialize
 // their whole kernel lifetimes.
 #[allow(clippy::await_holding_lock)]
-async fn the_first_python_cell_never_waits_behind_the_eager_mcp_status() {
-    let Some(kernel_python) = kernel_python() else {
+async fn the_first_javascript_cell_never_waits_behind_the_eager_mcp_status() {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let _lock = LIVE_KERNEL_LOCK
@@ -414,7 +450,7 @@ async fn the_first_python_cell_never_waits_behind_the_eager_mcp_status() {
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     std::fs::create_dir_all(&cwd).expect("cwd");
     let marker = dir.path().join("hanging-server-started");
-    let server_script = dir.path().join("hanging_echo_server.py");
+    let server_script = dir.path().join("hanging_echo_server.ts");
     std::fs::write(
         &server_script,
         slow_echo_server_code(HANGING_SERVER_OPEN_DELAY_MS),
@@ -427,8 +463,9 @@ async fn the_first_python_cell_never_waits_behind_the_eager_mcp_status() {
             "mcpServers": {
                 "hanging-fixture": {
                     "type": "stdio",
-                    "command": kernel_python.display().to_string(),
+                    "command": kernel_bun.display().to_string(),
                     "args": [
+                        "run",
                         server_script.display().to_string(),
                         marker.display().to_string(),
                     ],
@@ -441,8 +478,8 @@ async fn the_first_python_cell_never_waits_behind_the_eager_mcp_status() {
 
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
+            "PRIME_AGENT_KERNEL_BUN",
+            Some(kernel_bun.display().to_string()),
         ),
         ("PRIME_AGENT_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
@@ -450,14 +487,14 @@ async fn the_first_python_cell_never_waits_behind_the_eager_mcp_status() {
 
     let model = scripted_model();
     let provider = Arc::new(ScriptedProvider::new(model.clone()));
-    // One turn: the model runs a python cell, then the turn settles.
+    // One turn: the model runs a JavaScript cell, then the turn settles.
     provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
         &model,
         Some("running the cell"),
         vec![(
             "cell-1",
-            "python_repl",
-            json!({ "code": "print('CELL_OK')" }),
+            "javascript",
+            json!({ "code": "console.log('CELL_OK')" }),
         )],
     )));
     provider.push_text_turn("the turn settles");
@@ -468,7 +505,7 @@ async fn the_first_python_cell_never_waits_behind_the_eager_mcp_status() {
         model: Some(model),
         stream_fn: Some(provider.stream_fn()),
         tools: Vec::new(),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_javascript_kernel: Some(true),
         ..Default::default()
     })
     .await

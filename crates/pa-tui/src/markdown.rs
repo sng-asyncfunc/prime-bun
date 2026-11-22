@@ -631,15 +631,25 @@ fn parse_list_level(
     }
 }
 
+#[derive(Clone, Copy)]
+enum HighlightLang {
+    JavaScript,
+    Python,
+}
+
 /// The fence languages the port highlights. TS `highlightCode` validates through highlight.js
 /// `getLanguage(name)`, which lowercases and matches the grammar's registered names and aliases
-/// (python registers `python` with `py`, `gyp`, `ipython`). `lang` here is marked's whole trimmed
-/// info string, so ```` ```python foo=1 ```` stays uniform; only these exact spellings highlight.
-fn is_highlighted_lang(lang: &str) -> bool {
-    matches!(
-        lang.to_ascii_lowercase().as_str(),
-        "python" | "py" | "gyp" | "ipython"
-    )
+/// (`js`/`javascript`/`ts`/`typescript`/`jsx`/`tsx`/`mjs`/`cjs` and `python`/`py`/`gyp`/`ipython`).
+/// `lang` here is marked's whole trimmed info string, so ```` ```python foo=1 ```` stays uniform;
+/// only these exact spellings highlight.
+fn highlighted_lang(lang: &str) -> Option<HighlightLang> {
+    match lang.to_ascii_lowercase().as_str() {
+        "js" | "javascript" | "ts" | "typescript" | "jsx" | "tsx" | "mjs" | "cjs" => {
+            Some(HighlightLang::JavaScript)
+        }
+        "python" | "py" | "gyp" | "ipython" => Some(HighlightLang::Python),
+        _ => None,
+    }
 }
 
 /// The block's highlighted lines (TS `theme.highlightCode(text, lang)`: one highlight.js
@@ -652,17 +662,18 @@ fn highlighted_code_lines(
     style: &MarkdownStyle,
 ) -> Option<Vec<Line>> {
     let palette = style.syntax.as_ref()?;
-    if !lang.is_some_and(is_highlighted_lang) {
-        return None;
-    }
+    let lang = lang.and_then(highlighted_lang)?;
     if block.lines.is_empty() {
         // An empty block renders through the uniform empty-row path.
         return None;
     }
-    Some(crate::tool_card::highlight::highlight_python(
-        &block.lines.join("\n"),
-        palette,
-    ))
+    let joined = block.lines.join("\n");
+    Some(match lang {
+        HighlightLang::JavaScript => {
+            crate::tool_card::highlight::highlight_javascript(&joined, palette)
+        }
+        HighlightLang::Python => crate::tool_card::highlight::highlight_python(&joined, palette),
+    })
 }
 
 /// The block's unwrapped rows (TS `renderCodeBlock`): the indent outside

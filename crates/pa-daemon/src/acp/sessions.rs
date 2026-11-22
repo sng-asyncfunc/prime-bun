@@ -324,14 +324,14 @@ mod tests {
                 "content": [
                     { "type": "thinking", "thinking": "plan" },
                     { "type": "text", "text": "Running." },
-                    { "type": "toolCall", "id": "call-1", "name": "python_repl", "arguments": { "code": "1+1" } },
+                    { "type": "toolCall", "id": "call-1", "name": "javascript", "arguments": { "code": "1+1" } },
                 ],
                 "timestamp": 2,
             }),
             json!({
                 "role": "toolResult",
                 "toolCallId": "call-1",
-                "toolName": "python_repl",
+                "toolName": "javascript",
                 "content": [{ "type": "text", "text": "2" }],
                 "isError": false,
                 "timestamp": 3,

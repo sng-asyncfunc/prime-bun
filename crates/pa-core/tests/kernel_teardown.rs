@@ -28,27 +28,44 @@ fn test_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_CORE_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available; set
+/// `PA_CORE_KERNEL_BUN` to point at an explicit executable instead.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    let candidate = PathBuf::from(format!("{home}/.prime/agent/kernel-venv/bin/python"));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live teardown test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live teardown test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live teardown test");
     None
 }
 
@@ -111,7 +128,7 @@ fn own_kernel_processes() -> Vec<i32> {
             let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) else {
                 continue;
             };
-            if cmdline.contains("rlm.repl") {
+            if cmdline.contains("repl.ts") {
                 found.push(pid as i32);
             }
         }
@@ -150,14 +167,16 @@ async fn started_manager(
 }
 
 fn test_options() -> Option<pa_core::kernel::shared::KernelManagerOptions> {
-    let python = kernel_python()?;
+    let bun = kernel_bun()?;
     Some(pa_core::kernel::shared::KernelManagerOptions {
-        python: Some(python),
+        bun: Some(bun),
+        worker_entry: None,
+        kernel_dir: None,
         cwd: Some(std::env::temp_dir()),
         env: std::collections::HashMap::default(),
         session_id: Some("teardown-test".to_string()),
         host_handlers: pa_core::kernel::shared::HostRequestHandlers::default(),
-        python_skills: Vec::new(),
+        javascript_skills: Vec::new(),
         on_background_work_settled: None,
         snapshot: None,
         bootstrap_code: Some(pa_core::kernel::bootstrap::build_rlm_bootstrap_code(
@@ -185,14 +204,15 @@ async fn manager_drop_kills_the_kernel_process() {
 #[allow(clippy::await_holding_lock)]
 async fn provisioner_drop_kills_the_kernel_process() {
     let _guard = test_lock();
-    let Some(python) = kernel_python() else {
+    let Some(bun) = kernel_bun() else {
         return;
     };
-    let options = pa_core::kernel::provisioner::IpythonKernelProvisionerOptions {
-        python: Some(python),
+    let options = pa_core::kernel::provisioner::JavaScriptKernelProvisionerOptions {
+        bun: Some(bun),
         ..Default::default()
     };
-    let provisioner = pa_core::kernel::provisioner::IpythonKernelProvisioner::new("/tmp", options);
+    let provisioner =
+        pa_core::kernel::provisioner::JavaScriptKernelProvisioner::new("/tmp", options);
     let manager = provisioner
         .ensure(None, None)
         .await
@@ -210,7 +230,7 @@ async fn provisioner_drop_kills_the_kernel_process() {
 #[allow(clippy::await_holding_lock)]
 async fn session_engine_drop_kills_the_prewarmed_kernel_process() {
     let _guard = test_lock();
-    let Some(_kernel_python) = kernel_python() else {
+    let Some(_kernel_bun) = kernel_bun() else {
         return;
     };
 
@@ -249,7 +269,7 @@ async fn session_engine_drop_kills_the_prewarmed_kernel_process() {
             model: Some(agent_model),
             stream_fn: Some(stream_fn),
             tools: Vec::new(),
-            prewarm_ipython_kernel: Some(true),
+            prewarm_javascript_kernel: Some(true),
             ..Default::default()
         },
     )
@@ -286,7 +306,7 @@ async fn session_engine_drop_kills_the_prewarmed_kernel_process() {
 #[allow(clippy::await_holding_lock)]
 async fn engine_dispose_kernel_kills_the_prewarmed_kernel_process() {
     let _guard = test_lock();
-    let Some(_kernel_python) = kernel_python() else {
+    let Some(_kernel_bun) = kernel_bun() else {
         return;
     };
 
@@ -325,7 +345,7 @@ async fn engine_dispose_kernel_kills_the_prewarmed_kernel_process() {
             model: Some(agent_model),
             stream_fn: Some(stream_fn),
             tools: Vec::new(),
-            prewarm_ipython_kernel: Some(true),
+            prewarm_javascript_kernel: Some(true),
             ..Default::default()
         },
     )

@@ -6,14 +6,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use pa_core::kernel::provisioner::{IpythonKernelProvisioner, KernelReadyGate};
+use pa_core::kernel::provisioner::{JavaScriptKernelProvisioner, KernelReadyGate};
 use pa_core::kernel::shared::ExecuteOptions;
 use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 
 use super::{RpcEngineFactory, RpcEngineHandle, RpcEngineRequest, RpcSession};
 use crate::rpc::LineWriter;
-use crate::test_support::{live_kernel_python, KernelEnvOverride};
+use crate::test_support::{live_kernel_bun, KernelEnvOverride};
 
 async fn engine_handle(
     cwd: &Path,
@@ -77,7 +77,7 @@ async fn engine_handle(
     }
 }
 
-fn provisioner(handle: &RpcEngineHandle) -> Arc<IpythonKernelProvisioner> {
+fn provisioner(handle: &RpcEngineHandle) -> Arc<JavaScriptKernelProvisioner> {
     handle
         .engine
         .kernel_provisioner_weak()
@@ -96,7 +96,7 @@ fn mkfifo(path: &Path) {
 #[allow(clippy::await_holding_lock)] // the env override is process-global: the guard must span the async flow
 #[tokio::test(flavor = "multi_thread")]
 async fn a_same_path_reopen_revives_the_replaced_kernels_final_namespace() {
-    let Some(python) = live_kernel_python() else {
+    let Some(bun) = live_kernel_bun() else {
         return;
     };
     // The lock guards the env override: acquired first, dropped last, so the
@@ -104,10 +104,8 @@ async fn a_same_path_reopen_revives_the_replaced_kernels_final_namespace() {
     let _faux = crate::agent_engine::tests::FAUX_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _env = KernelEnvOverride::apply(&[(
-        "PRIME_AGENT_KERNEL_PYTHON",
-        Some(python.display().to_string()),
-    )]);
+    let _env =
+        KernelEnvOverride::apply(&[("PRIME_AGENT_KERNEL_BUN", Some(bun.display().to_string()))]);
     let dir = tempfile::tempdir().expect("tempdir");
     let cwd = dir.path().join("project");
     let agent_dir = dir.path().join("agent");
@@ -140,9 +138,8 @@ async fn a_same_path_reopen_revives_the_replaced_kernels_final_namespace() {
     let release = dir.path().join("release");
     mkfifo(&entered);
     mkfifo(&release);
-    let cell = format!(
-        "x = 2\nopen({entered:?}, 'w').close()\nimport asyncio\nawait asyncio.to_thread(lambda: open({release:?}).read())"
-    );
+    let cell =
+        format!("x = 2;\nfs.writeFileSync({entered:?}, '');\nawait Bun.file({release:?}).text();");
     let held = tokio::spawn({
         let kernel = kernel.clone();
         async move { kernel.execute(&cell, ExecuteOptions::default()).await }

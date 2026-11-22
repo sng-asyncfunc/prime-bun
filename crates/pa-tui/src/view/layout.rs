@@ -228,7 +228,7 @@ impl AgentView {
                 !matches!(
                     crate::tool_card::panel_status(card),
                     crate::tool_card::PanelStatus::Queued | crate::tool_card::PanelStatus::Running
-                ) && !crate::tool_card::ipython::background_shell_running(card)
+                ) && !crate::tool_card::javascript::background_shell_running(card)
             }
             // A running bash card animates; a settled one caches.
             ChatEntry::BashExecution(card) => !card.running,

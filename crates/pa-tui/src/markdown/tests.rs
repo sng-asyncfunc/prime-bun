@@ -810,6 +810,54 @@ fn python_fence_multiline_string_carries_across_rows() {
 }
 
 #[test]
+fn javascript_and_typescript_fences_highlight_all_aliases() {
+    let theme = crate::theme::Theme::builtin("prime", crate::theme::ColorMode::TrueColor);
+    let style = MarkdownStyle::from_theme(&theme);
+    let keyword = theme.fg_style(crate::theme::ThemeColor::SyntaxKeyword);
+    let number = theme.fg_style(crate::theme::ThemeColor::SyntaxNumber);
+    let string = theme.fg_style(crate::theme::ThemeColor::SyntaxString);
+
+    for fence in [
+        "js",
+        "JS",
+        "javascript",
+        "ts",
+        "typescript",
+        "jsx",
+        "tsx",
+        "mjs",
+        "cjs",
+    ] {
+        let lines = render_markdown(
+            &format!("```{fence}\nconst n = 42;\nconst s = `a\nb`;\n```"),
+            40,
+            &style,
+        );
+        assert_eq!(lines.len(), 3, "{fence}");
+        assert_eq!(lines[0][1].content, "const", "{fence}");
+        assert_eq!(lines[0][1].style, keyword, "{fence}");
+        assert!(
+            lines[0]
+                .iter()
+                .any(|span| span.content == "42" && span.style == number),
+            "{fence}"
+        );
+        assert!(
+            lines[1]
+                .iter()
+                .any(|span| span.content == "`a" && span.style == string),
+            "{fence}"
+        );
+        assert!(
+            lines[2]
+                .iter()
+                .any(|span| span.content == "b`" && span.style == string),
+            "{fence}"
+        );
+    }
+}
+
+#[test]
 fn long_code_rows_wrap_at_the_width() {
     // TS renderBlock wraps every code row (wrapTextWithAnsi): the indent
     // leads the first row only and no code text is lost.

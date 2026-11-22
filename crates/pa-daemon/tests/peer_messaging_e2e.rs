@@ -25,33 +25,45 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed: the kernel executes
-/// the `agent_message.send` host request. Skipped (with a note) without a live install.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`): the kernel executes the `agent_message.send`
+/// host request. Skipped (with a note) without Bun installed.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live peer-messaging e2e",
+        "kernel bun {} not found; skipping live peer-messaging e2e",
         candidate.display()
     );
     None
 }
 
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_bun: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)
         .arg("supervisor")
@@ -59,7 +71,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+        .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         // A supervisor killed at teardown must not leak its session workers: the worker's
@@ -166,10 +178,10 @@ fn write_faux_script(dir: &Path, name: &str, responses: &Value) -> PathBuf {
 }
 
 /// The kernel cell that sends one agent message and records the receipt (or
-/// the failure) on disk; `host_request` imports from the runtime module.
+/// the failure) on disk.
 fn send_cell(message: &str, receiver_name: &str, receipt_path: &Path) -> String {
     format!(
-        "from rlm import host_request\nimport json, traceback\ntry:\n    receipt = await host_request(\"agent_message.send\", {{\"message\": {message:?}, \"receiver_role\": \"sibling\", \"receiver_name\": {receiver_name:?}}})\n    open({receipt_path:?}, \"w\").write(json.dumps(receipt))\nexcept Exception:\n    open({error_path:?}, \"w\").write(traceback.format_exc())",
+        "try {{\n  const receipt = await hostRequest(\"agent_message.send\", {{\"message\": {message:?}, \"receiver_role\": \"sibling\", \"receiver_name\": {receiver_name:?}}});\n  fs.writeFileSync({receipt_path:?}, JSON.stringify(receipt));\n}} catch (err) {{\n  fs.writeFileSync({error_path:?}, String(err?.stack ?? err));\n}}",
         receipt_path = receipt_path.display().to_string(),
         error_path = receipt_path.with_extension("error").display().to_string(),
     )
@@ -287,13 +299,13 @@ fn alpha_responses(receipts_dir: &Path) -> Value {
     let receipt_path = receipts_dir.join("0.json");
     json!([
         { "content": [
-            { "type": "toolCall", "name": "python_repl", "arguments": {
+            { "type": "toolCall", "name": "javascript", "arguments": {
                 "code": send_cell("hello from alpha", "beta", &receipt_path),
             } },
         ] },
         { "text": "alpha turn done" },
         { "content": [
-            { "type": "toolCall", "name": "python_repl", "arguments": {
+            { "type": "toolCall", "name": "javascript", "arguments": {
                 "code": send_cell("hello from alpha", "beta", &receipt_path),
             } },
         ] },
@@ -302,7 +314,7 @@ fn alpha_responses(receipts_dir: &Path) -> Value {
 }
 
 fn setup_messaging() -> Option<Messaging> {
-    let kernel_python = kernel_python()?;
+    let kernel_bun = kernel_bun()?;
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -319,7 +331,7 @@ fn setup_messaging() -> Option<Messaging> {
     );
 
     let receipts = receipts_dir;
-    let daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun);
     wait_socket_ready(&socket);
     let (mut client, _hello) = Client::connect(&socket);
     let alpha = create_session(
@@ -538,8 +550,8 @@ fn supervisor_death_mid_conversation_still_delivers_after_re_registration() {
     messaging.daemon.child.kill().expect("kill -9 supervisor");
     let _ = messaging.daemon.child.wait();
 
-    let kernel_python = kernel_python().expect("kernel python was found in setup");
-    let daemon = spawn_supervisor(&messaging.socket, &agent_dir, &kernel_python);
+    let kernel_bun = kernel_bun().expect("kernel bun was found in setup");
+    let daemon = spawn_supervisor(&messaging.socket, &agent_dir, &kernel_bun);
     messaging.daemon = daemon;
     wait_socket_ready(&messaging.socket);
     let (mut client, _hello2) = Client::connect(&messaging.socket);

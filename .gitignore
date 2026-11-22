@@ -2,6 +2,7 @@
 /target
 /bin/
 __pycache__/
+node_modules/
 steer-queue-runs/
 
 # local gate logs (driver downloads)

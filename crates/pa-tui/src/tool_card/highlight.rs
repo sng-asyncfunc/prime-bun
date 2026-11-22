@@ -1,8 +1,6 @@
-//! Python syntax highlighting for expanded ipython cells, the
-//! highlight.js python grammar's scope coloring. Cell-level scope
-//! coloring only: one color per cell. F-string substitutions and
-//! backslash escapes keep the string color (cli-highlight renders those
-//! scopes with the identity function).
+//! Syntax highlighting for expanded `javascript` cells, markdown fenced code
+//! blocks (`js`/`ts`/`python`), and edit diffs: cell-level scope coloring
+//! matching highlight.js grammar scopes.
 
 use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
@@ -589,6 +587,398 @@ fn header_mode(
     Some(i)
 }
 
+/// JavaScript / TypeScript reserved words (`keyword` scope).
+const JS_KEYWORDS: [&str; 48] = [
+    "as",
+    "async",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "finally",
+    "for",
+    "from",
+    "function",
+    "if",
+    "implements",
+    "import",
+    "in",
+    "instanceof",
+    "interface",
+    "let",
+    "new",
+    "of",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "return",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "try",
+    "type",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "yield",
+];
+
+/// JavaScript literal value names (`literal` scope).
+const JS_LITERALS: [&str; 6] = ["Infinity", "NaN", "false", "null", "true", "undefined"];
+
+/// JavaScript / Bun / Prime Agent REPL built-ins (`built_in` scope).
+const JS_BUILT_INS: [&str; 42] = [
+    "AbortController",
+    "AbortSignal",
+    "Array",
+    "BigInt",
+    "Boolean",
+    "Buffer",
+    "Bun",
+    "Date",
+    "Error",
+    "JSON",
+    "Map",
+    "Math",
+    "Number",
+    "Object",
+    "Promise",
+    "RangeError",
+    "ReferenceError",
+    "RegExp",
+    "Set",
+    "String",
+    "Symbol",
+    "SyntaxError",
+    "TypeError",
+    "URL",
+    "URLSearchParams",
+    "Uint8Array",
+    "WeakMap",
+    "WeakSet",
+    "console",
+    "crypto",
+    "fetch",
+    "fs",
+    "globalThis",
+    "mcp",
+    "os",
+    "path",
+    "process",
+    "require",
+    "rlm",
+    "setInterval",
+    "setTimeout",
+    "util",
+];
+
+/// TypeScript primitive type names (`type` scope).
+const JS_TYPES: [&str; 9] = [
+    "any", "bigint", "boolean", "never", "number", "object", "string", "symbol", "unknown",
+];
+
+fn js_word_scope(word: &str) -> Scope {
+    if JS_KEYWORDS.contains(&word) {
+        Scope::Keyword
+    } else if JS_LITERALS.contains(&word) {
+        Scope::Literal
+    } else if JS_BUILT_INS.contains(&word) {
+        Scope::BuiltIn
+    } else if JS_TYPES.contains(&word) {
+        Scope::Type
+    } else {
+        Scope::Plain
+    }
+}
+
+fn js_ident_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_' || ch == '$'
+}
+
+fn js_ident_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+}
+
+fn js_ident_continues(text: &str, i: usize) -> bool {
+    text[i..].chars().next().is_some_and(js_ident_continue)
+}
+
+/// JavaScript numeric literal at `i`: hex/binary/octal, decimal/float/exponent,
+/// underscore separators, and optional `n` `BigInt` suffix.
+fn js_number_at(text: &str, i: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    // Binary, octal, and hex integers: `0[bBoOxX]` + digits + optional `n`.
+    if bytes.get(i) == Some(&b'0') {
+        let radix_high = match bytes.get(i + 1).copied() {
+            Some(b'b' | b'B') => Some(b'1'),
+            Some(b'o' | b'O') => Some(b'7'),
+            Some(b'x' | b'X') => Some(b'F'),
+            _ => None,
+        };
+        if let Some(high) = radix_high {
+            let mut end = i + 2;
+            let mut digits = 0usize;
+            while let Some(&c) = bytes.get(end) {
+                let ok = if c == b'_' {
+                    digits > 0 && bytes.get(end + 1).is_some_and(|next| *next != b'_')
+                } else {
+                    match high {
+                        b'1' => matches!(c, b'0' | b'1'),
+                        b'7' => c.is_ascii_digit() && c <= b'7',
+                        _ => c.is_ascii_hexdigit(),
+                    }
+                };
+                if ok {
+                    if c != b'_' {
+                        digits += 1;
+                    }
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            if digits > 0 {
+                if bytes.get(end) == Some(&b'n') {
+                    end += 1;
+                }
+                if !js_ident_continues(text, end) {
+                    return Some(end - i);
+                }
+            }
+            return None;
+        }
+    }
+
+    let digit = digitpart_at(bytes, i);
+    let point = pointfloat_at(text, i);
+
+    if let Some(base) = point.or(digit) {
+        let mut end = i + base;
+        if matches!(bytes.get(end), Some(b'e' | b'E')) {
+            let mut exp = end + 1;
+            if matches!(bytes.get(exp), Some(b'+' | b'-')) {
+                exp += 1;
+            }
+            if let Some(exp_digits) = digitpart_at(bytes, exp) {
+                end = exp + exp_digits;
+                if !js_ident_continues(text, end) {
+                    return Some(end - i);
+                }
+            }
+        }
+    }
+    if let Some(point) = point {
+        let end = i + point;
+        if !js_ident_continues(text, end) {
+            return Some(end - i);
+        }
+    }
+    if let Some(digit) = digit {
+        let mut end = i + digit;
+        if bytes.get(end) == Some(&b'n') {
+            end += 1;
+        }
+        if !js_ident_continues(text, end) {
+            return Some(end - i);
+        }
+    }
+    None
+}
+
+/// JavaScript string or template literal starting at `i`: single-quoted,
+/// double-quoted (single-line), or backtick template literal (multi-line).
+fn js_string_at(text: &str, i: usize) -> Option<usize> {
+    let quote = *text.as_bytes().get(i)?;
+    if !matches!(quote, b'\'' | b'"' | b'`') {
+        return None;
+    }
+    let multiline = quote == b'`';
+    let mut cursor = i + 1;
+    while cursor < text.len() {
+        let rest = &text[cursor..];
+        if let Some(escaped) = rest.strip_prefix('\\') {
+            cursor += 1 + escaped.chars().next().map_or(0, char::len_utf8);
+            continue;
+        }
+        let ch = rest.chars().next()?;
+        if ch as u32 == u32::from(quote) {
+            return Some(cursor + ch.len_utf8() - i);
+        }
+        if ch == '\n' && !multiline {
+            return None;
+        }
+        cursor += ch.len_utf8();
+    }
+    if multiline {
+        Some(text.len() - i)
+    } else {
+        None
+    }
+}
+
+/// Highlight JavaScript/TypeScript `code` into per-line spans. Multi-line
+/// template literals and block comments carry across lines.
+pub(crate) fn highlight_javascript(code: &str, palette: &SyntaxPalette) -> Vec<Line> {
+    let mut lines: Vec<Line> = Vec::new();
+    let mut current: Line = Vec::new();
+    for (text, scope) in tokenize_javascript(code) {
+        let style = scope.style(palette);
+        for (index, part) in text.split('\n').enumerate() {
+            if index > 0 {
+                lines.push(std::mem::take(&mut current));
+            }
+            if part.is_empty() {
+                continue;
+            }
+            match style {
+                Some(style) => current.push(Span::styled(part.to_string(), style)),
+                None => current.push(Span::raw(part.to_string())),
+            }
+        }
+    }
+    lines.push(current);
+    lines
+}
+
+fn tokenize_javascript(code: &str) -> Vec<(String, Scope)> {
+    let mut tokens: Vec<(String, Scope)> = Vec::new();
+    let mut plain = String::new();
+    let mut i = 0usize;
+    while i < code.len() {
+        let rest = &code[i..];
+        if rest.starts_with("//") {
+            let end = rest.find('\n').map_or(code.len(), |n| i + n);
+            flush_plain(&mut plain, &mut tokens);
+            tokens.push((code[i..end].to_string(), Scope::Comment));
+            i = end;
+            continue;
+        }
+        if let Some(after_open) = rest.strip_prefix("/*") {
+            let end = after_open.find("*/").map_or(code.len(), |n| i + 2 + n + 2);
+            flush_plain(&mut plain, &mut tokens);
+            tokens.push((code[i..end].to_string(), Scope::Comment));
+            i = end;
+            continue;
+        }
+        let ch = rest.chars().next().expect("char boundary");
+        if ch == '\n' {
+            plain.push('\n');
+            i += 1;
+            continue;
+        }
+        if let Some(len) = js_string_at(code, i) {
+            flush_plain(&mut plain, &mut tokens);
+            tokens.push((code[i..i + len].to_string(), Scope::String));
+            i += len;
+            continue;
+        }
+        if let Some(len) = js_number_at(code, i) {
+            flush_plain(&mut plain, &mut tokens);
+            tokens.push((code[i..i + len].to_string(), Scope::Number));
+            i += len;
+            continue;
+        }
+        if js_ident_start(ch) {
+            let word_len = rest
+                .char_indices()
+                .take_while(|(_, c)| js_ident_continue(*c))
+                .map(|(idx, c)| idx + c.len_utf8())
+                .last()
+                .unwrap_or(1);
+            let word = &rest[..word_len];
+            if (word == "function" || word == "class") && !js_ident_continues(code, i + word_len) {
+                if let Some(next) = js_header_mode(code, i, word_len, &mut plain, &mut tokens) {
+                    i = next;
+                    continue;
+                }
+            }
+            match js_word_scope(word) {
+                Scope::Plain => plain.push_str(word),
+                scope => {
+                    flush_plain(&mut plain, &mut tokens);
+                    tokens.push((word.to_string(), scope));
+                }
+            }
+            i += word_len;
+            continue;
+        }
+        plain.push(ch);
+        i += ch.len_utf8();
+    }
+    flush_plain(&mut plain, &mut tokens);
+    tokens
+}
+
+/// Highlight `function foo` / `function* foo` / `class Foo` declarations with
+/// the keyword and title scopes, then hand off the remainder to normal scanning.
+fn js_header_mode(
+    code: &str,
+    at: usize,
+    keyword_len: usize,
+    plain: &mut String,
+    tokens: &mut Vec<(String, Scope)>,
+) -> Option<usize> {
+    let mut i = at + keyword_len;
+    let gap_start = i;
+    while let Some(c) = code[i..]
+        .chars()
+        .next()
+        .filter(|c| c.is_whitespace() && *c != '\n')
+    {
+        i += c.len_utf8();
+    }
+    if code[at..at + keyword_len].eq("function") && code[i..].starts_with('*') {
+        i += 1;
+        while let Some(c) = code[i..]
+            .chars()
+            .next()
+            .filter(|c| c.is_whitespace() && *c != '\n')
+        {
+            i += c.len_utf8();
+        }
+    }
+    let first = code[i..].chars().next()?;
+    if !js_ident_start(first) {
+        return None;
+    }
+    let name_len = code[i..]
+        .char_indices()
+        .take_while(|(_, c)| js_ident_continue(*c))
+        .map(|(idx, c)| idx + c.len_utf8())
+        .last()
+        .unwrap_or(0);
+    if name_len == 0 {
+        return None;
+    }
+    let name = &code[i..i + name_len];
+    if JS_KEYWORDS.contains(&name) {
+        return None;
+    }
+    flush_plain(plain, tokens);
+    tokens.push((code[at..at + keyword_len].to_string(), Scope::Keyword));
+    if i > gap_start {
+        tokens.push((code[gap_start..i].to_string(), Scope::Plain));
+    }
+    tokens.push((name.to_string(), Scope::Title));
+    Some(i + name_len)
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -745,5 +1135,60 @@ mod tests {
     fn escaped_quote_stays_in_string() {
         let toks = scopes("x = 'a\\'b'");
         assert!(toks.contains(&("'a\\'b'".into(), Scope::String)));
+    }
+
+    #[test]
+    fn javascript_keywords_literals_builtins_and_numbers() {
+        let toks = tokenize_javascript(
+            "const answer: number = 0xff + 1_000n;\nconsole.log(Bun.version, true, null, undefined);",
+        );
+        assert!(toks.contains(&("const".into(), Scope::Keyword)));
+        assert!(toks.contains(&("number".into(), Scope::Type)));
+        assert!(toks.contains(&("0xff".into(), Scope::Number)));
+        assert!(toks.contains(&("1_000n".into(), Scope::Number)));
+        assert!(toks.contains(&("console".into(), Scope::BuiltIn)));
+        assert!(toks.contains(&("Bun".into(), Scope::BuiltIn)));
+        assert!(toks.contains(&("true".into(), Scope::Literal)));
+        assert!(toks.contains(&("null".into(), Scope::Literal)));
+        assert!(toks.contains(&("undefined".into(), Scope::Literal)));
+    }
+
+    #[test]
+    fn javascript_comments_templates_and_headers() {
+        let code = "async function runCheck(x) {\n  // line comment\n  /* block\n     comment */\n  return `hi\nthere`;\n}";
+        let toks = tokenize_javascript(code);
+        assert!(toks.contains(&("async".into(), Scope::Keyword)));
+        assert!(toks.contains(&("function".into(), Scope::Keyword)));
+        assert!(toks.contains(&("runCheck".into(), Scope::Title)));
+        assert!(toks.contains(&("// line comment".into(), Scope::Comment)));
+        assert!(toks.contains(&("/* block\n     comment */".into(), Scope::Comment)));
+        assert!(toks.contains(&("`hi\nthere`".into(), Scope::String)));
+
+        let lines = highlight_javascript(code, &SyntaxPalette::from_theme(&theme()));
+        let reconstructed: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(reconstructed.join("\n"), code);
+    }
+
+    fn js_fragment() -> impl Strategy<Value = String> {
+        prop_oneof![
+            3 => prop::sample::select(vec![
+                "'", "\"", "`", "\\", "//", "/*", "*/", "function", "class", "const", "await",
+                "0xff", "1_000n", "1.5e-2", "true", "null", "Bun", "console", "*", "(", ")",
+                "\n", " ", "é", "界", "\u{a0}", "\u{1f980}",
+            ])
+            .prop_map(str::to_string),
+            1 => any::<char>().prop_map(String::from),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn highlight_javascript_never_panics(parts in prop::collection::vec(js_fragment(), 0..24)) {
+            let code = parts.concat();
+            let lines = highlight_javascript(&code, &SyntaxPalette::from_theme(&theme()));
+            prop_assert!(!lines.is_empty());
+            let reconstructed: Vec<String> = lines.iter().map(line_text).collect();
+            prop_assert_eq!(reconstructed.join("\n"), code);
+        }
     }
 }

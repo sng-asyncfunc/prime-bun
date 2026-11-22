@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use pa_types::daemon::DaemonCommand;
 
 /// A healthy attach is tens of milliseconds; one full second is the regression ceiling.
-const VIEW_SWITCH_CEILING: Duration = Duration::from_millis(1_000);
+const VIEW_SWITCH_CEILING: Duration = Duration::from_secs(1);
 
 /// Enough rows that the context-tree cache warm does real work, without
 /// doubling the daemon-side guard's fixture cost (box-shaped per the

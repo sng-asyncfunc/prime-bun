@@ -153,7 +153,7 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
-    fn ipython_bash_rendered(
+    fn javascript_bash_rendered(
         &self,
         bash_lines: usize,
         cell_lines: usize,
@@ -167,7 +167,7 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
             properties.set("bash_lines", serde_json::Value::from(bash_lines));
             properties.set("cell_lines", serde_json::Value::from(cell_lines));
             properties.set("count", serde_json::Value::from(count));
-            client.track("tui ipython bash rendered", properties);
+            client.track("tui javascript bash rendered", properties);
             let _ = client.shutdown().await;
         })
     }

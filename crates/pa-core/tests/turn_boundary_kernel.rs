@@ -23,30 +23,44 @@ use pa_core::session_engine::turn_boundary::PendingRefine;
 use pa_core::session_engine::PromptOptions;
 use serde_json::{json, Value};
 
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available. Skipped (with a note)
+/// on machines without a live runtime; `PA_CORE_KERNEL_BUN` points at an explicit one.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live kernel test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live kernel test");
     None
 }
 
@@ -88,7 +102,7 @@ impl Drop for EnvOverride {
 /// carries the same proof into the session transcript).
 fn harness_cell(receipt_path: &Path) -> String {
     format!(
-        "import json\nfrom rlm import host_request\npayload = {{}}\npayload[\"model_info\"] = await host_request(\"model.info\", {{}})\npayload[\"compact_status\"] = await host_request(\"compact.status\", {{}})\npayload[\"refine_status_before\"] = await host_request(\"refine.status\", {{}})\npayload[\"refine_run\"] = await host_request(\"refine.run\", {{\"instructions\": \"persist the kernel round-trip contract observation\", \"global\": True}})\npayload[\"refine_status_after\"] = await host_request(\"refine.status\", {{}})\npayload[\"compact_run\"] = await host_request(\"compact.run\", {{\"instructions\": \"keep the observation\"}})\nopen({receipt_path:?}, \"w\").write(json.dumps(payload))\nprint(\"HARNESS_CELL_OK\")",
+        "const payload = {{}};\npayload.model_info = await rlm.hostRequest(\"model.info\", {{}});\npayload.compact_status = await rlm.hostRequest(\"compact.status\", {{}});\npayload.refine_status_before = await rlm.hostRequest(\"refine.status\", {{}});\npayload.refine_run = await rlm.hostRequest(\"refine.run\", {{\"instructions\": \"persist the kernel round-trip contract observation\", \"global\": true}});\npayload.refine_status_after = await rlm.hostRequest(\"refine.status\", {{}});\npayload.compact_run = await rlm.hostRequest(\"compact.run\", {{\"instructions\": \"keep the observation\"}});\nfs.writeFileSync({receipt_path:?}, JSON.stringify(payload));\nconsole.log(\"HARNESS_CELL_OK\");",
         receipt_path = receipt_path.display().to_string(),
     )
 }
@@ -116,7 +130,7 @@ fn registry_model() -> pa_types::ai::Model {
 
 #[tokio::test]
 async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::tempdir().expect("temp dir");
@@ -127,12 +141,12 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
     std::fs::create_dir_all(&cwd).expect("project dir");
     let receipt_path = dir.path().join("harness-receipt.json");
 
-    // Hermeticity: the kernel runs on the bootstrapped kernel venv, and no
+    // Hermeticity: the kernel runs on the bootstrapped Bun runtime, and no
     // ambient agent state leaks in.
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
+            "PRIME_AGENT_KERNEL_BUN",
+            Some(kernel_bun.display().to_string()),
         ),
         ("PRIME_AGENT_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
@@ -153,7 +167,7 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
         Some("running the harness cell"),
         vec![(
             "call-1",
-            "python_repl",
+            "javascript",
             json!({ "code": harness_cell(&receipt_path) }),
         )],
     );
@@ -209,7 +223,7 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
         model_info: Some(registry_model()),
         mcp_manager: None,
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,

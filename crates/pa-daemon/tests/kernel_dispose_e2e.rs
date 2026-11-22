@@ -23,33 +23,44 @@ fn test_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
+/// The kernel Bun binary (`PA_E2E_KERNEL_BUN` / `PRIME_AGENT_KERNEL_BUN`,
+/// PATH, or `~/.bun/bin/bun`).
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) =
+        std::env::var_os("PA_E2E_KERNEL_BUN").or_else(|| std::env::var_os("PRIME_AGENT_KERNEL_BUN"))
+    {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
+            "PA_E2E_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
+    if let Ok(path_var) = std::env::var("PATH") {
+        let exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.bun/bin/bun".to_string(),
+        |home| format!("{home}/.bun/bin/bun"),
     ));
     if candidate.exists() {
         return Some(candidate);
     }
     eprintln!(
-        "kernel python {} not found; skipping live kernel-dispose e2e",
+        "kernel bun {} not found; skipping live kernel-dispose e2e",
         candidate.display()
     );
     None
 }
 
-/// Every live `python -m rlm.repl` pid on the box (ambient kernels are part of the baseline).
+/// Every live `bun run .../src/repl.ts` pid on the box (ambient kernels are part of the baseline).
 fn kernel_pids() -> Vec<u32> {
     let mut found = Vec::new();
     let entries = std::fs::read_dir("/proc").unwrap_or_else(|e| panic!("read /proc: {e}"));
@@ -60,10 +71,13 @@ fn kernel_pids() -> Vec<u32> {
         let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) else {
             continue;
         };
-        // The kernel is spawned as `python -m rlm.repl` (NUL-separated argv): the adjacent
-        // pair avoids matching an unrelated process that merely mentions the module.
+        // The kernel is spawned as `bun run <dir>/src/repl.ts` (NUL-separated argv): the adjacent
+        // pair avoids matching an unrelated process.
         let args: Vec<&str> = cmdline.split('\0').collect();
-        if args.windows(2).any(|window| window == ["-m", "rlm.repl"]) {
+        if args
+            .windows(2)
+            .any(|window| window[0] == "run" && window[1].ends_with("/src/repl.ts"))
+        {
             found.push(pid);
         }
     }
@@ -125,7 +139,7 @@ impl Drop for Daemon {
 fn spawn_supervisor(
     socket: &Path,
     agent_dir: &Path,
-    kernel_python: &Path,
+    kernel_bun: &Path,
     lost_window_ms: &str,
 ) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
@@ -135,7 +149,7 @@ fn spawn_supervisor(
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+        .env("PRIME_AGENT_KERNEL_BUN", kernel_bun)
         // Hermetic agent dir: point every fallback at the test sandbox.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env_remove("PRIME_API_KEY")
@@ -231,14 +245,14 @@ impl Client {
     }
 }
 
-/// A faux script whose single turn runs one ipython cell that writes a receipt:
+/// A faux script whose single turn runs one javascript cell that writes a receipt:
 /// proves the session built and its kernel executed real code.
 fn write_faux_script(dir: &Path) -> PathBuf {
     let receipts_dir = dir.join("receipts");
     std::fs::create_dir_all(&receipts_dir).expect("receipts dir");
     let receipt = receipts_dir.join("cell.json");
     let cell = format!(
-        "open({receipt:?}, \"w\").write(\"kernel alive\")\nprint(\"kernel alive\")",
+        "fs.writeFileSync({receipt:?}, \"kernel alive\");\nconsole.log(\"kernel alive\");",
         receipt = receipt.to_string_lossy(),
     );
     let script = dir.join("faux.json");
@@ -248,7 +262,7 @@ fn write_faux_script(dir: &Path) -> PathBuf {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "javascript", "arguments": {
                         "code": cell,
                     } },
                 ] },
@@ -320,7 +334,7 @@ fn await_receipt(dir: &Path) {
 
 #[test]
 fn kill_disposes_the_session_kernel() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let _guard = test_lock();
@@ -330,7 +344,7 @@ fn kill_disposes_the_session_kernel() {
     let script = write_faux_script(dir.path());
     let baseline = kernel_pids();
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "15000");
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun, "15000");
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -358,7 +372,7 @@ fn kill_disposes_the_session_kernel() {
 /// before its own process exit (no destructors run on `std::process::exit`).
 #[test]
 fn shutdown_disposes_session_kernels_before_the_worker_exits() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let _guard = test_lock();
@@ -368,7 +382,7 @@ fn shutdown_disposes_session_kernels_before_the_worker_exits() {
     let script = write_faux_script(dir.path());
     let baseline = kernel_pids();
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "15000");
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun, "15000");
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -386,7 +400,7 @@ fn shutdown_disposes_session_kernels_before_the_worker_exits() {
 
 #[test]
 fn orphan_exit_disposes_the_kernel_before_the_worker_exits() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let _guard = test_lock();
@@ -397,7 +411,7 @@ fn orphan_exit_disposes_the_kernel_before_the_worker_exits() {
     let baseline = kernel_pids();
 
     // A short supervisor-lost window: the orphan exits quickly once the supervisor is gone.
-    let mut daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "5000");
+    let mut daemon = spawn_supervisor(&socket, &agent_dir, &kernel_bun, "5000");
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

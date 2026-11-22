@@ -30,9 +30,9 @@ class NativeCompatibilityTests(unittest.TestCase):
         for name in ("LICENSE", "README.md"):
             (self.root / name).write_text("test fixture\n")
         runtime = self.root / "prime-agent-runtime"
-        (runtime / "src/rlm").mkdir(parents=True)
-        (runtime / "src/rlm/repl.py").write_text("# runtime fixture\n")
-        (runtime / "pyproject.toml").write_text('[project]\nname = "fixture"\n')
+        (runtime / "src").mkdir(parents=True)
+        (runtime / "src/repl.ts").write_text("// runtime fixture\n")
+        (runtime / "package.json").write_text('{"name":"fixture"}\n')
         for name in BUNDLED_CATALOG_FILES:
             (self.root / name).write_text("{}\n")
         self.binary = self.root / "binary"

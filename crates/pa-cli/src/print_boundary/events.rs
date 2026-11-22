@@ -52,11 +52,11 @@ pub(super) fn compaction_end_success_event(
 impl TurnBoundary {
     /// The post-compaction kernel notice: json mode streams its message pair before
     /// the `compaction_end` event; text mode keeps the row as durable bookkeeping.
-    pub(super) fn emit_ipython_state_row(&self, run: &CompactRun) {
+    pub(super) fn emit_javascript_state_row(&self, run: &CompactRun) {
         if !self.json_mode {
             return;
         }
-        let Some(row) = &run.ipython_state else {
+        let Some(row) = &run.javascript_state else {
             return;
         };
         let value = crate::headless_autonomous::custom_row_wire_value(row);

@@ -659,7 +659,7 @@ mod tests {
                 .files
                 .iter()
                 .filter(|file| {
-                    file.ends_with("kernel-state.json") || file.ends_with("kernel-state.dill")
+                    file.ends_with("kernel-state.json") || file.ends_with("kernel-state.bin")
                 })
                 .count();
             if artifacts {

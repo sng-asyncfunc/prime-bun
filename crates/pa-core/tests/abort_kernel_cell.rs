@@ -20,30 +20,44 @@ use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use serde_json::json;
 
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
+/// The kernel Bun binary with `prime-agent-runtime` available. Skipped (with a note)
+/// on machines without a live runtime; `PA_CORE_KERNEL_BUN` points at an explicit one.
+fn kernel_bun() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_BUN") {
         let explicit = PathBuf::from(explicit);
         assert!(
             explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
+            "PA_CORE_KERNEL_BUN {} not found",
             explicit.display()
         );
         return Some(explicit);
     }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
+    let runtime_ready = pa_core::kernel::bootstrap::kernel_worker_entry(
+        &pa_core::kernel::bootstrap::kernel_bun_dir(),
+    )
+    .is_file()
+        || Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .is_some_and(|root| root.join("prime-agent-runtime/src/repl.ts").is_file());
+    if !runtime_ready {
+        eprintln!("prime-agent-runtime/src/repl.ts not found; skipping live kernel test");
+        return None;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
+    for candidate in [
+        std::env::var_os("PRIME_AGENT_KERNEL_BUN").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+        Some(PathBuf::from("/usr/local/bin/bun")),
+        Some(PathBuf::from("/usr/bin/bun")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    eprintln!("bun executable not found; skipping live kernel test");
     None
 }
 
@@ -83,7 +97,7 @@ impl Drop for EnvOverride {
 /// beyond the abort budget, then writes `finished` (must never exist after the abort settled).
 fn wedge_cell(started: &Path, finished: &Path) -> String {
     format!(
-        "open({started:?}, \"w\").write(\"started\")\nimport time\ntime.sleep(120)\nopen({finished:?}, \"w\").write(\"finished\")\nprint(\"cell completed\")",
+        "fs.writeFileSync({started:?}, \"started\");\nawait Bun.sleep(120_000);\nfs.writeFileSync({finished:?}, \"finished\");\nconsole.log(\"cell completed\");",
         started = started.display().to_string(),
         finished = finished.display().to_string(),
     )
@@ -103,7 +117,7 @@ fn scripted_model() -> pa_agent::types::Model {
 /// sleep: a wedge waits the sleep out (or forever).
 #[tokio::test]
 async fn abort_during_a_kernel_cell_settles_the_turn_immediately() {
-    let Some(kernel_python) = kernel_python() else {
+    let Some(kernel_bun) = kernel_bun() else {
         return;
     };
     let dir = tempfile::tempdir().expect("temp dir");
@@ -117,8 +131,8 @@ async fn abort_during_a_kernel_cell_settles_the_turn_immediately() {
 
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
+            "PRIME_AGENT_KERNEL_BUN",
+            Some(kernel_bun.display().to_string()),
         ),
         ("PRIME_AGENT_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
@@ -134,7 +148,7 @@ async fn abort_during_a_kernel_cell_settles_the_turn_immediately() {
         Some("running the wedge cell"),
         vec![(
             "call-1",
-            "python_repl",
+            "javascript",
             json!({ "code": wedge_cell(&started, &finished) }),
         )],
     );
@@ -173,7 +187,7 @@ async fn abort_during_a_kernel_cell_settles_the_turn_immediately() {
         model_info: None,
         mcp_manager: None,
         kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_javascript_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,

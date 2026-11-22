@@ -381,11 +381,11 @@ fn missing_saved_cwd_requires_an_explicit_fallback() {
     assert_eq!(client.read_response("shutdown")["success"], true);
 }
 
-/// Uses a real Python kernel; only provider responses are scripted.
+/// Uses a real Bun JavaScript kernel; only provider responses are scripted.
 #[test]
-#[ignore = "requires PRIME_AGENT_KERNEL_PYTHON with the kernel runtime installed"]
-fn cold_reopen_python_kernel_uses_saved_cwd_and_explicit_override() {
-    assert!(std::env::var_os("PRIME_AGENT_KERNEL_PYTHON").is_some());
+#[ignore = "requires PRIME_AGENT_KERNEL_BUN with the kernel runtime installed"]
+fn cold_reopen_bun_kernel_uses_saved_cwd_and_explicit_override() {
+    assert!(std::env::var_os("PRIME_AGENT_KERNEL_BUN").is_some());
     let dir = tempfile::tempdir_in("/tmp").unwrap();
     let project = dir.path().join("saved-project");
     let override_dir = dir.path().join("override");
@@ -396,8 +396,8 @@ fn cold_reopen_python_kernel_uses_saved_cwd_and_explicit_override() {
     let script = dir.path().join("kernel.json");
     std::fs::write(&script, serde_json::json!({
         "engine": "faux", "responses": [
-            {"content": [{"type": "toolCall", "name": "python_repl", "id": "kernel-cwd",
-                "arguments": {"code": "import os, pathlib\npathlib.Path('kernel-cwd.txt').write_text(os.getcwd())\nprint(os.getcwd())"}}]},
+            {"content": [{"type": "toolCall", "name": "javascript", "id": "kernel-cwd",
+                "arguments": {"code": "fs.writeFileSync('kernel-cwd.txt', process.cwd());\nconsole.log(process.cwd());"}}]},
             {"text": "done"}
         ]
     }).to_string()).unwrap();
@@ -430,17 +430,17 @@ fn cold_reopen_python_kernel_uses_saved_cwd_and_explicit_override() {
         let opened = client.read_response("open");
         assert_eq!(opened["success"], true, "{opened}");
         client.send_command(
-            "python",
+            "javascript",
             &serde_json::json!({
                 "type": "prompt_and_wait", "activeSessionId": opened["data"]["id"],
-                "message": "Record the Python kernel working directory.",
+                "message": "Record the Bun kernel working directory.",
             }),
         );
-        let response = client.read_response("python");
+        let response = client.read_response("javascript");
         assert_eq!(response["success"], true, "{response}");
         let expected = if explicit { &override_dir } else { &project };
         let observed = std::fs::read_to_string(expected.join("kernel-cwd.txt"))
-            .expect("the real Python tool wrote its relative-path cwd probe");
+            .expect("the real JavaScript tool wrote its relative-path cwd probe");
         assert_eq!(observed, expected.canonicalize().unwrap().to_str().unwrap());
     }
     client.send_command("shutdown", &serde_json::json!({"type": "shutdown"}));

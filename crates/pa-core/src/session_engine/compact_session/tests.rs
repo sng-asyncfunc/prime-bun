@@ -97,6 +97,6 @@ async fn execute_compaction(
         result: prepared.result,
         entry: prepared.entry,
         duration_ms: started_at.elapsed().as_millis() as u64,
-        ipython_state: None,
+        javascript_state: None,
     })))
 }

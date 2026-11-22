@@ -561,12 +561,14 @@ fn assembled_archives_carry_the_platform_alias_the_reader_demands() {
     // A minimal repo tree the assembler accepts (the same shape
     // scripts/release/test_catalog_assets.py stages).
     let repo = fixture.path().join("synrepo");
-    std::fs::create_dir_all(repo.join("prime-agent-runtime")).expect("runtime dir");
+    std::fs::create_dir_all(repo.join("prime-agent-runtime/src")).expect("runtime dir");
     std::fs::write(
-        repo.join("prime-agent-runtime/pyproject.toml"),
-        "# fixture\n",
+        repo.join("prime-agent-runtime/package.json"),
+        "{\"name\":\"prime-agent-runtime\",\"type\":\"module\"}\n",
     )
     .expect("runtime manifest");
+    std::fs::write(repo.join("prime-agent-runtime/src/repl.ts"), "// fixture\n")
+        .expect("runtime repl");
     std::fs::create_dir_all(repo.join("skills")).expect("skills dir");
     std::fs::write(repo.join("LICENSE"), "fixture license\n").expect("LICENSE");
     std::fs::write(repo.join("deny.toml"), "[licenses]\nallow = [\"MIT\"]\n").expect("deny.toml");

@@ -305,7 +305,29 @@ fn the_diagram_renders_states_edges_and_the_fired_marker() {
     );
 }
 
-/// A python state paints its callable where a subagent state paints its
+/// A javascript state paints its callable where a subagent state paints its
+/// subagent name.
+#[test]
+fn a_javascript_state_renders_its_callable() {
+    let mut snapshot = scripted_snapshot();
+    snapshot["machine"]["states"][0] = json!({
+        "id": "collect", "entry": true, "lifecycle": "task", "maxEntries": 1, "retries": 0,
+        "javascript": "myTools.gh.openPrs"
+    });
+    let runs = parse_factory_runs(&runs_response(&snapshot));
+    assert_eq!(
+        runs[0].states[0].javascript.as_deref(),
+        Some("myTools.gh.openPrs")
+    );
+    let mut view = FactoryView::new(runs, 40);
+    let joined = frame_text(&mut view).join("\n");
+    assert!(
+        joined.contains("collect (js myTools.gh.openPrs)"),
+        "{joined}"
+    );
+}
+
+/// A legacy python state still paints its callable where a subagent state paints its
 /// subagent name.
 #[test]
 fn a_python_state_renders_its_callable() {

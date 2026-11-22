@@ -1,16 +1,15 @@
 //! `prime-agent factory`: the machine library commands.
 //!
-//! Every subcommand — list included — is one `rlm.factory.cli_dispatch`
-//! payload through the kernel Python. The kernel owns the whole library
-//! contract: the bundled seeds ship as wheel package data inside the
-//! runtime, the personal library lives under the agent dir, the strict
-//! MACHINE.md parser gates what lists, and the write-time validator gates
-//! what persists (an invalid spec never persists; the exact error
-//! sentences reach this command's output verbatim). The CLI never
-//! re-implements resolution or parsing, so the two sides cannot drift.
+//! Every subcommand — list included — is one `cliDispatch` payload through the
+//! kernel Bun runtime (`src/factory-cli.ts`). The kernel owns the whole library
+//! contract: the bundled seeds ship under `prime-agent-runtime/src/machines`,
+//! the personal library lives under the agent dir, the strict MACHINE.md parser
+//! gates what lists, and the write-time validator gates what persists (an
+//! invalid spec never persists; the exact error sentences reach this command's
+//! output verbatim). The CLI never re-implements resolution or parsing, so the
+//! two sides cannot drift.
 
 use std::io::Write as _;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
@@ -29,14 +28,8 @@ struct MachineListing {
     path: String,
 }
 
-/// The thin runner executed by the kernel Python: one JSON payload in on
-/// stdin, one JSON result out on stdout (`rlm.factory.cli_dispatch`).
-const CLI_DISPATCH_RUNNER: &str = concat!(
-    "import json, sys\n",
-    "from rlm.factory import cli_dispatch\n",
-    "payload = json.loads(sys.stdin.read() or \"{}\")\n",
-    "print(json.dumps(cli_dispatch(payload)))\n",
-);
+/// Relative path to the Bun factory CLI entrypoint inside the kernel runtime dir.
+const FACTORY_CLI_ENTRY_REL: &str = "src/factory-cli.ts";
 
 /// The parsed `prime-agent factory` invocation.
 #[derive(Debug, PartialEq, Eq)]
@@ -175,7 +168,7 @@ fn export_payload(name: &str, out: &std::path::Path) -> Value {
 /// `factory list`: library contents with descriptions.
 fn run_list(json: bool) -> i32 {
     let payload = list_payload();
-    match resolve_kernel_python().and_then(|python| dispatch_via_kernel(&python, &payload)) {
+    match resolve_kernel_bun().and_then(|kernel| dispatch_via_kernel(&kernel, &payload)) {
         Ok(result) => render_list(&result, json),
         Err(error) => {
             eprintln!("Error: {error}");
@@ -251,35 +244,40 @@ fn listing_row(machine: &MachineListing, name_width: usize) -> String {
     )
 }
 
-/// Resolve the kernel Python (bootstrapping the venv on first use), the
-/// same interpreter the factory gate lives in.
-fn resolve_kernel_python() -> Result<PathBuf, String> {
+/// Resolve the kernel Bun runtime (bootstrapping on first use), the
+/// same runtime the factory gate lives in.
+fn resolve_kernel_bun() -> Result<pa_core::kernel::KernelBunRuntime, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("failed to start the CLI runtime: {error}"))?;
     runtime
-        .block_on(pa_core::kernel::ensure_kernel_python(
-            pa_core::kernel::EnsureKernelPythonOptions::default(),
+        .block_on(pa_core::kernel::ensure_kernel_bun(
+            pa_core::kernel::EnsureKernelBunOptions::default(),
         ))
-        .map_err(|error| format!("kernel python unavailable: {error:#}"))
+        .map_err(|error| format!("kernel bun unavailable: {error:#}"))
 }
 
-/// Drive one `rlm.factory.cli_dispatch` payload through the kernel Python.
-fn dispatch_via_kernel(python: &std::path::Path, payload: &Value) -> Result<Value, String> {
-    let mut child = Command::new(python);
+/// Drive one `cliDispatch` payload through the kernel Bun runtime.
+fn dispatch_via_kernel(
+    kernel: &pa_core::kernel::KernelBunRuntime,
+    payload: &Value,
+) -> Result<Value, String> {
+    let entry = kernel.kernel_dir.join(FACTORY_CLI_ENTRY_REL);
+    let mut child = Command::new(&kernel.bun_path);
     child
-        .args(["-P", "-s", "-c", CLI_DISPATCH_RUNNER])
+        .arg("run")
+        .arg(&entry)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear()
-        .envs(pa_core::kernel::python_process_environment());
+        .envs(pa_core::kernel::bun_process_environment());
     // Hidden window on Windows, matching the kernel probes.
     pa_core::platform::process::set_no_window(&mut child);
     let mut child = child
         .spawn()
-        .map_err(|error| format!("failed to run the kernel python: {error}"))?;
+        .map_err(|error| format!("failed to run the kernel bun: {error}"))?;
     {
         let stdin = child.stdin.as_mut().expect("stdin was piped on this child");
         stdin
@@ -288,14 +286,14 @@ fn dispatch_via_kernel(python: &std::path::Path, payload: &Value) -> Result<Valu
     }
     let output = child
         .wait_with_output()
-        .map_err(|error| format!("failed to wait for the kernel python: {error}"))?;
+        .map_err(|error| format!("failed to wait for the kernel bun: {error}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail: Vec<&str> = stderr.lines().rev().take(3).collect::<Vec<_>>();
         let mut lines = tail;
         lines.reverse();
         return Err(format!(
-            "the kernel python failed (exit {}): {}",
+            "the kernel bun failed (exit {}): {}",
             output.status,
             lines.join(" | ")
         ));
@@ -313,7 +311,7 @@ fn run_import(path: &str, json: bool) -> i32 {
         return 1;
     }
     let payload = import_payload(&source);
-    match resolve_kernel_python().and_then(|python| dispatch_via_kernel(&python, &payload)) {
+    match resolve_kernel_bun().and_then(|kernel| dispatch_via_kernel(&kernel, &payload)) {
         Ok(result) => print_dispatch_result(&result, json, "imported"),
         Err(error) => {
             eprintln!("Error: {error}");
@@ -325,7 +323,7 @@ fn run_import(path: &str, json: bool) -> i32 {
 /// `factory export <name> --out <path>`: serialize a machine to MACHINE.md.
 fn run_export(name: &str, out: &str, json: bool) -> i32 {
     let payload = export_payload(name, &crate::config::expand_tilde_path(out));
-    match resolve_kernel_python().and_then(|python| dispatch_via_kernel(&python, &payload)) {
+    match resolve_kernel_bun().and_then(|kernel| dispatch_via_kernel(&kernel, &payload)) {
         Ok(result) => print_dispatch_result(&result, json, "exported"),
         Err(error) => {
             eprintln!("Error: {error}");
@@ -473,8 +471,7 @@ mod tests {
 
     #[test]
     fn dispatch_runner_contract_is_the_json_facade() {
-        assert!(CLI_DISPATCH_RUNNER.contains("from rlm.factory import cli_dispatch"));
-        assert!(CLI_DISPATCH_RUNNER.contains("print(json.dumps(cli_dispatch(payload)))"));
+        assert_eq!(FACTORY_CLI_ENTRY_REL, "src/factory-cli.ts");
     }
 
     #[test]
